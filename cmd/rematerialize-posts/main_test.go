@@ -55,7 +55,7 @@ func (c *fakeRepoClient) put(collection, rkey, cid string, value map[string]any)
 func (c *fakeRepoClient) DID() string     { return c.did }
 func (c *fakeRepoClient) HostURL() string { return c.host }
 
-func (c *fakeRepoClient) GetRecord(_ context.Context, _ string, rkey string) (*pds.RecordResponse, error) {
+func (c *fakeRepoClient) GetRecord(_ context.Context, _, rkey string) (*pds.RecordResponse, error) {
 	rec, ok := c.records[rkey]
 	if !ok {
 		return nil, fmt.Errorf("getRecord: %w: no such record", pds.ErrNotFound)

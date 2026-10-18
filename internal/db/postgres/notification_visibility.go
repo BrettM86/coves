@@ -88,8 +88,10 @@ func notificationVisibility(bridgedTotals bool) notificationVisibilitySQL {
 		subjectCommentState: fmt.Sprintf("CASE WHEN n.reason = 'commentReply' OR (n.reason = 'upvote' AND %s = 'social.coves.community.comment') THEN %s END", subjectCollection, commentState("subject_comment")),
 	}
 	// A non-null position with an unsupported collection is also hidden.
-	states := []string{visibility.subjectPostState, visibility.recordPostState, visibility.rootPostState,
-		visibility.recordCommentState, visibility.subjectCommentState}
+	states := []string{
+		visibility.subjectPostState, visibility.recordPostState, visibility.rootPostState,
+		visibility.recordCommentState, visibility.subjectCommentState,
+	}
 	references := make([]string, 0, len(states)+2)
 	for _, state := range states {
 		references = append(references, "COALESCE(("+state+") <> 'hidden', true)")
@@ -98,14 +100,16 @@ func notificationVisibility(bridgedTotals bool) notificationVisibilitySQL {
 		fmt.Sprintf("(n.reason <> 'mention' OR %s = 'social.coves.community.comment' OR "+postCollection+")", recordCollection, "n.record_uri"),
 		fmt.Sprintf("(n.reason <> 'upvote' OR %s = 'social.coves.community.comment' OR "+postCollection+")", subjectCollection, "n.subject_uri"))
 	visibility.referencesVisible = strings.Join(references, " AND ")
-	conditions := []string{visibility.referencesVisible,
+	conditions := []string{
+		visibility.referencesVisible,
 		`(n.actor_did IS NULL OR NOT EXISTS (
 			SELECT 1 FROM user_blocks b WHERE
 				(b.blocker_did = n.recipient_did AND b.blocked_did = n.actor_did)
 				OR (b.blocker_did = n.actor_did AND b.blocked_did = n.recipient_did)))`,
 		"(n.reason <> 'upvote' OR " + upvoteGroupAliveSQL("n.subject_uri", "n.recipient_did", bridgedTotals) + ")",
 		`NOT EXISTS (SELECT 1 FROM notification_state ps
-			WHERE ps.did = n.recipient_did AND n.reason = ANY(ps.disabled_reasons))`}
+			WHERE ps.did = n.recipient_did AND n.reason = ANY(ps.disabled_reasons))`,
+	}
 	visibility.visible = strings.Join(conditions, " AND ")
 	return visibility
 }

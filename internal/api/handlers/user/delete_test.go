@@ -301,7 +301,6 @@ func TestWebDeleteAccount_FormSubmission(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/delete-account", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
-	req = req.WithContext(ctx)
 
 	// The web handler would parse the form and call DeleteAccount
 	// This test verifies the service layer is called correctly

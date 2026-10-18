@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
-	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/aggregators"
+
+	covesoauth "Coves/internal/atproto/oauth"
+
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"

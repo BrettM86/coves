@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/blobs"
 )
 
 // A REHEARSAL THAT DOES NOT REHEARSE IS WORSE THAN NO REHEARSAL, because the
@@ -51,6 +51,7 @@ func (r *memAuthorRepo) PutRecordWithCommit(_ context.Context, collection, rkey 
 }
 
 func (r *memAuthorRepo) DeleteRecord(context.Context, string, string) error { r.deletes++; return nil }
+
 func (r *memAuthorRepo) UploadBlob(context.Context, []byte, string) (*blobs.BlobRef, error) {
 	r.uploads++
 	return &blobs.BlobRef{}, nil
@@ -71,13 +72,16 @@ func (r *memCommunityRepo) GetRecord(_ context.Context, collection, rkey string)
 	}
 	return rec, nil
 }
+
 func (r *memCommunityRepo) PutRecordWithCommit(context.Context, string, string, any, string) (*pds.RecordCommit, error) {
 	r.puts++
 	return &pds.RecordCommit{}, nil
 }
+
 func (r *memCommunityRepo) ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error) {
 	return nil, errors.New("unused")
 }
+
 func (r *memCommunityRepo) GetLatestCommit(context.Context) (*pds.LatestCommit, error) {
 	return &pds.LatestCommit{}, nil
 }
@@ -98,15 +102,19 @@ func (w *memAcceptanceWriter) WriteAcceptance(_ context.Context, cmd CommunityWr
 	}
 	return CommunityWriteResult{RKey: rkey, CID: "bafyacceptreal"}, nil
 }
+
 func (w *memAcceptanceWriter) WriteRemoval(context.Context, CommunityRemovalCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, errors.New("unused")
 }
+
 func (w *memAcceptanceWriter) RestoreAcceptance(context.Context, CommunityWriteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, errors.New("unused")
 }
+
 func (w *memAcceptanceWriter) RepinAcceptance(context.Context, CommunityWriteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, errors.New("unused")
 }
+
 func (w *memAcceptanceWriter) DeleteAcceptance(context.Context, CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, errors.New("unused")
 }
@@ -127,6 +135,7 @@ func (s *memSource) ReadLegacyPost(_ context.Context, uri string) (LegacyPost, b
 	}
 	return LegacyPost{}, false, nil
 }
+
 func (s *memSource) DeleteLegacyPost(_ context.Context, _ LegacyPost, swapCID string) error {
 	if swapCID == "" {
 		return errors.New("unguarded delete")
@@ -155,10 +164,12 @@ func (l *memLedger) Discover(_ context.Context, oldURI, communityDID, authorDID 
 	l.rows[oldURI] = row
 	return row, nil
 }
+
 func (l *memLedger) Get(_ context.Context, oldURI string) (RematerializeLedgerRow, bool, error) {
 	row, ok := l.rows[oldURI]
 	return row, ok, nil
 }
+
 func (l *memLedger) ListResumable(context.Context, string) ([]RematerializeLedgerRow, error) {
 	var out []RematerializeLedgerRow
 	for _, row := range l.rows {
@@ -168,6 +179,7 @@ func (l *memLedger) ListResumable(context.Context, string) ([]RematerializeLedge
 	}
 	return out, nil
 }
+
 func (l *memLedger) RecordPostV2Written(_ context.Context, oldURI, sourceCID, newURI, newCID, newRkey string) error {
 	l.writes++
 	row := l.rows[oldURI]
@@ -176,6 +188,7 @@ func (l *memLedger) RecordPostV2Written(_ context.Context, oldURI, sourceCID, ne
 	l.rows[oldURI] = row
 	return nil
 }
+
 func (l *memLedger) advance(oldURI string, to RematerializeState) error {
 	l.writes++
 	row := l.rows[oldURI]
@@ -183,15 +196,19 @@ func (l *memLedger) advance(oldURI string, to RematerializeState) error {
 	l.rows[oldURI] = row
 	return nil
 }
+
 func (l *memLedger) MarkVerified(_ context.Context, uri string) error {
 	return l.advance(uri, RematerializeVerified)
 }
+
 func (l *memLedger) MarkMigrated(_ context.Context, uri string) error {
 	return l.advance(uri, RematerializeMigrated)
 }
+
 func (l *memLedger) MarkDone(_ context.Context, uri string) error {
 	return l.advance(uri, RematerializeDone)
 }
+
 func (l *memLedger) MarkFallback(_ context.Context, uri string, state RematerializeState, _ string) error {
 	return l.advance(uri, state)
 }
@@ -218,6 +235,7 @@ func (c *countingBlobClient) Fetch(_ context.Context, _, _, cid string) ([]byte,
 	}
 	return data, nil
 }
+
 func (c *countingBlobClient) Present(context.Context, string, string, string) (bool, error) {
 	c.probes++
 	return true, nil

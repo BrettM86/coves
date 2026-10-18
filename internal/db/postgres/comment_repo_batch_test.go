@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/comments"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/comments"
 )
 
 // The three batch reads: GetByURIsBatch, ListByParentsBatch and
@@ -398,8 +398,10 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		createTestUser(t, env.db, "cmtbcv-"+env.id+".test", viewer)
 		createTestUser(t, env.db, "cmtbcb-"+env.id+".test", blocked)
 		otherReply := env.seed(commentSpec{rkey: "older", parent: parent})
-		blockedReply := env.seed(commentSpec{rkey: "newerblocked", parent: parent, author: blocked,
-			createdAt: commentBaseTime.Add(time.Minute)})
+		blockedReply := env.seed(commentSpec{
+			rkey: "newerblocked", parent: parent, author: blocked,
+			createdAt: commentBaseTime.Add(time.Minute),
+		})
 		insertUserBlock(t, env.db, viewer, blocked)
 
 		anonymous, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 1, "")
@@ -419,8 +421,10 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		parent := env.seed(commentSpec{rkey: "handles"})
 		stranger := "did:plc:cmtbbstranger" + env.id
 		known := env.seed(commentSpec{rkey: "known", parent: parent})
-		unknown := env.seed(commentSpec{rkey: "unknown", parent: parent, author: stranger,
-			createdAt: commentBaseTime.Add(time.Minute)})
+		unknown := env.seed(commentSpec{
+			rkey: "unknown", parent: parent, author: stranger,
+			createdAt: commentBaseTime.Add(time.Minute),
+		})
 
 		got, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, "")
 		require.NoError(t, err)

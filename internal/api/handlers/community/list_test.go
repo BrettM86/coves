@@ -1,8 +1,6 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // listTestService implements communities.Service for list handler tests
@@ -106,12 +106,15 @@ type listTestRepo struct{}
 func (r *listTestRepo) Create(ctx context.Context, community *communities.Community) (*communities.Community, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetByDID(ctx context.Context, did string) (*communities.Community, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetByHandle(ctx context.Context, handle string) (*communities.Community, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetByNameAndOrigin(ctx context.Context, name, origin string) (*communities.Community, error) {
 	return nil, nil
 }
@@ -137,94 +140,109 @@ func (r *listTestRepo) UpdateHandle(ctx context.Context, did, handle string) err
 func (r *listTestRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
 	return nil
 }
+
 func (r *listTestRepo) List(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) Search(ctx context.Context, req communities.SearchCommunitiesRequest) ([]*communities.Community, int, error) {
 	return nil, 0, nil
 }
+
 func (r *listTestRepo) Subscribe(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) SubscribeWithCount(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) Unsubscribe(ctx context.Context, userDID, communityDID string) error {
 	return nil
 }
+
 func (r *listTestRepo) UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error {
 	return nil
 }
+
 func (r *listTestRepo) GetSubscription(ctx context.Context, userDID, communityDID string) (*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetSubscriptionByURI(ctx context.Context, recordURI string) (*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*communities.Subscription, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) BlockCommunity(ctx context.Context, block *communities.CommunityBlock) (*communities.CommunityBlock, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) UnblockCommunity(ctx context.Context, userDID, communityDID string) error {
 	return nil
 }
+
 func (r *listTestRepo) GetBlock(ctx context.Context, userDID, communityDID string) (*communities.CommunityBlock, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetBlockByURI(ctx context.Context, recordURI string) (*communities.CommunityBlock, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) ListBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) IsBlocked(ctx context.Context, userDID, communityDID string) (bool, error) {
 	return false, nil
 }
+
 func (r *listTestRepo) CreateMembership(ctx context.Context, membership *communities.Membership) (*communities.Membership, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) GetMembership(ctx context.Context, userDID, communityDID string) (*communities.Membership, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) UpdateMembership(ctx context.Context, membership *communities.Membership) (*communities.Membership, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) ListMembers(ctx context.Context, communityDID string, limit, offset int) ([]*communities.Membership, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) CreateModerationAction(ctx context.Context, action *communities.ModerationAction) (*communities.ModerationAction, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) ListModerationActions(ctx context.Context, communityDID string, limit, offset int) ([]*communities.ModerationAction, error) {
 	return nil, nil
 }
+
 func (r *listTestRepo) IncrementMemberCount(ctx context.Context, communityDID string) error {
 	return nil
 }
+
 func (r *listTestRepo) DecrementMemberCount(ctx context.Context, communityDID string) error {
 	return nil
 }
+
 func (r *listTestRepo) IncrementPostCount(ctx context.Context, communityDID string) error {
 	return nil
-}
-
-// createListTestOAuthSession creates a mock OAuth session for testing
-func createListTestOAuthSession(did string) *oauth.ClientSessionData {
-	parsedDID, _ := syntax.ParseDID(did)
-	return &oauth.ClientSessionData{
-		AccountDID:  parsedDID,
-		SessionID:   "test-session",
-		HostURL:     testSessionPDSHostURL,
-		AccessToken: "test-access-token",
-	}
 }
 
 func TestListHandler_SubscribedWithoutAuth_Returns401(t *testing.T) {

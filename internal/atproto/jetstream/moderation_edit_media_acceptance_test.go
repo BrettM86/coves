@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	imagehandler "Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
@@ -24,6 +23,8 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	imagehandler "Coves/internal/api/handlers/imageproxy"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ipfs/go-cid"

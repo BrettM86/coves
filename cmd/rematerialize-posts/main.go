@@ -61,7 +61,6 @@
 package main
 
 import (
-	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -83,6 +82,8 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher"
+
 	postgresRepo "Coves/internal/db/postgres"
 
 	_ "github.com/lib/pq"

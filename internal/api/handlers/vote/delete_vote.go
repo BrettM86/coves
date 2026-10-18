@@ -1,13 +1,14 @@
 package vote
 
 import (
+	"encoding/json"
+	"log"
+	"net/http"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/votes"
-	"encoding/json"
-	"log"
-	"net/http"
 )
 
 // DeleteVoteHandler handles vote deletion

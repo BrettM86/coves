@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // DRY RUN: the same code path, with only the MUTATIONS replaced.
@@ -492,12 +492,15 @@ func (w *dryRunAcceptanceWriter) WriteAcceptance(_ context.Context, cmd Communit
 func (w *dryRunAcceptanceWriter) WriteRemoval(context.Context, CommunityRemovalCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, fmt.Errorf("dry run: the re-materialization tool must never write a removal")
 }
+
 func (w *dryRunAcceptanceWriter) RestoreAcceptance(context.Context, CommunityWriteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, fmt.Errorf("dry run: the re-materialization tool must never restore an acceptance")
 }
+
 func (w *dryRunAcceptanceWriter) RepinAcceptance(context.Context, CommunityWriteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, fmt.Errorf("dry run: the re-materialization tool must never repin an acceptance")
 }
+
 func (w *dryRunAcceptanceWriter) DeleteAcceptance(context.Context, CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
 	return CommunityWriteResult{}, fmt.Errorf("dry run: the re-materialization tool must never delete an acceptance")
 }

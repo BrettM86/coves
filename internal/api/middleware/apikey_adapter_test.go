@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"Coves/internal/core/aggregators"
 	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"Coves/internal/core/aggregators"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

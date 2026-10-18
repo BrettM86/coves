@@ -1,13 +1,14 @@
 package main
 
 import (
-	"Coves/internal/atproto/jetstream"
-	postgresRepo "Coves/internal/db/postgres"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+
+	"Coves/internal/atproto/jetstream"
+	postgresRepo "Coves/internal/db/postgres"
 )
 
 // consumerSet is the collection of Jetstream consumers started for this

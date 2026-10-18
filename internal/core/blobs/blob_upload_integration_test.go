@@ -3,16 +3,6 @@
 package blobs_test
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
-	"Coves/internal/db/postgres"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -26,6 +16,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

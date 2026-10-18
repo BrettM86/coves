@@ -1,11 +1,6 @@
 package communities
 
 import (
-	oauthclient "Coves/internal/atproto/oauth"
-	"Coves/internal/atproto/pds"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/blobs"
-	"Coves/internal/validation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	oauthclient "Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/blobs"
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

@@ -1,10 +1,11 @@
 package routes
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/atproto/oauth"
 	"net/http"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/oauth"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"

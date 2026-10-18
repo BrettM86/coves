@@ -78,17 +78,6 @@ func (f *fakeT) message() string {
 	return strings.Join(f.failures, "\n")
 }
 
-func (f *fakeT) runCleanups() {
-	f.mu.Lock()
-	cleanups := f.cleanups
-	f.cleanups = nil
-	f.mu.Unlock()
-	// Reverse order, as testing.T runs them.
-	for i := len(cleanups) - 1; i >= 0; i-- {
-		cleanups[i]()
-	}
-}
-
 // runIsolated runs fn on its own goroutine, so a fakeT.Fatalf inside it exits
 // that goroutine instead of the test's.
 func runIsolated(fn func()) {

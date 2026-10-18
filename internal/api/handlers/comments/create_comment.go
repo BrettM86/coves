@@ -1,13 +1,14 @@
 package comments
 
 import (
+	"encoding/json"
+	"log"
+	"net/http"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/comments"
-	"encoding/json"
-	"log"
-	"net/http"
 )
 
 // CreateCommentHandler handles comment creation requests

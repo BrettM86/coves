@@ -141,7 +141,7 @@ func TestEventIntoDecodesBackIntoTheProductionType(t *testing.T) {
 	assert.Equal(t, "hello", production.Commit.Record["title"])
 }
 
-func requireRoundTrip(t *testing.T, from any, into any) {
+func requireRoundTrip(t *testing.T, from, into any) {
 	t.Helper()
 	encoded, err := json.Marshal(from)
 	require.NoError(t, err)

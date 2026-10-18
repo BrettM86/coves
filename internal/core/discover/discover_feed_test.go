@@ -23,13 +23,14 @@ import (
 	"testing"
 	"time"
 
-	discoverhandler "Coves/internal/api/handlers/discover"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/votes"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	discoverhandler "Coves/internal/api/handlers/discover"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -148,7 +149,7 @@ func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
 
 	// Under "new", the three posts must come back in reverse chronological
 	// order regardless of which community they belong to.
-	var post3Index, post1Index, post2Index int = -1, -1, -1
+	post3Index, post1Index, post2Index := -1, -1, -1
 	for i, post := range response.Feed {
 		switch post.Post.URI {
 		case post3URI:

@@ -1,11 +1,12 @@
 package aggregators
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"Coves/internal/core/communities"
 
 	"github.com/xeipuuv/gojsonschema"
 )

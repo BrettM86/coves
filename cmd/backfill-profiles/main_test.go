@@ -8,11 +8,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"Coves/internal/core/users"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/users"
 )
 
 // The reconciliation job's PDS fetch — the same request the AppView's detached

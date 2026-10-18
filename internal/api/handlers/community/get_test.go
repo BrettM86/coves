@@ -1,8 +1,6 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +9,9 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"testing"
 	"time"
@@ -162,7 +161,6 @@ func TestBuildAndParseCursorRoundTrip(t *testing.T) {
 
 	// Parse it back
 	filter, args, err := repo.parseAuthorPostsCursor(&cursor, 1)
-
 	if err != nil {
 		t.Fatalf("Failed to parse cursor: %v", err)
 	}
@@ -215,9 +213,7 @@ func containsStr(s, substr string) bool {
 // Ensure the mock repository satisfies the interface
 var _ posts.Repository = (*mockPostRepository)(nil)
 
-type mockPostRepository struct {
-	db *sql.DB
-}
+type mockPostRepository struct{}
 
 func (m *mockPostRepository) Create(ctx context.Context, post *posts.Post) error {
 	return nil

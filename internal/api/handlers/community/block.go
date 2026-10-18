@@ -1,16 +1,17 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/reqbody"
-	"Coves/internal/api/xrpc"
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/communities"
 )
 
 // BlockHandler handles community blocking operations

@@ -3,21 +3,28 @@
 package postgres
 
 import (
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
 
+	"Coves/tests/testkit"
+
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/require"
 )
 
-func requireNotificationSQLState(t *testing.T, err error, code string) *pq.Error {
+func requireNotificationSQLState(t *testing.T, err error, code string) {
+	t.Helper()
+	_ = requireNotificationSQLError(t, err, code)
+}
+
+func requireNotificationSQLError(t *testing.T, err error, code string) *pq.Error {
 	t.Helper()
 	require.Error(t, err)
 	var databaseError *pq.Error
 	require.ErrorAs(t, err, &databaseError)
-	require.Equal(t, pq.ErrorCode(code), databaseError.Code)
+	require.Equal(t, pqerror.Code(code), databaseError.Code)
 	return databaseError
 }
 
@@ -189,7 +196,7 @@ func TestNotificationMigration053_UniqueIndexes(t *testing.T) {
 	}
 	require.NoError(t, insertMigrationNotification(db, reply))
 	require.Equal(t, "uq_notifications_record",
-		requireNotificationSQLState(t, insertMigrationNotification(db, reply), "23505").Constraint)
+		requireNotificationSQLError(t, insertMigrationNotification(db, reply), "23505").Constraint)
 
 	differentReason := reply
 	differentReason.reason = "commentReply"
@@ -201,7 +208,7 @@ func TestNotificationMigration053_UniqueIndexes(t *testing.T) {
 	group := migrationNotification{recipientDID, "upvote", nil, nil, nil, rootPostURI, rootPostURI}
 	require.NoError(t, insertMigrationNotification(db, group))
 	require.Equal(t, "uq_notifications_upvote_group",
-		requireNotificationSQLState(t, insertMigrationNotification(db, group), "23505").Constraint)
+		requireNotificationSQLError(t, insertMigrationNotification(db, group), "23505").Constraint)
 }
 
 func TestNotificationMigration053_RecipientForeignKeys(t *testing.T) {

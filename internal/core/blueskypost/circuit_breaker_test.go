@@ -223,11 +223,12 @@ func TestCircuitBreaker_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 
 			// Mix of operations
-			if idx%3 == 0 {
+			switch idx % 3 {
+			case 0:
 				cb.recordFailure(provider, testErr)
-			} else if idx%3 == 1 {
+			case 1:
 				cb.recordSuccess(provider)
-			} else {
+			default:
 				_, _ = cb.canAttempt(provider)
 			}
 		}(i)

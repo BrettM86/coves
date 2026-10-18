@@ -220,7 +220,7 @@ func isAlphabetic(label string) bool {
 	}
 	for i := 0; i < len(label); i++ {
 		c := label[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
 			return false
 		}
 	}

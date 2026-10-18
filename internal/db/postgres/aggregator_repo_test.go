@@ -3,13 +3,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/aggregators"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
+
+	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"

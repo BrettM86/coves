@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 
+	"Coves/internal/atproto/pds"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/atproto/pds"
 )
 
 // NewAuthorRepoFactory builds the production AuthorRepoFactory: the seam the

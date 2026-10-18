@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	oauthclient "Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
+
+	oauthclient "Coves/internal/atproto/oauth"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

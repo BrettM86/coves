@@ -1,9 +1,6 @@
 package adminreport
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/xrpc"
-	"Coves/internal/core/adminreports"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +9,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/adminreports"
 )
 
 // mockService implements adminreports.Service for testing

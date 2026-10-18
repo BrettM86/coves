@@ -183,12 +183,18 @@ func run(stdin io.Reader, stdout io.Writer, allowlistPath, summaryPath string, a
 	}
 
 	sum := evaluate(results, pkgResults, buildFailures, allow, allowStale)
-	report(stdout, sum)
-
+	// The summary is written before the stdout report: a write to a closed
+	// stdout pipe kills the process with SIGPIPE, which would otherwise lose
+	// the machine-readable verdict too.
+	var summaryErr error
 	if summaryPath != "" {
-		if err := writeSummary(summaryPath, sum); err != nil {
-			return 0, err
-		}
+		summaryErr = writeSummary(summaryPath, sum)
+	}
+	if err := report(stdout, sum); err != nil {
+		return 0, errors.Join(summaryErr, fmt.Errorf("writing report: %w", err))
+	}
+	if summaryErr != nil {
+		return 0, summaryErr
 	}
 
 	if sum.OK {
@@ -499,57 +505,82 @@ func writeSummary(path string, sum summary) error {
 
 // report writes the human-facing summary. Failures come first and in full: when
 // this runs in CI, this text is the only thing anyone reads.
-func report(w io.Writer, sum summary) {
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "───────────────────────────────────────────────────────────────")
-	fmt.Fprintf(w, " %d tests: %d passed, %d failed, %d skipped (%d allowlisted)\n",
+func report(w io.Writer, sum summary) error {
+	out := &reportPrinter{w: w}
+
+	out.println()
+	out.println("───────────────────────────────────────────────────────────────")
+	out.printf(" %d tests: %d passed, %d failed, %d skipped (%d allowlisted)\n",
 		sum.Tests.Total, sum.Tests.Passed, sum.Tests.Failed, sum.Tests.Skipped, sum.AllowedSkipsUsed)
-	fmt.Fprintln(w, "───────────────────────────────────────────────────────────────")
+	out.println("───────────────────────────────────────────────────────────────")
 
 	if len(sum.BuildFailures) > 0 {
-		fmt.Fprintf(w, "\nBUILD FAILURES (%d) — these packages ran no tests at all:\n", len(sum.BuildFailures))
+		out.printf("\nBUILD FAILURES (%d) — these packages ran no tests at all:\n", len(sum.BuildFailures))
 		for _, pkg := range sum.BuildFailures {
-			fmt.Fprintf(w, "  ✗ %s\n", pkg)
+			out.printf("  ✗ %s\n", pkg)
 		}
 	}
 
 	if len(sum.Failures) > 0 {
-		fmt.Fprintf(w, "\nFAILED (%d):\n", len(sum.Failures))
+		out.printf("\nFAILED (%d):\n", len(sum.Failures))
 		for _, f := range sum.Failures {
-			fmt.Fprintf(w, "\n  ✗ %s\n    %s\n", f.Test, f.Package)
+			out.printf("\n  ✗ %s\n    %s\n", f.Test, f.Package)
 			for _, line := range f.Output {
-				fmt.Fprintf(w, "      %s\n", line)
+				out.printf("      %s\n", line)
 			}
 		}
 	}
 
 	if len(sum.UnexpectedSkips) > 0 {
-		fmt.Fprintf(w, "\nSKIPPED WITHOUT APPROVAL (%d):\n", len(sum.UnexpectedSkips))
-		fmt.Fprintln(w, "  A skip is a gap in coverage. Either make the test run, or add it to")
-		fmt.Fprintln(w, "  the allowlist with a reason — but do not let it pass silently.")
+		out.printf("\nSKIPPED WITHOUT APPROVAL (%d):\n", len(sum.UnexpectedSkips))
+		out.println("  A skip is a gap in coverage. Either make the test run, or add it to")
+		out.println("  the allowlist with a reason — but do not let it pass silently.")
 		for _, s := range sum.UnexpectedSkips {
-			fmt.Fprintf(w, "\n  ⊘ %s\n    %s\n    %s\n", s.Test, s.Package, s.Reason)
+			out.printf("\n  ⊘ %s\n    %s\n    %s\n", s.Test, s.Package, s.Reason)
 		}
 	}
 
 	if len(sum.StaleAllowlist) > 0 {
-		fmt.Fprintf(w, "\nSTALE ALLOWLIST ENTRIES (%d):\n", len(sum.StaleAllowlist))
-		fmt.Fprintln(w, "  These are listed as expected skips but did not skip. Either the test")
-		fmt.Fprintln(w, "  now runs (delete the entry — good news) or it no longer exists.")
+		out.printf("\nSTALE ALLOWLIST ENTRIES (%d):\n", len(sum.StaleAllowlist))
+		out.println("  These are listed as expected skips but did not skip. Either the test")
+		out.println("  now runs (delete the entry — good news) or it no longer exists.")
 		for _, s := range sum.StaleAllowlist {
-			fmt.Fprintf(w, "  ? %s %s (line %d)\n", s.Package, s.Test, s.Line)
+			out.printf("  ? %s %s (line %d)\n", s.Package, s.Test, s.Line)
 		}
 	}
 
-	fmt.Fprintln(w)
+	out.println()
 	if sum.OK {
-		fmt.Fprintf(w, "✓ GATE PASSED — %d tests ran, %d skips all accounted for\n",
+		out.printf("✓ GATE PASSED — %d tests ran, %d skips all accounted for\n",
 			sum.Tests.Total, sum.Tests.Skipped)
 	} else {
-		fmt.Fprintln(w, "✗ GATE FAILED")
+		out.println("✗ GATE FAILED")
 		for _, v := range sum.Violations {
-			fmt.Fprintf(w, "    · %s\n", v)
+			out.printf("    · %s\n", v)
 		}
 	}
-	fmt.Fprintln(w)
+	out.println()
+	return out.err
+}
+
+// reportPrinter writes the report and keeps the first write error, so the
+// report body stays readable while a failed write (a closed pipe, a full disk)
+// still reaches the caller and turns into a non-zero exit.
+type reportPrinter struct {
+	w   io.Writer
+	err error
+}
+
+func (p *reportPrinter) printf(format string, args ...any) {
+	if p.err != nil {
+		return
+	}
+	_, p.err = fmt.Fprintf(p.w, format, args...)
+}
+
+func (p *reportPrinter) println(args ...any) {
+	if p.err != nil {
+		return
+	}
+	_, p.err = fmt.Fprintln(p.w, args...)
 }

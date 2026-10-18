@@ -1,14 +1,15 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

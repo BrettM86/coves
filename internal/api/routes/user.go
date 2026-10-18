@@ -1,18 +1,19 @@
 package routes
 
 import (
-	"Coves/internal/api/handlers/user"
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/reqbody"
-	"Coves/internal/api/xrpc"
-	"Coves/internal/core/userblocks"
-	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"Coves/internal/api/handlers/user"
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/userblocks"
+	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"

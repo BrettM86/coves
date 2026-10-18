@@ -332,21 +332,14 @@ ci-clean: ## Remove the CI Go module/build cache volumes (forces a fully cold ne
 
 ##@ Code Quality
 
-fmt: ## Format all Go code with gofmt
-	@echo "$(GREEN)Formatting Go code...$(RESET)"
-	@gofmt -w ./cmd ./internal ./tests
-	@echo "$(GREEN)✓ Formatting complete$(RESET)"
+GO_FMT_PATHS ?= ./cmd ./internal ./tests
 
-fmt-check: ## Check if Go code is properly formatted
+fmt: ## Format Go code with the .golangci.yml formatters (GO_FMT_FILE=path formats one file)
+	@if [ -n "$$GO_FMT_FILE" ]; then $(GOLANGCI_LINT) fmt -- "$$GO_FMT_FILE"; else $(GOLANGCI_LINT) fmt $(GO_FMT_PATHS); fi
+
+fmt-check: ## Check Go formatting against the .golangci.yml formatters
 	@echo "$(GREEN)Checking code formatting...$(RESET)"
-	@unformatted=$$(gofmt -l ./cmd ./internal ./tests); \
-	if [ -n "$$unformatted" ]; then \
-		echo "$(RED)✗ The following files are not formatted:$(RESET)"; \
-		echo "$$unformatted"; \
-		echo "$(YELLOW)Run 'make fmt' to fix$(RESET)"; \
-		exit 1; \
-	fi
-	@echo "$(GREEN)✓ All files are properly formatted$(RESET)"
+	@$(GOLANGCI_LINT) fmt --diff $(GO_FMT_PATHS) || { echo "$(YELLOW)Run 'make fmt' to fix$(RESET)"; exit 1; }
 
 lint: fmt-check ## Run golangci-lint on the codebase (includes format check)
 	@echo "$(GREEN)Running linter...$(RESET)"
@@ -356,7 +349,7 @@ lint: fmt-check ## Run golangci-lint on the codebase (includes format check)
 lint-fix: ## Run golangci-lint and auto-fix issues
 	@echo "$(GREEN)Running linter with auto-fix...$(RESET)"
 	@$(GOLANGCI_LINT) run --fix ./cmd/... ./internal/... ./tests/...
-	@gofmt -w ./cmd ./internal ./tests
+	@$(GOLANGCI_LINT) fmt $(GO_FMT_PATHS)
 	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
 ##@ Build & Run

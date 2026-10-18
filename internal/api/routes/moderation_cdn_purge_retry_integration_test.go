@@ -195,10 +195,12 @@ func TestModerationCDNPurgeExpiredLeaseFencesStaleWorker(t *testing.T) {
 			waitModerationCDN(t, h.queue)
 			assert.Equal(t, "pending", moderationCDNTarget(t, h.db, h.ownerA, cid).state)
 			clock.Set(time.Date(2026, 9, 28, 12, 1, 30, 0, time.UTC))
-			first := &moderationCDNScriptedPurger{enter: make(chan struct{}), release: make(chan struct{}),
+			first := &moderationCDNScriptedPurger{
+				enter: make(chan struct{}), release: make(chan struct{}),
 				result: func(blobs []imageproxy.BlockedBlob) imageproxy.CDNPurgeResult {
 					return imageproxy.CDNPurgeResult{Failed: []imageproxy.CDNPurgeFailure{{Blob: blobs[0], Code: "http_500"}}}
-				}}
+				},
+			}
 			var releaseFirst sync.Once
 			t.Cleanup(func() { releaseFirst.Do(func() { close(first.release) }) })
 			firstFinished := make(chan error, 1)
@@ -208,10 +210,12 @@ func TestModerationCDNPurgeExpiredLeaseFencesStaleWorker(t *testing.T) {
 			awaitModerationCDN(t, "first worker to claim", first.enter)
 			assert.ElementsMatch(t, []imageproxy.BlockedBlob{{OwnerDID: h.ownerA, CID: cid}}, first.Calls()[0])
 			clock.Set(time.Date(2026, 9, 28, 12, 3, 30, 0, time.UTC))
-			second := &moderationCDNScriptedPurger{enter: make(chan struct{}), release: make(chan struct{}),
+			second := &moderationCDNScriptedPurger{
+				enter: make(chan struct{}), release: make(chan struct{}),
 				result: func(blobs []imageproxy.BlockedBlob) imageproxy.CDNPurgeResult {
 					return imageproxy.CDNPurgeResult{Acknowledged: blobs}
-				}}
+				},
+			}
 			var releaseSecond sync.Once
 			t.Cleanup(func() { releaseSecond.Do(func() { close(second.release) }) })
 			secondFinished := make(chan error, 1)
@@ -252,10 +256,12 @@ func TestModerationCDNPurgeRestartRecoversAbandonedLeaseAtDeadline(t *testing.T)
 	waitModerationCDN(t, h.queue)
 	assert.Equal(t, "pending", moderationCDNTarget(t, h.db, h.ownerA, cid).state)
 	clock.Set(time.Date(2026, 9, 28, 12, 1, 30, 0, time.UTC))
-	first := &moderationCDNScriptedPurger{enter: make(chan struct{}), release: make(chan struct{}),
+	first := &moderationCDNScriptedPurger{
+		enter: make(chan struct{}), release: make(chan struct{}),
 		result: func(blobs []imageproxy.BlockedBlob) imageproxy.CDNPurgeResult {
 			return imageproxy.CDNPurgeResult{Acknowledged: blobs}
-		}}
+		},
+	}
 	var releaseFirst sync.Once
 	firstFinished := make(chan error, 1)
 	t.Cleanup(func() {

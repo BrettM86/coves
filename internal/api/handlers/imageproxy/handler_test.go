@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // Valid test constants that pass validation
@@ -934,7 +934,7 @@ func captureHandlerLogs(t *testing.T) *bytes.Buffer {
 }
 
 // logLinesAtLevel returns the captured lines carrying the given slog level.
-func logLinesAtLevel(logs string, level string) []string {
+func logLinesAtLevel(logs, level string) []string {
 	var lines []string
 	for _, line := range strings.Split(logs, "\n") {
 		if strings.Contains(line, "level="+level) {

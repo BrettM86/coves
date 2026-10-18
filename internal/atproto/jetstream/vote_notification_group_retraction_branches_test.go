@@ -53,8 +53,10 @@ func TestVoteConsumer_UpvoteGroupDeleteVoteFailureRollsBack(t *testing.T) {
 	deleted := revCommitEvent(voter, "social.coves.feed.vote", "delete", created.Commit.RKey, revC, "", created.TimeUS+1_000_000, nil)
 	err := fixture.consumer(WithVoteNotifications(repository)).HandleEvent(context.Background(), deleted)
 	require.ErrorIs(t, err, injected)
-	require.Equal(t, []notifications.UpvoteGroupIntent{{Action: notifications.UpvoteGroupDeleteIfEmpty,
-		RecipientDID: fixture.author, SubjectURI: fixture.post}}, repository.intents)
+	require.Equal(t, []notifications.UpvoteGroupIntent{{
+		Action:       notifications.UpvoteGroupDeleteIfEmpty,
+		RecipientDID: fixture.author, SubjectURI: fixture.post,
+	}}, repository.intents)
 	exists, active := voteRowState(t, fixture.db, uri)
 	assert.True(t, exists && active, "the failed delete must leave the vote live")
 	assert.Equal(t, before, readSubjectCounts(t, fixture.db, countQuery, fixture.post), "count decrement must roll back")
@@ -168,8 +170,10 @@ func TestVoteConsumer_UpvoteGroupDeleteVoteWaitsOnSubjectRowBeforeMaintenance(t 
 	require.NoError(t, err)
 	require.EqualValues(t, 1, countedRows, "D's count update must hold the posts row")
 	require.NoError(t, postgres.NewNotificationRepository(fixture.db).ApplyUpvoteGroupTx(ctx, transaction,
-		notifications.UpvoteGroupIntent{Action: notifications.UpvoteGroupBump,
-			RecipientDID: fixture.author, SubjectURI: fixture.post, RootPostURI: fixture.post}),
+		notifications.UpvoteGroupIntent{
+			Action:       notifications.UpvoteGroupBump,
+			RecipientDID: fixture.author, SubjectURI: fixture.post, RootPostURI: fixture.post,
+		}),
 		"D's group bump must hold the group row")
 	started = true
 	go func() {

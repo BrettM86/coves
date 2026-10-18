@@ -11,8 +11,10 @@ import (
 	"Coves/internal/core/notifications"
 )
 
-const defaultNotificationListLimit = 50
-const maximumNotificationListLimit = 100
+const (
+	defaultNotificationListLimit = 50
+	maximumNotificationListLimit = 100
+)
 
 // ListHandler serves social.coves.notification.listNotifications.
 type ListHandler struct{ service notifications.ListService }

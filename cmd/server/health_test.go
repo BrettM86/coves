@@ -1,7 +1,6 @@
 package main
 
 import (
-	"Coves/internal/atproto/jetstream"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
 )
 
 // noopEventHandler satisfies jetstream.EventHandler for connectors that are

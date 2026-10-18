@@ -3,6 +3,12 @@
 package communities_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -10,11 +16,6 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-	"context"
-	"errors"
-	"fmt"
-	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

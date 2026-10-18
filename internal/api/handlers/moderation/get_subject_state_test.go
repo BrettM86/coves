@@ -14,6 +14,7 @@ import (
 
 	"Coves/internal/core/moderation"
 	"Coves/internal/validation"
+
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"github.com/stretchr/testify/assert"

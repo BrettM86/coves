@@ -330,15 +330,23 @@ func TestActionListHandlersLogUnavailabilityByOrigin(t *testing.T) {
 		code     string
 		level    string
 	}{
-		{"handle resolver outage", "?actor=actor.example",
+		{
+			"handle resolver outage", "?actor=actor.example",
 			actionListHandleResolverFake{err: &identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "down", Err: errors.New("dial tcp: refused")}},
-			nil, http.StatusServiceUnavailable, "ModerationUnavailable", "WARN"},
-		{"handle resolver not configured", "?authority=authority.example", nil, nil,
-			http.StatusServiceUnavailable, "ModerationUnavailable", "WARN"},
-		{"store outage", "?action=remove", nil, errors.New("pq: connection refused"),
-			http.StatusServiceUnavailable, "ModerationUnavailable", "ERROR"},
-		{"store canceled", "?action=remove", nil, fmt.Errorf("pq: %w", context.Canceled),
-			http.StatusBadRequest, "RequestCanceled", ""},
+			nil, http.StatusServiceUnavailable, "ModerationUnavailable", "WARN",
+		},
+		{
+			"handle resolver not configured", "?authority=authority.example", nil, nil,
+			http.StatusServiceUnavailable, "ModerationUnavailable", "WARN",
+		},
+		{
+			"store outage", "?action=remove", nil, errors.New("pq: connection refused"),
+			http.StatusServiceUnavailable, "ModerationUnavailable", "ERROR",
+		},
+		{
+			"store canceled", "?action=remove", nil, fmt.Errorf("pq: %w", context.Canceled),
+			http.StatusBadRequest, "RequestCanceled", "",
+		},
 	} {
 		for _, admin := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/admin=%t", test.name, admin), func(t *testing.T) {

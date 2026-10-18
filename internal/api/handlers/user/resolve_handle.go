@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bluesky-social/indigo/atproto/syntax"
-
 	"Coves/internal/api/xrpc"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // resolveHandleErrorMapper maps resolution failures for

@@ -45,11 +45,11 @@ type mockPDSClient struct {
 
 var _ pds.CommitClient = (*mockPDSClient)(nil)
 
-func (m *mockPDSClient) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
+func (m *mockPDSClient) CreateRecord(_ context.Context, _, _ string, _ any) (string, string, error) {
 	return "", "", nil
 }
 
-func (m *mockPDSClient) DeleteRecord(_ context.Context, _ string, _ string) error {
+func (m *mockPDSClient) DeleteRecord(_ context.Context, _, _ string) error {
 	return nil
 }
 
@@ -57,11 +57,11 @@ func (m *mockPDSClient) ListRecords(_ context.Context, _ string, _ int, _ string
 	return nil, nil
 }
 
-func (m *mockPDSClient) GetRecord(_ context.Context, _ string, _ string) (*pds.RecordResponse, error) {
+func (m *mockPDSClient) GetRecord(_ context.Context, _, _ string) (*pds.RecordResponse, error) {
 	return m.getRecordResponse, m.getRecordError
 }
 
-func (m *mockPDSClient) PutRecord(_ context.Context, collection string, rkey string, record any, swapRecord string) (string, string, error) {
+func (m *mockPDSClient) PutRecord(_ context.Context, collection, rkey string, record any, swapRecord string) (string, string, error) {
 	m.putRecordCalled = true
 	m.putRecordCollection, m.putRecordRKey, m.putRecordValue, m.putRecordSwap = collection, rkey, record, swapRecord
 	if m.putRecordError != nil {
@@ -71,7 +71,7 @@ func (m *mockPDSClient) PutRecord(_ context.Context, collection string, rkey str
 }
 
 // PutRecordWithCommit lets the mock exercise create-only guarded writes.
-func (m *mockPDSClient) PutRecordWithCommit(_ context.Context, collection string, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
+func (m *mockPDSClient) PutRecordWithCommit(_ context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
 	m.putRecordWithCommitCalled = true
 	m.putRecordCollection, m.putRecordRKey, m.putRecordValue, m.putRecordSwap = collection, rkey, record, swapRecord
 	if m.putRecordWithCommitError != nil {
@@ -87,7 +87,7 @@ func (m *mockPDSClient) ApplyWrites(_ context.Context, _ []pds.Write, _ string) 
 	panic("unexpected ApplyWrites call")
 }
 
-func (m *mockPDSClient) CreateRecordWithCommit(_ context.Context, _ string, _ string, _ any) (*pds.RecordCommit, error) {
+func (m *mockPDSClient) CreateRecordWithCommit(_ context.Context, _, _ string, _ any) (*pds.RecordCommit, error) {
 	panic("unexpected CreateRecordWithCommit call")
 }
 
@@ -1341,7 +1341,7 @@ func (m *mockPDSClientWithCallCounter) UploadBlob(_ context.Context, _ []byte, _
 	if *m.callCount == m.failOnCall {
 		return nil, m.failError
 	}
-	return m.mockPDSClient.uploadBlobRef, nil
+	return m.uploadBlobRef, nil
 }
 
 // ============================================================================
@@ -1594,11 +1594,11 @@ type mockPDSClientWithNilBannerRef struct {
 
 var _ pds.CommitClient = (*mockPDSClientWithNilBannerRef)(nil)
 
-func (m *mockPDSClientWithNilBannerRef) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
+func (m *mockPDSClientWithNilBannerRef) CreateRecord(_ context.Context, _, _ string, _ any) (string, string, error) {
 	return "", "", nil
 }
 
-func (m *mockPDSClientWithNilBannerRef) DeleteRecord(_ context.Context, _ string, _ string) error {
+func (m *mockPDSClientWithNilBannerRef) DeleteRecord(_ context.Context, _, _ string) error {
 	return nil
 }
 
@@ -1606,11 +1606,11 @@ func (m *mockPDSClientWithNilBannerRef) ListRecords(_ context.Context, _ string,
 	return nil, nil
 }
 
-func (m *mockPDSClientWithNilBannerRef) GetRecord(_ context.Context, _ string, _ string) (*pds.RecordResponse, error) {
+func (m *mockPDSClientWithNilBannerRef) GetRecord(_ context.Context, _, _ string) (*pds.RecordResponse, error) {
 	return nil, nil
 }
 
-func (m *mockPDSClientWithNilBannerRef) PutRecord(_ context.Context, _ string, _ string, _ any, _ string) (string, string, error) {
+func (m *mockPDSClientWithNilBannerRef) PutRecord(_ context.Context, _, _ string, _ any, _ string) (string, string, error) {
 	return "", "", nil
 }
 
@@ -1618,11 +1618,11 @@ func (m *mockPDSClientWithNilBannerRef) ApplyWrites(_ context.Context, _ []pds.W
 	panic("unexpected ApplyWrites call")
 }
 
-func (m *mockPDSClientWithNilBannerRef) PutRecordWithCommit(_ context.Context, _ string, _ string, _ any, _ string) (*pds.RecordCommit, error) {
+func (m *mockPDSClientWithNilBannerRef) PutRecordWithCommit(_ context.Context, _, _ string, _ any, _ string) (*pds.RecordCommit, error) {
 	panic("unexpected PutRecordWithCommit call")
 }
 
-func (m *mockPDSClientWithNilBannerRef) CreateRecordWithCommit(_ context.Context, _ string, _ string, _ any) (*pds.RecordCommit, error) {
+func (m *mockPDSClientWithNilBannerRef) CreateRecordWithCommit(_ context.Context, _, _ string, _ any) (*pds.RecordCommit, error) {
 	panic("unexpected CreateRecordWithCommit call")
 }
 

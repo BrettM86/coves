@@ -3,13 +3,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/users"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/users"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -712,11 +713,6 @@ func TestUserRepo_Delete_TimingPerformance(t *testing.T) {
 // ============================================================================
 // Profile Update Tests (Phase 2: User Profile Avatar & Banner)
 // ============================================================================
-
-// stringPtr returns a pointer to the provided string (helper for optional params)
-func stringPtr(s string) *string {
-	return &s
-}
 
 func TestUserRepo_UpdateProfile(t *testing.T) {
 	t.Parallel()

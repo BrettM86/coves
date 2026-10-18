@@ -1,8 +1,9 @@
 package communityFeeds
 
 import (
-	"Coves/internal/core/posts"
 	"time"
+
+	"Coves/internal/core/posts"
 )
 
 // GetCommunityFeedRequest represents input for fetching a community feed

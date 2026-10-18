@@ -3,12 +3,13 @@
 package oauth_test
 
 import (
-	"Coves/internal/atproto/oauth"
-	"Coves/tests/testkit"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"testing"
+
+	"Coves/internal/atproto/oauth"
+	"Coves/tests/testkit"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/require"

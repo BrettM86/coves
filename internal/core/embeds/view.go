@@ -28,10 +28,10 @@ package embeds
 import (
 	"log/slog"
 
+	"Coves/internal/core/blobs"
+
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/ipfs/go-cid"
-
-	"Coves/internal/core/blobs"
 )
 
 // Embed union member $type discriminators, and the "#view" projections of the

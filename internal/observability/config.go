@@ -14,7 +14,7 @@ var (
 	// ErrInvalidSampleRatio is returned when SampleRatio is outside the valid range [0.0, 1.0]
 	ErrInvalidSampleRatio = errors.New("SampleRatio must be between 0.0 and 1.0")
 	// ErrMissingEndpoint is returned when Endpoint is empty while tracing is enabled
-	ErrMissingEndpoint = errors.New("Endpoint is required when observability is enabled")
+	ErrMissingEndpoint = errors.New("endpoint is required when observability is enabled")
 )
 
 // Config holds the configuration for OpenTelemetry tracing.

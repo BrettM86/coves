@@ -1,14 +1,15 @@
 package vote
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/votes"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/votes"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

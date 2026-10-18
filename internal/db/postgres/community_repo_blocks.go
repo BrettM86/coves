@@ -1,12 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+
+	"Coves/internal/core/communities"
 )
 
 // BlockCommunity creates a new block record (idempotent)

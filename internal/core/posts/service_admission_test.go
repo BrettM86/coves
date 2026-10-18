@@ -3,7 +3,6 @@
 package posts_test
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 
@@ -549,34 +549,4 @@ func TestService_ConcurrentIdenticalSubmissionsAdmitExactlyOne(t *testing.T) {
 
 	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID),
 		"the race must leave exactly the winner's row: the unique key is the arbiter, not a second insert")
-}
-
-// communityPDSURL reads a community's stored PDS, so a test that repoints it
-// can put back what was actually there rather than what it assumed.
-func communityPDSURL(t *testing.T, db *sql.DB, communityDID string) string {
-	t.Helper()
-
-	var pdsURL string
-	require.NoError(t, db.QueryRowContext(context.Background(),
-		`SELECT pds_url FROM communities WHERE did = $1`, communityDID).Scan(&pdsURL))
-	require.NotEmpty(t, pdsURL)
-	return pdsURL
-}
-
-// setCommunityPDSURL repoints a community at a different PDS.
-//
-// Written with SQL because there is no service method for it: a community's PDS
-// is chosen when it is provisioned and never moves. That is exactly why it is a
-// usable seam for an unreachable-PDS test — the value is read fresh on every
-// write (EnsureFreshToken re-fetches the row), and nothing caches it.
-func setCommunityPDSURL(t *testing.T, db *sql.DB, communityDID, pdsURL string) {
-	t.Helper()
-
-	result, err := db.ExecContext(context.Background(),
-		`UPDATE communities SET pds_url = $1 WHERE did = $2`, pdsURL, communityDID)
-	require.NoError(t, err)
-
-	affected, err := result.RowsAffected()
-	require.NoError(t, err)
-	require.EqualValues(t, 1, affected, "no community row was repointed, so the test would prove nothing")
 }

@@ -15,6 +15,7 @@ import (
 	"Coves/tests/testkit"
 
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/require"
 )
 
@@ -169,7 +170,7 @@ func TestNotificationRetention_BridgedTotalRecheckedAfterCandidateLocks(t *testi
 	err = holder.QueryRowContext(ctx, `SELECT id FROM notifications WHERE id = $1 FOR UPDATE NOWAIT`, ids[label]).Scan(&lockedID)
 	var lockError *pq.Error
 	require.ErrorAs(t, err, &lockError, "the zero-total candidate must already be locked")
-	require.Equal(t, pq.ErrorCode("55P03"), lockError.Code)
+	require.Equal(t, pqerror.Code("55P03"), lockError.Code)
 	_, err = holder.ExecContext(ctx, `ROLLBACK TO SAVEPOINT bridged_probe`)
 	require.NoError(t, err)
 	_, err = holder.ExecContext(ctx, `UPDATE posts SET bridged_upvote_count = 2, bridged_stats_as_of = NOW() WHERE uri = $1`, subject)

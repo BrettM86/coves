@@ -293,12 +293,6 @@ func (r *fakeAuthorRepo) UploadBlob(_ context.Context, data []byte, mimeType str
 	return &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": cid}, MimeType: mimeType, Size: len(data)}, nil
 }
 
-func (r *fakeAuthorRepo) hasBlob(cid string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.blobs[cid]
-}
-
 func (r *fakeAuthorRepo) DID() string { return r.did }
 
 // seedStanding puts an empty postv2 record straight into the repo, so a resume
@@ -567,9 +561,11 @@ func (r *fakeCommunityRepo) GetRecord(_ context.Context, collection, rkey string
 func (r *fakeCommunityRepo) PutRecordWithCommit(context.Context, string, string, any, string) (*pds.RecordCommit, error) {
 	return nil, fmt.Errorf("the re-materialization tool must not write to the community repo through this seam")
 }
+
 func (r *fakeCommunityRepo) ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error) {
 	return nil, fmt.Errorf("the re-materialization tool must never batch community writes")
 }
+
 func (r *fakeCommunityRepo) GetLatestCommit(context.Context) (*pds.LatestCommit, error) {
 	return &pds.LatestCommit{}, nil
 }
@@ -583,23 +579,28 @@ func (s *spyAcceptanceWriter) WriteRemoval(_ context.Context, _ posts.CommunityR
 	s.note("WriteRemoval")
 	return posts.CommunityWriteResult{}, nil
 }
+
 func (s *spyAcceptanceWriter) RestoreAcceptance(_ context.Context, _ posts.CommunityWriteCommand) (posts.CommunityWriteResult, error) {
 	s.note("RestoreAcceptance")
 	return posts.CommunityWriteResult{}, nil
 }
+
 func (s *spyAcceptanceWriter) RepinAcceptance(_ context.Context, _ posts.CommunityWriteCommand) (posts.CommunityWriteResult, error) {
 	s.note("RepinAcceptance")
 	return posts.CommunityWriteResult{}, nil
 }
+
 func (s *spyAcceptanceWriter) DeleteAcceptance(_ context.Context, _ posts.CommunityAcceptanceDeleteCommand) (posts.CommunityWriteResult, error) {
 	s.note("DeleteAcceptance")
 	return posts.CommunityWriteResult{}, nil
 }
+
 func (s *spyAcceptanceWriter) note(method string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.otherCalled = append(s.otherCalled, method)
 }
+
 func (s *spyAcceptanceWriter) calls() []posts.CommunityWriteCommand {
 	s.mu.Lock()
 	defer s.mu.Unlock()

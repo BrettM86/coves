@@ -88,8 +88,10 @@ func TestModlogCursorRejectsChangedContextBeforeStore(t *testing.T) {
 	store := newInMemoryModerationStore(time.Now())
 	store.listRows = modlogCursorRows()
 	service := newModlogCursorService(store, modlogCursorConfig())
-	params := moderation.ListActionsParams{Limit: modlogLimit(2), Action: moderation.ActionRemove,
-		Subject: modlogTestAction().SubjectURI, Since: "2026-09-28T12:00:00.123456Z"}
+	params := moderation.ListActionsParams{
+		Limit: modlogLimit(2), Action: moderation.ActionRemove,
+		Subject: modlogTestAction().SubjectURI, Since: "2026-09-28T12:00:00.123456Z",
+	}
 	public, err := service.ListActions(t.Context(), params)
 	require.NoError(t, err)
 	require.NotEmpty(t, public.Cursor)
@@ -301,6 +303,19 @@ func modlogPageCursor(t *testing.T, page any) string {
 	}
 }
 
+func modlogPageActionCount(t *testing.T, page any) int {
+	t.Helper()
+	switch typed := page.(type) {
+	case *moderation.ActionPage:
+		return len(typed.Actions)
+	case *moderation.AdminActionPage:
+		return len(typed.Actions)
+	default:
+		t.Fatalf("unexpected page type %T", page)
+		return 0
+	}
+}
+
 // A continuation page whose target is in the not-found class cannot be an
 // empty last page: that would end pagination silently.
 func TestModlogCursorContinuationWithUnknownTargetIsInvalidCursor(t *testing.T) {
@@ -311,34 +326,55 @@ func TestModlogCursorContinuationWithUnknownTargetIsInvalidCursor(t *testing.T) 
 		params moderation.ListActionsParams
 		change func(*moderation.ListActionsParams, *modlogFilterHandleResolver, *modlogFilterCommunityResolver)
 	}{
-		{"actor changed to unknown", moderation.ListActionsParams{Actor: "actor.example"},
+		{
+			"actor changed to unknown",
+			moderation.ListActionsParams{Actor: "actor.example"},
 			func(params *moderation.ListActionsParams, _ *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				params.Actor = "missing.example"
-			}},
-		{"authority changed to unknown", moderation.ListActionsParams{Authority: "authority.example"},
+			},
+		},
+		{
+			"authority changed to unknown",
+			moderation.ListActionsParams{Authority: "authority.example"},
 			func(params *moderation.ListActionsParams, _ *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				params.Authority = "missing.example"
-			}},
-		{"community changed to unknown", moderation.ListActionsParams{Community: "name@coves.social"},
+			},
+		},
+		{
+			"community changed to unknown",
+			moderation.ListActionsParams{Community: "name@coves.social"},
 			func(params *moderation.ListActionsParams, _ *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				params.Community = "missing@coves.social"
-			}},
-		{"unknown actor added", moderation.ListActionsParams{},
+			},
+		},
+		{
+			"unknown actor added",
+			moderation.ListActionsParams{},
 			func(params *moderation.ListActionsParams, _ *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				params.Actor = "missing.example"
-			}},
-		{"actor handle stops resolving", moderation.ListActionsParams{Actor: "actor.example"},
+			},
+		},
+		{
+			"actor handle stops resolving",
+			moderation.ListActionsParams{Actor: "actor.example"},
 			func(_ *moderation.ListActionsParams, handles *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				handles.failures["actor.example"] = notFoundHandle
-			}},
-		{"authority handle stops resolving", moderation.ListActionsParams{Authority: "authority.example"},
+			},
+		},
+		{
+			"authority handle stops resolving",
+			moderation.ListActionsParams{Authority: "authority.example"},
 			func(_ *moderation.ListActionsParams, handles *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				handles.failures["authority.example"] = notFoundHandle
-			}},
-		{"community stops resolving", moderation.ListActionsParams{Community: "name@coves.social"},
+			},
+		},
+		{
+			"community stops resolving",
+			moderation.ListActionsParams{Community: "name@coves.social"},
 			func(_ *moderation.ListActionsParams, _ *modlogFilterHandleResolver, community *modlogFilterCommunityResolver) {
 				community.failures["name@coves.social"] = notFoundCommunity
-			}},
+			},
+		},
 	} {
 		for _, admin := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/admin=%t", test.name, admin), func(t *testing.T) {
@@ -348,8 +384,10 @@ func TestModlogCursorContinuationWithUnknownTargetIsInvalidCursor(t *testing.T) 
 					dids:     map[string]string{"actor.example": "did:plc:actor", "authority.example": "did:plc:authority"},
 					failures: map[string]error{"missing.example": notFoundHandle},
 				}
-				community := &modlogFilterCommunityResolver{did: "did:plc:community",
-					failures: map[string]error{"missing@coves.social": notFoundCommunity}}
+				community := &modlogFilterCommunityResolver{
+					did:      "did:plc:community",
+					failures: map[string]error{"missing@coves.social": notFoundCommunity},
+				}
 				service := modlogFilterService(store, community, handles)
 				params := test.params
 				params.Limit = modlogLimit(1)
@@ -368,6 +406,8 @@ func TestModlogCursorContinuationWithUnknownTargetIsInvalidCursor(t *testing.T) 
 				params.Cursor = ""
 				page, err = modlogFilterList(t, service, admin, params, "")
 				require.NoError(t, err, "without a cursor the unknown target stays an indistinguishable empty page")
+				assert.Zero(t, modlogPageActionCount(t, page), "the unknown target lists no actions")
+				assert.Empty(t, modlogPageCursor(t, page), "the unknown target offers no continuation")
 				assert.Len(t, store.listQueries, before)
 			})
 		}
@@ -380,15 +420,21 @@ func TestModlogCursorContinuationResolverOutageStaysUnavailable(t *testing.T) {
 		params moderation.ListActionsParams
 		fail   func(*modlogFilterHandleResolver, *modlogFilterCommunityResolver)
 	}{
-		{"handle outage", moderation.ListActionsParams{Actor: "actor.example"},
+		{
+			"handle outage",
+			moderation.ListActionsParams{Actor: "actor.example"},
 			func(handles *modlogFilterHandleResolver, _ *modlogFilterCommunityResolver) {
 				handles.err = &identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "down", Err: errors.New("dial tcp: refused")}
 				handles.dids = nil
-			}},
-		{"community outage", moderation.ListActionsParams{Community: "name@coves.social"},
+			},
+		},
+		{
+			"community outage",
+			moderation.ListActionsParams{Community: "name@coves.social"},
 			func(_ *modlogFilterHandleResolver, community *modlogFilterCommunityResolver) {
 				community.did, community.err = "", errors.New("community resolver down")
-			}},
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := newInMemoryModerationStore(time.Now())

@@ -25,7 +25,6 @@
 package imageproxy_test
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"image/color"
 	"net/http"
@@ -35,6 +34,7 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"

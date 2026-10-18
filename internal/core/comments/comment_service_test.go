@@ -1,16 +1,17 @@
 package comments
 
 import (
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

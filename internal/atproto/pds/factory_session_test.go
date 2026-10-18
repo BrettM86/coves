@@ -32,8 +32,10 @@ func TestIsReauthRequired(t *testing.T) {
 		{"unrelated", errors.New("boom"), false},
 		{"wrapped unauthorized", fmt.Errorf("CreateRecord: %w: expired", ErrUnauthorized), true},
 		{"wrapped session expired", fmt.Errorf("resume: %w", ErrSessionExpired), true},
-		{"double-wrapped behind a domain sentinel",
-			fmt.Errorf("%w: %w", errors.New("not authorized"), ErrUnauthorized), true},
+		{
+			"double-wrapped behind a domain sentinel",
+			fmt.Errorf("%w: %w", errors.New("not authorized"), ErrUnauthorized), true,
+		},
 	}
 
 	for _, tt := range tests {

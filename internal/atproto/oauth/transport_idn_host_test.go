@@ -362,7 +362,7 @@ func TestSSRFSafeHTTPClient_RefusesAHostItCannotNormalize(t *testing.T) {
 	}{
 		{
 			name: "a label the CONTEXTJ rules refuse",
-			host: "a‍b.example",
+			host: "a\u200db.example",
 			why:  "a ZERO WIDTH JOINER outside the contexts that permit one",
 		},
 		{

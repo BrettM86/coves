@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"Coves/internal/core/users"
 )
 
 // stubUserService implements only the two methods GetProfile calls. The

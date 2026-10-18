@@ -331,7 +331,6 @@ func TestPostCreate_ServiceEnforcesAuthorship(t *testing.T) {
 		// on the lookup, not on authorship. Without this case the two above
 		// would also pass if CreatePost rejected every request it ever saw.
 		err := createAs(alice, alice)
-
 		if err != nil {
 			assert.NotContains(t, strings.ToLower(err.Error()), "does not match",
 				"a request whose DID matches the session must not fail the authorship check")

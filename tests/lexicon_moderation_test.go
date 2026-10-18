@@ -462,29 +462,37 @@ func moderationEndpointExpectations() []moderationEndpointExpectation {
 			name:                        "removeContent",
 			authenticatedServiceContext: true,
 			schemaType:                  "procedure",
-			errors: []string{"AuthRequired", "Forbidden", "InvalidRequest", "InvalidSubject", "SubjectNotFound", "ContentChanged",
-				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable"},
+			errors: []string{
+				"AuthRequired", "Forbidden", "InvalidRequest", "InvalidSubject", "SubjectNotFound", "ContentChanged",
+				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable",
+			},
 		},
 		{
 			name:                        "restoreContent",
 			authenticatedServiceContext: true,
 			schemaType:                  "procedure",
-			errors: []string{"AuthRequired", "Forbidden", "InvalidRequest", "DecisionNotFound", "InvalidDecision", "ContentChanged",
-				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable"},
+			errors: []string{
+				"AuthRequired", "Forbidden", "InvalidRequest", "DecisionNotFound", "InvalidDecision", "ContentChanged",
+				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable",
+			},
 		},
 		{
 			name:                        "labelContent",
 			authenticatedServiceContext: true,
 			schemaType:                  "procedure",
-			errors: []string{"AuthRequired", "Forbidden", "InvalidRequest", "InvalidSubject", "SubjectNotFound", "ContentChanged",
-				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "UnsupportedLabel", "ModerationUnavailable"},
+			errors: []string{
+				"AuthRequired", "Forbidden", "InvalidRequest", "InvalidSubject", "SubjectNotFound", "ContentChanged",
+				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "UnsupportedLabel", "ModerationUnavailable",
+			},
 		},
 		{
 			name:                        "retractContentLabel",
 			authenticatedServiceContext: true,
 			schemaType:                  "procedure",
-			errors: []string{"AuthRequired", "Forbidden", "InvalidRequest", "DecisionNotFound", "InvalidDecision", "ContentChanged",
-				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable"},
+			errors: []string{
+				"AuthRequired", "Forbidden", "InvalidRequest", "DecisionNotFound", "InvalidDecision", "ContentChanged",
+				"StateConflict", "IdempotencyConflict", "UnsupportedReason", "ModerationUnavailable",
+			},
 		},
 		{
 			name:       "listActions",

@@ -3,17 +3,18 @@
 package communities_test
 
 import (
+	"context"
+	"database/sql"
+	"net/url"
+	"strings"
+	"testing"
+
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
-	"context"
-	"database/sql"
-	"net/url"
-	"strings"
-	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -1,11 +1,12 @@
 package comments
 
 import (
-	"Coves/internal/validation"
 	"context"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"

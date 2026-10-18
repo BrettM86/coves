@@ -74,7 +74,7 @@ func mutationRequest(method, path, body, contentType string) *http.Request {
 	return request.WithContext(context.WithValue(request.Context(), middleware.UserDIDKey, mutationActorDID))
 }
 
-func mutationResult(actionKind string, privateNote string) *moderation.MutationResult {
+func mutationResult(actionKind, privateNote string) *moderation.MutationResult {
 	state := moderation.SubjectState{
 		Subject: mutationSubjectURI, Version: "v1", RecordState: moderation.RecordStatePresent,
 		CurrentSubject: &moderation.StrongRef{URI: mutationSubjectURI, CID: mutationSubjectCID},
@@ -263,13 +263,19 @@ func TestMutationHandlersWriteRuleDetailButKeepUnavailableGeneric(t *testing.T) 
 		code    string
 		message string
 	}{
-		{"live key cap", fmt.Errorf("%w: live idempotency key limit %d reached", moderation.ErrInvalidRequest, 3),
-			http.StatusBadRequest, "InvalidRequest", "invalid request: live idempotency key limit 3 reached"},
+		{
+			"live key cap", fmt.Errorf("%w: live idempotency key limit %d reached", moderation.ErrInvalidRequest, 3),
+			http.StatusBadRequest, "InvalidRequest", "invalid request: live idempotency key limit 3 reached",
+		},
 		{"bare rule sentinel", moderation.ErrStateConflict, http.StatusBadRequest, "StateConflict", "state conflict"},
-		{"unavailable with storage detail", fmt.Errorf("%w: %w", moderation.ErrModerationUnavailable, errors.New("dial tcp 10.0.0.9:5432: connection refused")),
-			http.StatusServiceUnavailable, "ModerationUnavailable", "Moderation service temporarily unavailable"},
-		{"unknown with detail", errors.New("dial tcp 10.0.0.9:5432: connection refused"),
-			http.StatusInternalServerError, "InternalServerError", "An internal error occurred"},
+		{
+			"unavailable with storage detail", fmt.Errorf("%w: %w", moderation.ErrModerationUnavailable, errors.New("dial tcp 10.0.0.9:5432: connection refused")),
+			http.StatusServiceUnavailable, "ModerationUnavailable", "Moderation service temporarily unavailable",
+		},
+		{
+			"unknown with detail", errors.New("dial tcp 10.0.0.9:5432: connection refused"),
+			http.StatusInternalServerError, "InternalServerError", "An internal error occurred",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			removeResponse := httptest.NewRecorder()

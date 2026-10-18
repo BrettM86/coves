@@ -30,16 +30,24 @@ func TestListNotifications_LabelRules(t *testing.T) {
 		wantRoot, wantSubject, wantRecord string
 	}{
 		{name: "unlabeled reply inherits nothing", reason: notifications.ReasonCommentReply, rootLabels: `{"values":[{"val":"nsfw"}]}`, wantRoot: `{"values":[{"val":"nsfw"}]}`},
-		{name: "comment drops long value then keeps first ten", reason: notifications.ReasonPostReply,
+		{
+			name: "comment drops long value then keeps first ten", reason: notifications.ReasonPostReply,
 			commentLabels: `{"values":[{"val":"nsfw"},{"val":"gore"},{"val":"` + longValue + `"},{"val":"one"},{"val":"two"},{"val":"three"},{"val":"four"},{"val":"five"},{"val":"six"},{"val":"seven"},{"val":"eight"},{"val":"nine"}]}`,
-			wantRecord:    `{"values":[{"val":"nsfw"},{"val":"gore"},{"val":"one"},{"val":"two"},{"val":"three"},{"val":"four"},{"val":"five"},{"val":"six"},{"val":"seven"},{"val":"eight"}]}`},
-		{name: "ten unknown post labels exclude nsfw", reason: notifications.ReasonMention,
-			postLabels: &posts.SelfLabels{Values: []posts.SelfLabel{{Val: "unknown-1"}, {Val: "unknown-2"}, {Val: "unknown-3"}, {Val: "unknown-4"}, {Val: "unknown-5"}, {Val: "unknown-6"}, {Val: "unknown-7"}, {Val: "unknown-8"}, {Val: "unknown-9"}, {Val: "unknown-10"}, {Val: "nsfw"}}}, wantRecord: tenUnknown},
-		{name: "128 UTF-8 bytes retained and 129 dropped", reason: notifications.ReasonPostReply,
+			wantRecord:    `{"values":[{"val":"nsfw"},{"val":"gore"},{"val":"one"},{"val":"two"},{"val":"three"},{"val":"four"},{"val":"five"},{"val":"six"},{"val":"seven"},{"val":"eight"}]}`,
+		},
+		{
+			name: "ten unknown post labels exclude nsfw", reason: notifications.ReasonMention,
+			postLabels: &posts.SelfLabels{Values: []posts.SelfLabel{{Val: "unknown-1"}, {Val: "unknown-2"}, {Val: "unknown-3"}, {Val: "unknown-4"}, {Val: "unknown-5"}, {Val: "unknown-6"}, {Val: "unknown-7"}, {Val: "unknown-8"}, {Val: "unknown-9"}, {Val: "unknown-10"}, {Val: "nsfw"}}}, wantRecord: tenUnknown,
+		},
+		{
+			name: "128 UTF-8 bytes retained and 129 dropped", reason: notifications.ReasonPostReply,
 			commentLabels: `{"values":[{"val":"` + shortBoundary + `"},{"val":"` + shortBoundary + `a"}]}`,
-			wantRecord:    `{"values":[{"val":"` + shortBoundary + `"}]}`},
-		{name: "negated post label is preserved", reason: notifications.ReasonMention,
-			postLabels: &posts.SelfLabels{Values: []posts.SelfLabel{{Val: "spoiler", Neg: &trueValue}}}, wantRecord: `{"values":[{"val":"spoiler","neg":true}]}`},
+			wantRecord:    `{"values":[{"val":"` + shortBoundary + `"}]}`,
+		},
+		{
+			name: "negated post label is preserved", reason: notifications.ReasonMention,
+			postLabels: &posts.SelfLabels{Values: []posts.SelfLabel{{Val: "spoiler", Neg: &trueValue}}}, wantRecord: `{"values":[{"val":"spoiler","neg":true}]}`,
+		},
 		{name: "empty post labels omitted", reason: notifications.ReasonMention, postLabels: &posts.SelfLabels{Values: []posts.SelfLabel{}}},
 		{name: "empty comment labels omitted", reason: notifications.ReasonPostReply, commentLabels: `{"values":[]}`},
 	}
@@ -132,40 +140,52 @@ func TestListNotifications_MalformedLiveCommentLabelsOmitRow(t *testing.T) {
 	}{
 		{
 			name: "postReply record comment",
-			target: notifications.ListedNotification{Reason: notifications.ReasonPostReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
-				SubjectURI: rootURI, Subject: live("bafyroot"), RecordURI: malformedURI, Record: live("bafymalformed")},
+			target: notifications.ListedNotification{
+				Reason: notifications.ReasonPostReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
+				SubjectURI: rootURI, Subject: live("bafyroot"), RecordURI: malformedURI, Record: live("bafymalformed"),
+			},
 			wantCause: map[string]int64{"omitted": 1, "by_reason.postReply": 1, "by_reason.commentReply": 0, "by_reason.other": 0},
 		},
 		{
 			name: "comment mention record",
-			target: notifications.ListedNotification{Reason: notifications.ReasonMention, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
-				RecordURI: malformedURI, Record: live("bafymalformed")},
+			target: notifications.ListedNotification{
+				Reason: notifications.ReasonMention, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
+				RecordURI: malformedURI, Record: live("bafymalformed"),
+			},
 			wantCause: map[string]int64{"omitted": 1, "by_reason.postReply": 0, "by_reason.commentReply": 0, "by_reason.other": 1},
 		},
 		{
 			name: "commentReply subject comment",
-			target: notifications.ListedNotification{Reason: notifications.ReasonCommentReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
-				SubjectURI: malformedURI, Subject: live("bafymalformed"), RecordURI: replyURI, Record: live("bafyreply")},
+			target: notifications.ListedNotification{
+				Reason: notifications.ReasonCommentReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
+				SubjectURI: malformedURI, Subject: live("bafymalformed"), RecordURI: replyURI, Record: live("bafyreply"),
+			},
 			wantCause: map[string]int64{"omitted": 1, "by_reason.postReply": 0, "by_reason.commentReply": 1, "by_reason.other": 0},
 		},
 		{
 			name: "comment upvote subject",
-			target: notifications.ListedNotification{Reason: notifications.ReasonUpvote, RootPostURI: rootURI, RootPost: live("bafyroot"),
-				SubjectURI: malformedURI, Subject: live("bafymalformed"), UpvoteCount: 1, RecentUpvoterDIDs: []string{actorDID}},
+			target: notifications.ListedNotification{
+				Reason: notifications.ReasonUpvote, RootPostURI: rootURI, RootPost: live("bafyroot"),
+				SubjectURI: malformedURI, Subject: live("bafymalformed"), UpvoteCount: 1, RecentUpvoterDIDs: []string{actorDID},
+			},
 			wantCause: map[string]int64{"omitted": 1, "by_reason.postReply": 0, "by_reason.commentReply": 0, "by_reason.other": 1},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			captured := captureDefaultLogs(t)
-			neighbour := notifications.ListedNotification{Reason: notifications.ReasonPostReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
-				SubjectURI: rootURI, Subject: live("bafyroot"), RecordURI: neighbourURI, Record: live("bafyneighbour"), RecordCreatedAt: at, SortAt: at.Add(time.Minute)}
+			neighbour := notifications.ListedNotification{
+				Reason: notifications.ReasonPostReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
+				SubjectURI: rootURI, Subject: live("bafyroot"), RecordURI: neighbourURI, Record: live("bafyneighbour"), RecordCreatedAt: at, SortAt: at.Add(time.Minute),
+			}
 			target := tc.target
 			target.RecordCreatedAt, target.SortAt = at, at
-			placeholder := notifications.ListedNotification{Reason: notifications.ReasonCommentReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
+			placeholder := notifications.ListedNotification{
+				Reason: notifications.ReasonCommentReply, ActorDID: actorDID, RootPostURI: rootURI, RootPost: live("bafyroot"),
 				SubjectURI: placeholderParentURI, Subject: notifications.ListedReference{State: notifications.ReferenceDeleted, CID: "bafyparentdeleted"},
 				RecordURI: placeholderRecordURI, Record: notifications.ListedReference{State: notifications.ReferenceRemovedByModerator, CID: "bafyrecordremoved"},
-				RecordCreatedAt: at, SortAt: at.Add(-time.Minute)}
+				RecordCreatedAt: at, SortAt: at.Add(-time.Minute),
+			}
 			commentViews := cannedComments{
 				neighbourURI:         {URI: neighbourURI, CID: "bafyneighbour", Content: "Neighbour", ContentLabels: labels(validLabels)},
 				malformedURI:         {URI: malformedURI, CID: "bafymalformed", Content: "Malformed", ContentLabels: labels(wrongShape)},

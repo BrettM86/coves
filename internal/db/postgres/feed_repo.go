@@ -1,11 +1,12 @@
 package postgres
 
 import (
-	"Coves/internal/core/communityFeeds"
 	"context"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"Coves/internal/core/communityFeeds"
 )
 
 type postgresFeedRepo struct {
@@ -28,11 +29,11 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 	queryTime := time.Now()
 
 	// Build ORDER BY clause based on sort type
-	orderBy, timeFilter := r.feedRepoBase.buildSortClause(req.Sort, req.Timeframe)
+	orderBy, timeFilter := r.buildSortClause(req.Sort, req.Timeframe)
 
 	// Build cursor filter for pagination
 	// Community feed uses $3+ for cursor params (after $1=community and $2=limit)
-	cursorFilter, cursorValues, err := r.feedRepoBase.parseCursor(req.Cursor, req.Sort, 3)
+	cursorFilter, cursorValues, err := r.parseCursor(req.Cursor, req.Sort, 3)
 	if err != nil {
 		return nil, nil, communityFeeds.ErrInvalidCursor
 	}
@@ -101,7 +102,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 	var feedPosts []*communityFeeds.FeedViewPost
 	var hotRanks []float64 // Store hot ranks for cursor building
 	for rows.Next() {
-		postView, hotRank, err := r.feedRepoBase.scanFeedPost(rows)
+		postView, hotRank, err := r.scanFeedPost(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan feed post: %w", err)
 		}
@@ -120,7 +121,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 		hotRanks = hotRanks[:req.Limit]
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
+		cursorStr := r.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
 		cursor = &cursorStr
 	}
 
@@ -156,9 +157,9 @@ func (r *postgresFeedRepo) SearchPosts(ctx context.Context, req communityFeeds.S
 	if searchSort != "new" && searchSort != "top" {
 		searchSort = "relevance"
 	}
-	orderBy, timeFilter := r.feedRepoBase.buildSortClause(searchSort, req.Timeframe)
+	orderBy, timeFilter := r.buildSortClause(searchSort, req.Timeframe)
 
-	cursorFilter, cursorValues, err := r.feedRepoBase.parseSearchCursor(req.Cursor, req, len(args)+1, rankExpression)
+	cursorFilter, cursorValues, err := r.parseSearchCursor(req.Cursor, req, len(args)+1, rankExpression)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -209,7 +210,7 @@ func (r *postgresFeedRepo) SearchPosts(ctx context.Context, req communityFeeds.S
 	var feedPosts []*communityFeeds.FeedViewPost
 	var ranks []float64
 	for rows.Next() {
-		postView, rank, err := r.feedRepoBase.scanFeedPost(rows)
+		postView, rank, err := r.scanFeedPost(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan post search result: %w", err)
 		}
@@ -228,7 +229,7 @@ func (r *postgresFeedRepo) SearchPosts(ctx context.Context, req communityFeeds.S
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastRank := ranks[len(ranks)-1]
 
-		cursorString := r.feedRepoBase.buildSearchCursor(req, lastPost, lastRank)
+		cursorString := r.buildSearchCursor(req, lastPost, lastRank)
 		cursor = &cursorString
 	}
 

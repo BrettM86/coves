@@ -44,8 +44,9 @@ import (
 	"Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
-	imageproxycore "Coves/internal/core/imageproxy"
 	"Coves/tests/testkit"
+
+	imageproxycore "Coves/internal/core/imageproxy"
 
 	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"

@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-const webOAuthCookieName = "oauth_web_binding"
-const webOAuthLifetime = 10 * time.Minute
+const (
+	webOAuthCookieName = "oauth_web_binding"
+	webOAuthLifetime   = 10 * time.Minute
+)
 
 // ErrWebBindingNotSaved reports that no unbound pending web request matched
 // the state, so the browser binding could not be attached to it.
@@ -33,9 +35,11 @@ type WebOAuthStore interface {
 	ClaimWebOAuthData(context.Context, string, string) (*WebOAuthData, error)
 }
 
-type webFlowContextKey struct{}
-type claimedWebFlowContextKey struct{}
-type webPersistenceContextKey struct{}
+type (
+	webFlowContextKey        struct{}
+	claimedWebFlowContextKey struct{}
+	webPersistenceContextKey struct{}
+)
 
 // Indigo ignores SaveAuthRequestInfo errors. This request-scoped receipt lets
 // the handler require confirmed persistence before releasing a browser cookie.
@@ -54,15 +58,19 @@ func safeWebReturnURL(value string) string {
 // The binding cookie is scoped to Go's /oauth routes, like the mobile cookies,
 // so browsers never send it to the frontend server.
 func newWebBindingCookie(nonce string, secure bool) *http.Cookie {
-	return &http.Cookie{Name: webOAuthCookieName, Value: nonce, Path: "/oauth", HttpOnly: true,
-		Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(webOAuthLifetime.Seconds())}
+	return &http.Cookie{
+		Name: webOAuthCookieName, Value: nonce, Path: "/oauth", HttpOnly: true,
+		Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(webOAuthLifetime.Seconds()),
+	}
 }
 
 // expiredWebBindingCookie clears the binding cookie; its attributes must match
 // newWebBindingCookie or the browser keeps the original.
 func expiredWebBindingCookie(secure bool) *http.Cookie {
-	return &http.Cookie{Name: webOAuthCookieName, Value: "", Path: "/oauth", HttpOnly: true,
-		Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1}
+	return &http.Cookie{
+		Name: webOAuthCookieName, Value: "", Path: "/oauth", HttpOnly: true,
+		Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+	}
 }
 
 // SaveWebOAuthData binds a previously saved web request to its browser.

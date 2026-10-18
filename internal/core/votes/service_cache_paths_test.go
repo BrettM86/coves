@@ -7,12 +7,12 @@ import (
 	"testing/synctest"
 	"time"
 
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/votes"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/votes"
 )
 
 // Where the vote service gets its answer to "has this user already voted on
@@ -296,12 +296,18 @@ func TestFindExistingVote_IgnoresRecordsItCannotRead(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
 	fake.rawRecords = []pds.RecordEntry{
-		{URI: "at://" + testVoterDID + "/social.coves.feed.vote/3kbad1",
-			Value: map[string]any{"direction": "up", "subject": "not-an-object"}},
-		{URI: "at://" + testVoterDID + "/social.coves.feed.vote/3kbad2",
-			Value: map[string]any{"direction": "up", "subject": map[string]any{"uri": 42}}},
-		{URI: "short-uri",
-			Value: map[string]any{"direction": "up", "subject": map[string]any{"uri": testSubject}}},
+		{
+			URI:   "at://" + testVoterDID + "/social.coves.feed.vote/3kbad1",
+			Value: map[string]any{"direction": "up", "subject": "not-an-object"},
+		},
+		{
+			URI:   "at://" + testVoterDID + "/social.coves.feed.vote/3kbad2",
+			Value: map[string]any{"direction": "up", "subject": map[string]any{"uri": 42}},
+		},
+		{
+			URI:   "short-uri",
+			Value: map[string]any{"direction": "up", "subject": map[string]any{"uri": testSubject}},
+		},
 	}
 	svc := newService(t, fake, nil)
 
@@ -449,7 +455,8 @@ func TestDeleteVote_RejectsMalformedSubjects(t *testing.T) {
 	}{
 		{"empty subject URI", votes.DeleteVoteRequest{Subject: votes.StrongRef{CID: testSubjectCI}}},
 		{"subject URI that is not an AT-URI", votes.DeleteVoteRequest{
-			Subject: votes.StrongRef{URI: "https://example.com/post/1", CID: testSubjectCI}}},
+			Subject: votes.StrongRef{URI: "https://example.com/post/1", CID: testSubjectCI},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

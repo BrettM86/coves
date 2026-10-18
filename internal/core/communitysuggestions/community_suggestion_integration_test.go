@@ -3,11 +3,6 @@
 package communitysuggestions_test
 
 import (
-	"Coves/internal/api/routes"
-	"Coves/internal/core/communitysuggestions"
-	"Coves/internal/db/postgres"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"database/sql"
@@ -18,6 +13,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/routes"
+	"Coves/internal/core/communitysuggestions"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -159,7 +160,7 @@ func getSuggestionRequest(t *testing.T, router http.Handler, token string, id in
 }
 
 // listSuggestionsRequest lists suggestions via the HTTP API with query params.
-func listSuggestionsRequest(t *testing.T, router http.Handler, token string, queryParams string) *httptest.ResponseRecorder {
+func listSuggestionsRequest(t *testing.T, router http.Handler, token, queryParams string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	url := "/xrpc/social.coves.community.suggestion.list"

@@ -138,10 +138,14 @@ func TestLabelContentAppliesToBothPostCollectionsAndAcceptsOptionalReasons(t *te
 				assert.Equal(t, "v1", result.State.Version)
 				assert.Equal(t, moderation.RecordStatePresent, result.State.RecordState)
 				assert.Equal(t, moderation.ModerationStateClear, result.State.Moderation.State)
-				assert.Equal(t, []moderation.LocalLabel{{Value: moderation.LabelNSFW,
-					Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: action.ID}}}, result.State.LocalLabels)
-				assert.Equal(t, []moderation.ContentLabel{{Value: moderation.LabelNSFW,
-					Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}}}},
+				assert.Equal(t, []moderation.LocalLabel{{
+					Value:  moderation.LabelNSFW,
+					Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: action.ID},
+				}}, result.State.LocalLabels)
+				assert.Equal(t, []moderation.ContentLabel{{
+					Value:   moderation.LabelNSFW,
+					Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}},
+				}},
 					result.State.Moderation.ContentLabels)
 				assert.Equal(t, map[string]moderation.Action{action.ID: *action}, scenario.store.state.actions)
 				assert.Equal(t, inMemoryModerationLabelDecision{actionID: action.ID, active: true},
@@ -169,10 +173,14 @@ func TestLabelContentRedundantApplyKeepsActionAndVersion(t *testing.T) {
 	assert.Equal(t, moderation.OutcomeUnchanged, result.Outcome)
 	assert.Nil(t, result.Action)
 	assert.Equal(t, "v1", result.State.Version)
-	assert.Equal(t, []moderation.LocalLabel{{Value: moderation.LabelNSFW,
-		Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: prior.ID}}}, result.State.LocalLabels)
-	assert.Equal(t, []moderation.ContentLabel{{Value: moderation.LabelNSFW,
-		Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}}}},
+	assert.Equal(t, []moderation.LocalLabel{{
+		Value:  moderation.LabelNSFW,
+		Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: prior.ID},
+	}}, result.State.LocalLabels)
+	assert.Equal(t, []moderation.ContentLabel{{
+		Value:   moderation.LabelNSFW,
+		Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}},
+	}},
 		result.State.Moderation.ContentLabels)
 	assert.Equal(t, map[string]moderation.Action{prior.ID: prior}, scenario.store.state.actions)
 	assert.Equal(t, map[string]int64{postRulesURI: 1}, scenario.store.state.versions)
@@ -254,10 +262,14 @@ func TestLabelContentCanLabelRemovedPresentPost(t *testing.T) {
 	assert.Equal(t, "v2", result.State.Version)
 	assert.Equal(t, moderation.ModerationStateRemoved, result.State.Moderation.State)
 	assert.Equal(t, &moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: removal.ID}, result.State.LocalRemoval)
-	assert.Equal(t, []moderation.LocalLabel{{Value: moderation.LabelNSFW,
-		Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: result.Action.ID}}}, result.State.LocalLabels)
-	assert.Equal(t, []moderation.ContentLabel{{Value: moderation.LabelNSFW,
-		Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}}}},
+	assert.Equal(t, []moderation.LocalLabel{{
+		Value:  moderation.LabelNSFW,
+		Action: moderation.ActionRef{ServiceDID: removeRulesInstanceDID, ActionID: result.Action.ID},
+	}}, result.State.LocalLabels)
+	assert.Equal(t, []moderation.ContentLabel{{
+		Value:   moderation.LabelNSFW,
+		Sources: []moderation.DecisionSource{{AuthorityDID: removeRulesInstanceDID, ScopeKind: moderation.ScopeInstance}},
+	}},
 		result.State.Moderation.ContentLabels)
 	assert.Equal(t, removal.ID, scenario.store.state.activeRemovals[inMemoryModerationDecisionKey{removeRulesInstanceDID, postRulesURI}])
 }

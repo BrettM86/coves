@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Binding a community's handle to the repo DID that signed its profile record.
@@ -249,9 +249,11 @@ func TestCreateCommunity_ClassifiesAResolverFailureByItsKind(t *testing.T) {
 		err  error
 	}{
 		{name: "a resolution failure stays retryable", err: &identity.ErrResolutionFailed{
-			Identifier: "did:plc:directorydown", Reason: "connection refused"}},
+			Identifier: "did:plc:directorydown", Reason: "connection refused",
+		}},
 		{name: "a not found result stays retryable", err: &identity.ErrNotFound{
-			Identifier: "did:plc:notfoundyet", Reason: "directory has not observed the DID"}},
+			Identifier: "did:plc:notfoundyet", Reason: "directory has not observed the DID",
+		}},
 		{name: "a resolution deadline stays retryable", err: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

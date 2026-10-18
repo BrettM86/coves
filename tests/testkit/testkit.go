@@ -384,7 +384,7 @@ func RequireJetstream() error {
 		_ = resp.Body.Close()
 	}
 	if err != nil {
-		return fmt.Errorf("Jetstream at %s did not accept a subscription: %w", endpoint.BaseURL, err)
+		return fmt.Errorf("jetstream at %s did not accept a subscription: %w", endpoint.BaseURL, err)
 	}
 	_ = conn.Close()
 	return nil

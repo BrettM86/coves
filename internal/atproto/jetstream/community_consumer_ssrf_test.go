@@ -14,12 +14,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"Coves/internal/validation"
+	"Coves/tests/domaincorpus"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/validation"
-	"Coves/tests/domaincorpus"
 )
 
 // The community consumer's DID-document fetch, against a domain a stranger
@@ -223,7 +224,6 @@ func TestVerifyDIDDocument_TheTwoMechanismsAreSeparatelyObservable(t *testing.T)
 				"`internal-admin` happens to resolve to on this machine, and on a resolver that "+
 				"answers with a public address the request goes out; got: %v", payload, err)
 	})
-
 }
 
 // # WHY THE GUARD NEEDS ITS OWN FIXTURE AND NOT AN INJECTED CLIENT

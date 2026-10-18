@@ -64,7 +64,7 @@ type DiskCache struct {
 // NewDiskCache creates a new DiskCache with the specified base path, maximum size, and TTL.
 // Returns an error if basePath is empty or maxSizeGB is not positive.
 // ttlDays of 0 disables TTL-based cleanup (only LRU eviction applies).
-func NewDiskCache(basePath string, maxSizeGB int, ttlDays int) (*DiskCache, error) {
+func NewDiskCache(basePath string, maxSizeGB, ttlDays int) (*DiskCache, error) {
 	if basePath == "" {
 		return nil, ErrInvalidCacheBasePath
 	}
@@ -197,14 +197,14 @@ func (c *DiskCache) Set(preset, did, cid string, data []byte) error {
 	dir := filepath.Dir(path)
 
 	// Create directory structure if it doesn't exist
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
 	// Write the file atomically by writing to a temp file first
 	// then renaming (to avoid partial writes on crash)
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
 	}
 
@@ -441,7 +441,6 @@ func (c *DiskCache) cleanEmptyDirs() error {
 		}
 		return nil
 	})
-
 	if err != nil {
 		return err
 	}

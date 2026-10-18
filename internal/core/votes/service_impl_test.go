@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/votes"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/votes"
 )
 
 // The vote service's write path: what a tap on an arrow actually does to the
@@ -265,9 +265,13 @@ func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.
 	if !exists {
 		return nil, pds.ErrNotFound
 	}
-	result := &pds.RecordResponse{URI: "at://" + f.did + "/" + collection + "/" + rkey, CID: "bafycid" + rkey,
-		Value: map[string]any{"$type": record.Type, "direction": record.Direction,
-			"subject": map[string]any{"uri": record.Subject.URI, "cid": record.Subject.CID}, "createdAt": record.CreatedAt}}
+	result := &pds.RecordResponse{
+		URI: "at://" + f.did + "/" + collection + "/" + rkey, CID: "bafycid" + rkey,
+		Value: map[string]any{
+			"$type": record.Type, "direction": record.Direction,
+			"subject": map[string]any{"uri": record.Subject.URI, "cid": record.Subject.CID}, "createdAt": record.CreatedAt,
+		},
+	}
 	if f.getTransform != nil {
 		f.getTransform(result)
 	}
@@ -509,12 +513,15 @@ func TestCreateVote_RejectsMalformedInput(t *testing.T) {
 		{"sideways direction", votes.CreateVoteRequest{Subject: subject(), Direction: "sideways"}, votes.ErrInvalidDirection},
 		{"empty direction", votes.CreateVoteRequest{Subject: subject(), Direction: ""}, votes.ErrInvalidDirection},
 		{"empty subject URI", votes.CreateVoteRequest{
-			Subject: votes.StrongRef{CID: testSubjectCI}, Direction: "up"}, votes.ErrInvalidSubject},
+			Subject: votes.StrongRef{CID: testSubjectCI}, Direction: "up",
+		}, votes.ErrInvalidSubject},
 		{"subject URI that is not an AT-URI", votes.CreateVoteRequest{
 			Subject:   votes.StrongRef{URI: "https://example.com/post/1", CID: testSubjectCI},
-			Direction: "up"}, votes.ErrInvalidSubject},
+			Direction: "up",
+		}, votes.ErrInvalidSubject},
 		{"subject with no CID", votes.CreateVoteRequest{
-			Subject: votes.StrongRef{URI: testSubject}, Direction: "up"}, votes.ErrInvalidSubject},
+			Subject: votes.StrongRef{URI: testSubject}, Direction: "up",
+		}, votes.ErrInvalidSubject},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -61,8 +61,10 @@ func TestModerationRepositorySweepsExpiredIdempotencyKeyWithoutResettingVersion(
 	service := moderation.NewService(
 		moderation.NewRepositorySubjectReader(postgres.NewPostRepository(db), postgres.NewCommentRepository(db)),
 		repository,
-		moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: time.Hour,
-			MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return now }},
+		moderation.Config{
+			InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: time.Hour,
+			MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return now },
+		},
 	)
 	actor := fixtures.DID("expiryadmin")
 	request := moderation.RemoveContentRequest{
@@ -159,8 +161,10 @@ func TestModerationRepositoryReplacesOnlyExpiredUnsweptIdempotencyKey(t *testing
 	service := moderation.NewService(
 		moderation.NewRepositorySubjectReader(postgres.NewPostRepository(db), postgres.NewCommentRepository(db)),
 		repository,
-		moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: time.Hour,
-			MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return now }},
+		moderation.Config{
+			InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: time.Hour,
+			MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return now },
+		},
 	)
 	actor := fixtures.DID("reusedkeyadmin")
 	const key = "reused-key"

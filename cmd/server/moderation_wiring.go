@@ -1,10 +1,10 @@
 package main
 
 import (
-	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
-
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/moderation"
+
+	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // buildInstanceAdminMiddleware gates the moderation endpoints on authority,

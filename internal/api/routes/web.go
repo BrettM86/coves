@@ -3,11 +3,11 @@ package routes
 import (
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 	"Coves/internal/web"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // RegisterWebRoutes registers all web page routes for the Coves frontend.

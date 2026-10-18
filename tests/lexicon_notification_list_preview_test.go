@@ -74,7 +74,8 @@ func TestNotificationListLexicon_PreviewContract(t *testing.T) {
 		value       any
 	}{
 		{"eleven self-labels", "labels", map[string]any{"values": []any{
-			map[string]any{"val": "one"}, map[string]any{"val": "two"}, map[string]any{"val": "three"}, map[string]any{"val": "four"}, map[string]any{"val": "five"}, map[string]any{"val": "six"}, map[string]any{"val": "seven"}, map[string]any{"val": "eight"}, map[string]any{"val": "nine"}, map[string]any{"val": "ten"}, map[string]any{"val": "eleven"}}}},
+			map[string]any{"val": "one"}, map[string]any{"val": "two"}, map[string]any{"val": "three"}, map[string]any{"val": "four"}, map[string]any{"val": "five"}, map[string]any{"val": "six"}, map[string]any{"val": "seven"}, map[string]any{"val": "eight"}, map[string]any{"val": "nine"}, map[string]any{"val": "ten"}, map[string]any{"val": "eleven"},
+		}}},
 		{"129-byte label", "labels", map[string]any{"values": []any{map[string]any{"val": strings.Repeat("é", 64) + "a"}}}},
 		{"invalid thumbnail URI", "thumbnail", "not a URI"},
 		{"1001 ASCII alt", "thumbnailAlt", strings.Repeat("a", 1001)},

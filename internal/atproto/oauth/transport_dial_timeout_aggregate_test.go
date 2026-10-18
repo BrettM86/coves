@@ -190,7 +190,7 @@ func TestJoinDialErrors_ClassifiesTheAggregateFromItsMembers(t *testing.T) {
 
 			assert.Equalf(t, tt.wantTimeout, netErr.Timeout(),
 				"Timeout() on an aggregate of %v", tt.errs)
-			assert.Equalf(t, tt.wantTemporary, netErr.Temporary(),
+			assert.Equalf(t, tt.wantTemporary, netErr.Temporary(), //nolint:staticcheck // pins the aggregate's answer to the net.Error method it must implement
 				"Temporary() on an aggregate of %v", tt.errs)
 
 			// Every member stays reachable however the aggregate classifies.

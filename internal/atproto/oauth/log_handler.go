@@ -128,7 +128,7 @@ func validSQLState(code string) bool {
 		return false
 	}
 	for _, char := range code {
-		if !(char >= '0' && char <= '9') && !(char >= 'A' && char <= 'Z') {
+		if (char < '0' || char > '9') && (char < 'A' || char > 'Z') {
 			return false
 		}
 	}

@@ -31,9 +31,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+
+	covesoauth "Coves/internal/atproto/oauth"
 
 	_ "github.com/lib/pq"
 )

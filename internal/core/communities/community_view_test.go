@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The two functions that turn a community row into what a client receives.

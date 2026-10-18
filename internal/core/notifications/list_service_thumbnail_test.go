@@ -19,17 +19,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const previewCID = "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
-const secondPreviewCID = "bafkreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"
-const thirdPreviewCID = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
-const previewPDSURL = "https://pds.example.test"
-const previewGetBlobURL = "https://pds.example.test/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aowner&cid=bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
+const (
+	previewCID        = "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
+	secondPreviewCID  = "bafkreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"
+	thirdPreviewCID   = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+	previewPDSURL     = "https://pds.example.test"
+	previewGetBlobURL = "https://pds.example.test/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aowner&cid=bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
+)
 
 // previewPostView builds a fresh stored view. Legacy blobs belong to the
 // community repository; postv2 blobs belong to the author repository.
 func previewPostView(rkey string, legacy bool, embed map[string]interface{}, title, body string) *posts.PostView {
-	view := &posts.PostView{CID: thirdPreviewCID, Embed: embed, Record: map[string]interface{}{"title": title, "content": body},
-		Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.test", Name: "Community", PDSURL: previewPDSURL}}
+	view := &posts.PostView{
+		CID: thirdPreviewCID, Embed: embed, Record: map[string]interface{}{"title": title, "content": body},
+		Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.test", Name: "Community", PDSURL: previewPDSURL},
+	}
 	if legacy {
 		view.URI = "at://did:plc:community/social.coves.community.post/" + rkey
 	} else {
@@ -47,7 +51,7 @@ func previewLink(thumb interface{}) map[string]interface{} {
 	return map[string]interface{}{"$type": "social.coves.embed.external", "external": map[string]interface{}{"uri": "https://article.example.test/story", "title": "Story", "thumb": thumb}}
 }
 
-func previewImages(image interface{}, alt interface{}) map[string]interface{} {
+func previewImages(image, alt interface{}) map[string]interface{} {
 	return map[string]interface{}{"$type": "social.coves.embed.images", "images": []interface{}{map[string]interface{}{"image": image, "alt": alt}}}
 }
 
@@ -141,8 +145,12 @@ func assertPreviewMedia(t *testing.T, rows []map[string]json.RawMessage, offset 
 		index int
 		field string
 	}{
-		{offset, "rootPost"}, {offset, "subject"}, {offset + 1, "rootPost"}, {offset + 1, "subject"},
-		{offset + 2, "rootPost"}, {offset + 2, "record"},
+		{offset, "rootPost"},
+		{offset, "subject"},
+		{offset + 1, "rootPost"},
+		{offset + 1, "subject"},
+		{offset + 2, "rootPost"},
+		{offset + 2, "record"},
 	} {
 		reference := previewReference(t, rows[position.index], position.field)
 		assertPreviewField(t, reference, "thumbnail", thumbnail)
@@ -222,8 +230,10 @@ func TestListNotifications_NoThumbnailWithoutValidatedProxiedBlob(t *testing.T) 
 			name, cid string
 			legacy    bool
 		}{
-			{"malformed link", "not a cid!", false}, {"short non CID link", "abcdefgh12", false},
-			{"oversized link", oversized, false}, {"oversized legacy cid", oversized, true},
+			{"malformed link", "not a cid!", false},
+			{"short non CID link", "abcdefgh12", false},
+			{"oversized link", oversized, false},
+			{"oversized legacy cid", oversized, true},
 			// Valid CIDs in multibases the image proxy's CID check rejects.
 			{"base64url multibase legacy cid", "uAVUSIOOwxEKY_BwUmvv0yJlvuSQnrkHkZJuTTKSVmRt4UrhV", true},
 			{"base64 multibase legacy cid", "mAVUSIJ3+/mHdduo9yuUCOICwg3nVet8gSC1v2+J1kon2R2d7", true},

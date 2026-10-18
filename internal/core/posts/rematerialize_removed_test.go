@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
 )
 
 // The source must actually shrink on delete: the final re-scan is what keeps a

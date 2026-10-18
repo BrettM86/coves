@@ -72,12 +72,16 @@ func TestFanoutComment_WithdrawnReferences(t *testing.T) {
 				}
 				want := []Intent{}
 				if operation == "create" && test.wantReply != "" {
-					want = append(want, Intent{Reason: test.wantReply, RecipientDID: test.wantRecipient,
+					want = append(want, Intent{
+						Reason: test.wantReply, RecipientDID: test.wantRecipient,
 						ActorDID: actor, RecordURI: comment.URI, RecordCID: comment.CID,
-						SubjectURI: test.wantSubject, RootPostURI: root, RecordCreatedAt: createdAt})
+						SubjectURI: test.wantSubject, RootPostURI: root, RecordCreatedAt: createdAt,
+					})
 				}
-				want = append(want, Intent{Reason: ReasonMention, RecipientDID: mention, ActorDID: actor,
-					RecordURI: comment.URI, RecordCID: comment.CID, RootPostURI: root, RecordCreatedAt: createdAt})
+				want = append(want, Intent{
+					Reason: ReasonMention, RecipientDID: mention, ActorDID: actor,
+					RecordURI: comment.URI, RecordCID: comment.CID, RootPostURI: root, RecordCreatedAt: createdAt,
+				})
 				require.Equal(t, want, intents)
 			})
 		}
@@ -177,8 +181,10 @@ func TestFanoutVoteCreate_WithdrawnReferences(t *testing.T) {
 			intent, err := FanoutVoteCreate(context.Background(), lookups, nil, vote)
 			require.NoError(t, err)
 			if test.withdrawn != "" {
-				require.Equal(t, UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty,
-					RecipientDID: test.wantRecipient, SubjectURI: test.subject}, intent)
+				require.Equal(t, UpvoteGroupIntent{
+					Action:       UpvoteGroupDeleteIfEmpty,
+					RecipientDID: test.wantRecipient, SubjectURI: test.subject,
+				}, intent)
 				require.NotEqual(t, UpvoteGroupBump, intent.Action)
 				require.Zero(t, activationCalls)
 				require.Zero(t, indexCalls)
@@ -188,8 +194,10 @@ func TestFanoutVoteCreate_WithdrawnReferences(t *testing.T) {
 			if root == "" {
 				root = test.subject
 			}
-			require.Equal(t, UpvoteGroupIntent{Action: UpvoteGroupBump,
-				RecipientDID: test.wantRecipient, SubjectURI: test.subject, RootPostURI: root}, intent)
+			require.Equal(t, UpvoteGroupIntent{
+				Action:       UpvoteGroupBump,
+				RecipientDID: test.wantRecipient, SubjectURI: test.subject, RootPostURI: root,
+			}, intent)
 		})
 	}
 }

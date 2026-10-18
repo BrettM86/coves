@@ -22,6 +22,11 @@
 package comments_test
 
 import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/users"
@@ -29,10 +34,6 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-	"context"
-	"fmt"
-	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )

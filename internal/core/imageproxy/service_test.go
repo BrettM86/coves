@@ -334,7 +334,6 @@ func TestImageProxyService_GetImage_CacheWriteCompletesBeforeReturn(t *testing.T
 	ctx := context.Background()
 
 	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
-
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -777,7 +776,7 @@ func TestImageProxyService_GetImage_ReleasesSlotWhenProcessingFails(t *testing.T
 // assertCallerAbandonmentError checks the shape every "the caller's context
 // ended while we waited for a slot" error must have: the fetcher's timeout
 // sentinel, the context's own error, and NOT the busy sentinel.
-func assertCallerAbandonmentError(t *testing.T, err error, wantContextErr error) {
+func assertCallerAbandonmentError(t *testing.T, err, wantContextErr error) {
 	t.Helper()
 	if !errors.Is(err, ErrPDSTimeout) {
 		t.Errorf("expected error wrapping ErrPDSTimeout (the sentinel the fetcher uses for a dead context), got: %v", err)

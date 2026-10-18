@@ -137,7 +137,7 @@ func TestAdmissionRepo_CommunityWithdrawal_RemovalFirst(t *testing.T) {
 
 // Both foreign-community and unindexed admissions deliberately exist: a marker
 // must not be cleared just because a decision for the URI happened to exist.
-func setupWithdrawalNotVisible(t *testing.T, db *sql.DB, repo posts.AdmissionRepository, kind string, rev string) admissionSubject {
+func setupWithdrawalNotVisible(t *testing.T, db *sql.DB, repo posts.AdmissionRepository, kind, rev string) admissionSubject {
 	t.Helper()
 	if kind == "unindexed" {
 		community := visibilityCommunity(t, db, testkit.UniqueID(t))

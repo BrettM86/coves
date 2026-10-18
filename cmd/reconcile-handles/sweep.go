@@ -12,11 +12,12 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
-	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/db/postgres"
+
+	covesoauth "Coves/internal/atproto/oauth"
 )
 
 const (

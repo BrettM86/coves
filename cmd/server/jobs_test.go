@@ -216,18 +216,34 @@ func TestRunGuarded_ConvertsPanicToReturn(t *testing.T) {
 // Runtime panics must be contained too, not just explicit panic() calls: a
 // nil dereference or an out-of-range index inside a job is exactly the kind of
 // bug this guard exists to survive.
+//
+// Each work function sets a flag after the faulting statement; the flag staying
+// false proves the statement really panicked rather than completing.
 func TestRunGuarded_ContainsRuntimePanics(t *testing.T) {
+	indexCompleted := false
 	runGuarded(context.Background(), "index-out-of-range", time.Second, func(context.Context) {
 		values := []int{1, 2, 3}
 		index := len(values) + 1
 		_ = values[index]
+		indexCompleted = true
 	})
+	if indexCompleted {
+		t.Error("out-of-range index did not panic; the test is not exercising the guard")
+	}
 
+	nilDerefCompleted := false
 	runGuarded(context.Background(), "nil-deref", time.Second, func(context.Context) {
 		type box struct{ n int }
-		var b *box
+		// A missing map entry is the realistic source of a nil pointer in a
+		// job body.
+		boxes := map[string]*box{}
+		b := boxes["missing"]
 		_ = b.n
+		nilDerefCompleted = true
 	})
+	if nilDerefCompleted {
+		t.Error("nil dereference did not panic; the test is not exercising the guard")
+	}
 }
 
 type bridgedVoteSweeperFake struct {

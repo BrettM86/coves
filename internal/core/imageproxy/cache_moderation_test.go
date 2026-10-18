@@ -19,8 +19,10 @@ func TestDiskCache_PurgeOwnerAndCIDAcrossPresets(t *testing.T) {
 		otherCID = "bafyreiunrelatedimage"
 	)
 	for _, entry := range []struct{ preset, did, cid string }{
-		{"avatar", ownerA, cid}, {"banner", ownerA, cid},
-		{"avatar", ownerB, cid}, {"banner", ownerB, cid},
+		{"avatar", ownerA, cid},
+		{"banner", ownerA, cid},
+		{"avatar", ownerB, cid},
+		{"banner", ownerB, cid},
 		{"avatar", ownerA, otherCID},
 	} {
 		require.NoError(t, cache.Set(entry.preset, entry.did, entry.cid, []byte("image")))

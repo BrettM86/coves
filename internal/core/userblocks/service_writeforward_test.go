@@ -3,13 +3,14 @@
 package userblocks_test
 
 import (
+	"context"
+	"net/url"
+	"testing"
+
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
-	"context"
-	"net/url"
-	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

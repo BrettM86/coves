@@ -24,16 +24,17 @@
 package comments_test
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/db/postgres"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

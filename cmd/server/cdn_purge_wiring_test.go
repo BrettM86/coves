@@ -78,13 +78,17 @@ func (*cdnWiringTransaction) LockActor(context.Context, string) error { return n
 func (*cdnWiringTransaction) InsertContentSnapshot(context.Context, string, string, moderation.ContentSnapshot) error {
 	return nil
 }
+
 func (*cdnWiringTransaction) DeleteSubjectContentSnapshots(context.Context, string) error { return nil }
+
 func (*cdnWiringTransaction) LiveIdempotencyRecord(context.Context, string, string, string, time.Time) (*moderation.IdempotencyRecord, error) {
 	return nil, nil
 }
+
 func (*cdnWiringTransaction) CountLiveIdempotencyKeys(context.Context, string, time.Time) (int, error) {
 	return 0, nil
 }
+
 func (*cdnWiringTransaction) SaveIdempotencyRecord(context.Context, moderation.IdempotencyRecord) error {
 	return nil
 }
@@ -93,16 +97,20 @@ func (transaction *cdnWiringTransaction) ReadIndexedComment(context.Context, str
 	comment := transaction.comment
 	return &comment, nil
 }
+
 func (*cdnWiringTransaction) ActiveRemoval(context.Context, string, string) (*moderation.Action, error) {
 	return nil, nil
 }
+
 func (*cdnWiringTransaction) ActiveLabels(context.Context, string, string) ([]moderation.Action, error) {
 	return nil, nil
 }
+
 func (*cdnWiringTransaction) InsertAction(_ context.Context, action moderation.Action) (*moderation.Action, error) {
 	action.ID = "cdn-wiring-action"
 	return &action, nil
 }
+
 func (*cdnWiringTransaction) SetRemovalDecision(context.Context, string, string, string, bool) error {
 	return nil
 }

@@ -3,6 +3,10 @@
 package live
 
 import (
+	"context"
+	"testing"
+	"time"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
@@ -12,9 +16,6 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
-	"context"
-	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

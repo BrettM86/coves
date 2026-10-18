@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"Coves/internal/core/moderation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +11,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"

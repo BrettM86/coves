@@ -199,7 +199,8 @@ func TestPostAPIContract(t *testing.T) {
 			input map[string]any
 		}{
 			{"social.coves.community.post.create", map[string]any{
-				"community": community.DID, "title": "nope", "content": "nope"}},
+				"community": community.DID, "title": "nope", "content": "nope",
+			}},
 			{"social.coves.community.post.delete", map[string]any{"uri": firstURI}},
 		} {
 			err := p.AppView.Procedure(ctx, endpoint.nsid, endpoint.input, nil)

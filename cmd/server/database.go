@@ -9,6 +9,7 @@ import (
 	"Coves/internal/config"
 	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/db/migrations"
+
 	postgresRepo "Coves/internal/db/postgres"
 
 	"github.com/pressly/goose/v3"

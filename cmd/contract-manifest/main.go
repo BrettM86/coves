@@ -163,7 +163,9 @@ func run(w io.Writer, consumed map[string][]string, e2eDir, pendingPath string, 
 		return 0, err
 	}
 	res := evaluate(consumed, markers, pending, allowPending)
-	report(w, res, e2eDir, pendingPath)
+	if err := report(w, res, e2eDir, pendingPath); err != nil {
+		return 0, fmt.Errorf("writing report: %w", err)
+	}
 	if len(res.Violations) > 0 {
 		return 1, nil
 	}
@@ -586,41 +588,66 @@ func loadPending(path string) ([]pendingEntry, error) {
 // passing or not: the burn-down's whole job is to be visible in every CI log,
 // so that "eight collections still uncontracted" is a number somebody watches
 // shrink rather than a fact buried in a file.
-func report(w io.Writer, res result, e2eDir, pendingPath string) {
+func report(w io.Writer, res result, e2eDir, pendingPath string) error {
+	out := &reportPrinter{w: w}
+
 	total := len(res.Contracted) + len(res.Pending) + len(res.Missing)
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "───────────────────────────────────────────────────────────────")
-	fmt.Fprintf(w, " Pipeline contract manifest — %d consumed collection(s)\n", total)
-	fmt.Fprintf(w, " markers: %s   burn-down: %s\n", e2eDir, pendingPath)
-	fmt.Fprintln(w, "───────────────────────────────────────────────────────────────")
+	out.println()
+	out.println("───────────────────────────────────────────────────────────────")
+	out.printf(" Pipeline contract manifest — %d consumed collection(s)\n", total)
+	out.printf(" markers: %s   burn-down: %s\n", e2eDir, pendingPath)
+	out.println("───────────────────────────────────────────────────────────────")
 
 	for _, c := range res.Contracted {
-		fmt.Fprintf(w, "  ✓ %-42s %s\n", c.Collection, c.Markers[0].Position())
+		out.printf("  ✓ %-42s %s\n", c.Collection, c.Markers[0].Position())
 	}
 	for _, p := range res.Pending {
-		fmt.Fprintf(w, "  … %-42s pending, task %d\n", p.Collection, p.Entry.Task)
+		out.printf("  … %-42s pending, task %d\n", p.Collection, p.Entry.Task)
 	}
 	for _, collection := range res.Missing {
-		fmt.Fprintf(w, "  ✗ %-42s NO CONTRACT\n", collection)
+		out.printf("  ✗ %-42s NO CONTRACT\n", collection)
 	}
 
-	fmt.Fprintln(w)
+	out.println()
 	if len(res.Violations) == 0 {
-		fmt.Fprintf(w, "✓ contract manifest OK — %d contracted, %d pending\n",
+		out.printf("✓ contract manifest OK — %d contracted, %d pending\n",
 			len(res.Contracted), len(res.Pending))
 		if len(res.Pending) == 0 {
-			fmt.Fprintln(w, "  the burn-down is empty: every consumed collection is proven end to end")
+			out.println("  the burn-down is empty: every consumed collection is proven end to end")
 		}
-		fmt.Fprintln(w)
-		return
+		out.println()
+		return out.err
 	}
 
-	fmt.Fprintln(w, "✗ CONTRACT MANIFEST FAILED")
+	out.println("✗ CONTRACT MANIFEST FAILED")
 	for _, v := range res.Violations {
-		fmt.Fprintf(w, "    · %s\n", v)
+		out.printf("    · %s\n", v)
 	}
-	fmt.Fprintln(w)
+	out.println()
+	return out.err
+}
+
+// reportPrinter writes the report and keeps the first write error, so the
+// report body stays readable while a failed write (a closed pipe, a full disk)
+// still reaches the caller and turns into a non-zero exit.
+type reportPrinter struct {
+	w   io.Writer
+	err error
+}
+
+func (p *reportPrinter) printf(format string, args ...any) {
+	if p.err != nil {
+		return
+	}
+	_, p.err = fmt.Fprintf(p.w, format, args...)
+}
+
+func (p *reportPrinter) println(args ...any) {
+	if p.err != nil {
+		return
+	}
+	_, p.err = fmt.Fprintln(p.w, args...)
 }
 
 func sortedKeys[V any](m map[string]V) []string {

@@ -3,12 +3,12 @@
 package jetstream
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
 
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 
@@ -155,11 +155,13 @@ func TestCommentConsumer_Update_AsOfGuard_AndInclusiveScore(t *testing.T) {
 	// Native upvote stacks on bridged.
 	require.NoError(t, vc.HandleEvent(ctx, &JetstreamEvent{
 		Kind: "commit", Did: bridgedTestVoter,
-		Commit: &CommitEvent{Operation: "create", Collection: "social.coves.feed.vote", RKey: "cv1", CID: "bafcv1",
+		Commit: &CommitEvent{
+			Operation: "create", Collection: "social.coves.feed.vote", RKey: "cv1", CID: "bafcv1",
 			Record: map[string]interface{}{
 				"subject":   map[string]interface{}{"uri": uri, "cid": "bafcc2"},
 				"direction": "up", "createdAt": "2026-02-01T00:00:00Z",
-			}},
+			},
+		},
 	}))
 	up, _, _, _, score, _ := readCommentRow(t, db, uri)
 	assert.Equal(t, 1, up)
@@ -274,11 +276,13 @@ func TestCommentConsumer_Resurrection_ScoreIncludesSurvivingNativeVotes(t *testi
 	upvote := func(voter, rkey string) {
 		require.NoError(t, vc.HandleEvent(ctx, &JetstreamEvent{
 			Kind: "commit", Did: voter,
-			Commit: &CommitEvent{Operation: "create", Collection: "social.coves.feed.vote", RKey: rkey, CID: "bafresv",
+			Commit: &CommitEvent{
+				Operation: "create", Collection: "social.coves.feed.vote", RKey: rkey, CID: "bafresv",
 				Record: map[string]interface{}{
 					"subject":   map[string]interface{}{"uri": uri, "cid": "bafres1"},
 					"direction": "up", "createdAt": "2026-02-01T00:00:00Z",
-				}},
+				},
+			},
 		}))
 	}
 	upvote(bridgedTestVoter, "rv1")

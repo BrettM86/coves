@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"strconv"
 	"sync"
 	"testing"
@@ -69,27 +70,23 @@ type listCountingConn struct {
 }
 
 func (c *listCountingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	queryer, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		// database/sql falls back to Prepare, which counts the statement.
+		return nil, driver.ErrSkip
+	}
 	c.counter.beforeStatement()
-	if queryer, ok := c.Conn.(driver.QueryerContext); ok {
-		return queryer.QueryContext(ctx, query, args)
-	}
-	values := make([]driver.Value, len(args))
-	for index, arg := range args {
-		values[index] = arg.Value
-	}
-	return c.Conn.(driver.Queryer).Query(query, values)
+	return queryer.QueryContext(ctx, query, args)
 }
 
 func (c *listCountingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	executor, ok := c.Conn.(driver.ExecerContext)
+	if !ok {
+		// database/sql falls back to Prepare, which counts the statement.
+		return nil, driver.ErrSkip
+	}
 	c.counter.beforeStatement()
-	if executor, ok := c.Conn.(driver.ExecerContext); ok {
-		return executor.ExecContext(ctx, query, args)
-	}
-	values := make([]driver.Value, len(args))
-	for index, arg := range args {
-		values[index] = arg.Value
-	}
-	return c.Conn.(driver.Execer).Exec(query, values)
+	return executor.ExecContext(ctx, query, args)
 }
 
 func (c *listCountingConn) Prepare(query string) (driver.Stmt, error) {
@@ -106,10 +103,11 @@ func (c *listCountingConn) PrepareContext(ctx context.Context, query string) (dr
 }
 
 func (c *listCountingConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
-	if beginner, ok := c.Conn.(driver.ConnBeginTx); ok {
-		return beginner.BeginTx(ctx, options)
+	beginner, ok := c.Conn.(driver.ConnBeginTx)
+	if !ok {
+		return nil, errors.New("underlying connection does not implement driver.ConnBeginTx")
 	}
-	return c.Conn.Begin()
+	return beginner.BeginTx(ctx, options)
 }
 
 func listCountingRepository(t *testing.T, source *sql.DB) (notifications.ReadRepository, *listStatementCounter) {

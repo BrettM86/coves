@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"Coves/internal/core/moderation"
+
 	"github.com/stretchr/testify/assert"
 )
 

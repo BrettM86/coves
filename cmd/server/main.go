@@ -19,8 +19,9 @@ import (
 	"Coves/internal/config"
 	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher"
-	postgresRepo "Coves/internal/db/postgres"
 	"Coves/internal/observability"
+
+	postgresRepo "Coves/internal/db/postgres"
 
 	_ "github.com/lib/pq"
 )

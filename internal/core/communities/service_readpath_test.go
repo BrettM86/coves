@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"Coves/internal/core/communities"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/communities"
 )
 
 // The community service's read surface: nine methods that resolve an

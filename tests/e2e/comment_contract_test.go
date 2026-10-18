@@ -691,7 +691,8 @@ func TestCommentAPIContract(t *testing.T) {
 					"root":   map[string]any{"uri": post.URI, "cid": post.CID},
 					"parent": map[string]any{"uri": post.URI, "cid": post.CID},
 				},
-				"content": "nope"}},
+				"content": "nope",
+			}},
 			{"social.coves.community.comment.update", map[string]any{"uri": topURI, "content": "nope"}},
 			{"social.coves.community.comment.delete", map[string]any{"uri": topURI}},
 		} {

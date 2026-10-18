@@ -521,11 +521,8 @@ func TestAPIKeyService_GenerateKey_DIDMismatch(t *testing.T) {
 	}
 
 	_, _, err := service.GenerateKey(context.Background(), "did:plc:aggregator123", session)
-	if err == nil {
-		t.Error("GenerateKey() expected DID mismatch error, got nil")
-	}
-	if !errors.Is(err, nil) && err.Error() == "" {
-		// Just check there's an error for DID mismatch
+	if !errors.Is(err, ErrOAuthSessionMismatch) {
+		t.Errorf("GenerateKey() error = %v, want ErrOAuthSessionMismatch", err)
 	}
 }
 

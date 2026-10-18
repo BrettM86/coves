@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"Coves/internal/core/moderation"
 	"bytes"
 	"context"
 	"log/slog"
@@ -12,6 +11,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/moderation"
 
 	"github.com/go-chi/chi/v5"
 )

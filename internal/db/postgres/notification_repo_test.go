@@ -13,6 +13,7 @@ import (
 	"Coves/tests/testkit"
 
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/require"
 )
 
@@ -156,7 +157,7 @@ func TestNotificationRepository_ApplyTx_PropagatesConstraintViolation(t *testing
 	require.Error(t, err, "ApplyTx must return the notifications CHECK-constraint violation")
 	var postgresError *pq.Error
 	require.True(t, errors.As(err, &postgresError), "the returned error must wrap the Postgres error")
-	require.Equal(t, pq.ErrorCode("23514"), postgresError.Code)
+	require.Equal(t, pqerror.Code("23514"), postgresError.Code)
 }
 
 func TestNotificationRepository_ApplyTx_RejectsReplyWithoutSubject(t *testing.T) {
@@ -186,7 +187,7 @@ func TestNotificationRepository_ApplyTx_RejectsReplyWithoutSubject(t *testing.T)
 	require.Error(t, applyError, "ApplyTx must bind an empty SubjectURI as NULL so the reply CHECK rejects it")
 	var postgresError *pq.Error
 	require.True(t, errors.As(applyError, &postgresError), "the returned error must wrap the Postgres error")
-	require.Equal(t, pq.ErrorCode("23514"), postgresError.Code)
+	require.Equal(t, pqerror.Code("23514"), postgresError.Code)
 	require.Equal(t, "notifications_check", postgresError.Constraint,
 		"the per-reason shape CHECK, not the reason CHECK, must reject the intent")
 	require.Error(t, commitError, "the transaction whose intent violated the CHECK must not commit")

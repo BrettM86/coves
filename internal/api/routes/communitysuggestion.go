@@ -1,10 +1,11 @@
 package routes
 
 import (
+	"time"
+
 	"Coves/internal/api/handlers/communitysuggestion"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communitysuggestions"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )

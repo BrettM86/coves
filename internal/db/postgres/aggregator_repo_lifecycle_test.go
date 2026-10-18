@@ -3,18 +3,18 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
 
+	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/aggregators"
-	"Coves/tests/testkit"
 )
 
 // The federation-visible half of the aggregator index: what an aggregator IS,
@@ -403,8 +403,10 @@ func TestAggregatorRepo_ListAggregators(t *testing.T) {
 		assert.Equal(t, []string{byName["Bravo Aggregator"]}, aggregatorDIDsOf(second))
 
 		assert.ElementsMatch(t,
-			[]string{byName["Zulu Aggregator"], byName["Yankee Aggregator"],
-				byName["Alpha Aggregator"], byName["Bravo Aggregator"]},
+			[]string{
+				byName["Zulu Aggregator"], byName["Yankee Aggregator"],
+				byName["Alpha Aggregator"], byName["Bravo Aggregator"],
+			},
 			append(aggregatorDIDsOf(first), aggregatorDIDsOf(second)...),
 			"paging the directory must visit every aggregator exactly once")
 

@@ -88,9 +88,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/require"
 )
 
 // federatedInstanceDID is the did:web of the instance that hosts the federated
@@ -558,10 +558,10 @@ func requireBlobAbsentLocally(t *testing.T, p *pipeline, did, cid string) {
 		"the LOCAL PDS at %s served blob %s for %s. It should host neither, and if it does, "+
 			"the remote-fetch contract below proves nothing", p.PDS.URL(), cid, did)
 
-	switch status := testkit.StatusOf(err); {
-	case status == http.StatusBadRequest, status == http.StatusNotFound:
+	switch status := testkit.StatusOf(err); status {
+	case http.StatusBadRequest, http.StatusNotFound:
 		// The PDS looked and said no. That is the whole point of the helper.
-	case status == 0:
+	case 0:
 		t.Fatalf("the LOCAL PDS at %s could not be reached at all while proving it does not "+
 			"host blob %s for %s, so nothing was proven: %v", p.PDS.URL(), cid, did, err)
 	default:

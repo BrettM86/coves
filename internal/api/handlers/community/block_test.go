@@ -1,8 +1,6 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -674,7 +675,7 @@ func TestBlockHandler_HandleGetBlocked(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				var gotOffset int
 				handler := NewBlockHandler(&blockTestService{
-					getBlockedFunc: func(_ context.Context, userDID string, _ int, offset int) ([]*communities.CommunityBlock, error) {
+					getBlockedFunc: func(_ context.Context, userDID string, _, offset int) ([]*communities.CommunityBlock, error) {
 						gotOffset = offset
 						blocks := make([]*communities.CommunityBlock, tc.blockCount)
 						for i := range blocks {

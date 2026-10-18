@@ -1,10 +1,11 @@
 package communityFeeds
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"fmt"
 	"strings"
+
+	"Coves/internal/core/communities"
 )
 
 var validTimeframes = map[string]bool{

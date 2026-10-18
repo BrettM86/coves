@@ -241,8 +241,10 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 			rootView.Labels = notificationPostLabels(root)
 			rootView.Thumbnail, rootView.ThumbnailAlt = thumbnails[row.RootPostURI].url, thumbnails[row.RootPostURI].alt
 		}
-		view := NotificationView{Reason: row.Reason, SortAt: notificationTime(row.SortAt), IsRead: row.IsRead,
-			RootPost: rootView, Subject: subject}
+		view := NotificationView{
+			Reason: row.Reason, SortAt: notificationTime(row.SortAt), IsRead: row.IsRead,
+			RootPost: rootView, Subject: subject,
+		}
 		if row.Reason == ReasonUpvote {
 			view.UpvoteCount = row.UpvoteCount
 			for _, voterDID := range row.RecentUpvoterDIDs {

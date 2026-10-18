@@ -130,8 +130,9 @@ func TestBridgedVotesPeak_Bookkeeping(t *testing.T) {
 			}
 			if row.groupFails {
 				sentinel = errors.New("group write failed")
-				store = f.store(bridgedNotificationRepositoryDecorator{Repository: repo,
-					apply: func(context.Context, *sql.Tx, notifications.UpvoteGroupIntent) error { return sentinel },
+				store = f.store(bridgedNotificationRepositoryDecorator{
+					Repository: repo,
+					apply:      func(context.Context, *sql.Tx, notifications.UpvoteGroupIntent) error { return sentinel },
 				})
 			}
 			asOf := f.now.Add(time.Minute)

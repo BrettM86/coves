@@ -25,7 +25,6 @@ type bridgedRaceResult struct {
 
 type bridgedRaceReached struct {
 	processID int
-	groupSort time.Time
 }
 
 func bridgedRaceApply(ctx context.Context, store *BridgedVotesRepository, uri string, total int, asOf time.Time) <-chan bridgedRaceResult {

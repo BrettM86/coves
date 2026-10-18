@@ -267,7 +267,6 @@ func TestGetDiscover_NeedsNoIdentity(t *testing.T) {
 	service := discover.NewDiscoverService(repo)
 
 	response, err := service.GetDiscover(context.Background(), discover.GetDiscoverRequest{})
-
 	if err != nil {
 		t.Fatalf("an anonymous request was refused: %v. Discover is the public feed — the route "+
 			"carries OptionalAuth, not RequireAuth", err)

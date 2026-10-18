@@ -3,12 +3,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/userblocks"
-	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/userblocks"
+	"Coves/tests/testkit"
 )
 
 // The user-block repository against real SQL.

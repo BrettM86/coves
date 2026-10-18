@@ -75,77 +75,122 @@ func TestNotificationPreferences_PutChangesOnlyNamedReasons(t *testing.T) {
 	}{
 		{
 			name: "no row creates state without advancing seen at",
-			steps: []step{{notifications.PreferencesUpdate{Mention: &falseValue},
-				notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true}, []string{"mention"}}},
+			steps: []step{{
+				notifications.PreferencesUpdate{Mention: &falseValue},
+				notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true},
+				[]string{"mention"},
+			}},
 		},
 		{
 			name:     "existing seen at survives mention disable",
 			hasState: true, initialSeenAt: seenAt, initialDisabled: []string{},
-			steps: []step{{notifications.PreferencesUpdate{Mention: &falseValue},
-				notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true}, []string{"mention"}}},
+			steps: []step{{
+				notifications.PreferencesUpdate{Mention: &falseValue},
+				notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true},
+				[]string{"mention"},
+			}},
 		},
 		{
 			name:     "mention reenabled and upvote disabled",
 			hasState: true, initialSeenAt: seenAt, initialDisabled: []string{"mention"},
-			steps: []step{{notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
-				notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false}, []string{"upvote"}}},
+			steps: []step{{
+				notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
+				notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false},
+				[]string{"upvote"},
+			}},
 		},
 		{
 			name:     "repeated put does not duplicate upvote",
 			hasState: true, initialSeenAt: seenAt, initialDisabled: []string{"upvote"},
 			steps: []step{
-				{notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false}, []string{"upvote"}},
-				{notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false}, []string{"upvote"}},
+				{
+					notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false},
+					[]string{"upvote"},
+				},
+				{
+					notifications.PreferencesUpdate{Mention: &trueValue, Upvote: &falseValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false},
+					[]string{"upvote"},
+				},
 			},
 		},
 		{
 			name:     "omitted upvote remains disabled",
 			hasState: true, initialSeenAt: seenAt, initialDisabled: []string{"mention", "upvote"},
-			steps: []step{{notifications.PreferencesUpdate{Mention: &trueValue},
-				notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false}, []string{"upvote"}}},
+			steps: []step{{
+				notifications.PreferencesUpdate{Mention: &trueValue},
+				notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false},
+				[]string{"upvote"},
+			}},
 		},
 		{
 			name:     "empty update preserves disabled comment reply",
 			hasState: true, initialSeenAt: seenAt, initialDisabled: []string{"commentReply"},
-			steps: []step{{notifications.PreferencesUpdate{},
-				notifications.Preferences{PostReply: true, CommentReply: false, Mention: true, Upvote: true}, []string{"commentReply"}}},
+			steps: []step{{
+				notifications.PreferencesUpdate{},
+				notifications.Preferences{PostReply: true, CommentReply: false, Mention: true, Upvote: true},
+				[]string{"commentReply"},
+			}},
 		},
 		{
 			name: "post reply disabled then reenabled",
 			steps: []step{
-				{notifications.PreferencesUpdate{PostReply: &falseValue},
-					notifications.Preferences{PostReply: false, CommentReply: true, Mention: true, Upvote: true}, []string{"postReply"}},
-				{notifications.PreferencesUpdate{PostReply: &trueValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true}, []string{}},
+				{
+					notifications.PreferencesUpdate{PostReply: &falseValue},
+					notifications.Preferences{PostReply: false, CommentReply: true, Mention: true, Upvote: true},
+					[]string{"postReply"},
+				},
+				{
+					notifications.PreferencesUpdate{PostReply: &trueValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true},
+					[]string{},
+				},
 			},
 		},
 		{
 			name: "comment reply disabled then reenabled",
 			steps: []step{
-				{notifications.PreferencesUpdate{CommentReply: &falseValue},
-					notifications.Preferences{PostReply: true, CommentReply: false, Mention: true, Upvote: true}, []string{"commentReply"}},
-				{notifications.PreferencesUpdate{CommentReply: &trueValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true}, []string{}},
+				{
+					notifications.PreferencesUpdate{CommentReply: &falseValue},
+					notifications.Preferences{PostReply: true, CommentReply: false, Mention: true, Upvote: true},
+					[]string{"commentReply"},
+				},
+				{
+					notifications.PreferencesUpdate{CommentReply: &trueValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true},
+					[]string{},
+				},
 			},
 		},
 		{
 			name: "upvote disabled then reenabled",
 			steps: []step{
-				{notifications.PreferencesUpdate{Upvote: &falseValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false}, []string{"upvote"}},
-				{notifications.PreferencesUpdate{Upvote: &trueValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true}, []string{}},
+				{
+					notifications.PreferencesUpdate{Upvote: &falseValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: false},
+					[]string{"upvote"},
+				},
+				{
+					notifications.PreferencesUpdate{Upvote: &trueValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true},
+					[]string{},
+				},
 			},
 		},
 		{
 			name: "mention disabled then reenabled",
 			steps: []step{
-				{notifications.PreferencesUpdate{Mention: &falseValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true}, []string{"mention"}},
-				{notifications.PreferencesUpdate{Mention: &trueValue},
-					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true}, []string{}},
+				{
+					notifications.PreferencesUpdate{Mention: &falseValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: false, Upvote: true},
+					[]string{"mention"},
+				},
+				{
+					notifications.PreferencesUpdate{Mention: &trueValue},
+					notifications.Preferences{PostReply: true, CommentReply: true, Mention: true, Upvote: true},
+					[]string{},
+				},
 			},
 		},
 	} {

@@ -3,13 +3,13 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
 
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -184,7 +184,8 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 
 func subscriberTriggerExists(t *testing.T, db interface {
 	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
-}) bool {
+},
+) bool {
 	t.Helper()
 	var exists bool
 	require.NoError(t, db.QueryRowContext(context.Background(),

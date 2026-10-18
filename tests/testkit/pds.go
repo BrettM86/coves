@@ -796,7 +796,7 @@ func (a *Account) UploadBlob(t TestingT, data []byte, mimeType string) BlobRef {
 // the address class the guard refuses — so a test that omits them will fail at
 // the first write with an SSRF refusal rather than silently doing something
 // weaker.
-func PasswordAuthFactory[C any, O any](
+func PasswordAuthFactory[C, O any](
 	newClient func(host, did, accessToken string, opts ...O) (C, error),
 	opts ...O,
 ) func(context.Context, *oauth.ClientSessionData) (C, error) {

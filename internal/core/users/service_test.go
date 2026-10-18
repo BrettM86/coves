@@ -44,7 +44,7 @@ type stubTurnstile struct {
 	err error
 }
 
-func (s stubTurnstile) Verify(_ context.Context, _ string, _ string) error {
+func (s stubTurnstile) Verify(_ context.Context, _, _ string) error {
 	return s.err
 }
 
@@ -1108,7 +1108,7 @@ func TestRequestSignupToken_ConcurrentRequestsMintDistinctCodes(t *testing.T) {
 		counterMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"invite-%d"}`, n)))
+		_, _ = fmt.Fprintf(w, `{"code":"invite-%d"}`, n)
 	}))
 	t.Cleanup(srv.Close)
 

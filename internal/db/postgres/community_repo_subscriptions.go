@@ -1,13 +1,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
+
+	"Coves/internal/core/communities"
 )
 
 // Subscribe creates a new subscription record
@@ -74,7 +75,6 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		nullString(subscription.RecordCID),
 		subscription.ContentVisibility,
 	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
-
 	if err != nil {
 		if strings.Contains(err.Error(), "foreign key") {
 			return nil, communities.ErrCommunityNotFound

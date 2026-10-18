@@ -3,12 +3,13 @@
 package live
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/tests/testkit"
 )
 
 // purgeIdentityCache removes any cached rows for the given identifiers, so the

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-
 	"Coves/internal/core/blueskypost"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // recordingBlueskyResolver records every URI it is asked to resolve.

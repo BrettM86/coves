@@ -3,7 +3,6 @@
 package posts_test
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 

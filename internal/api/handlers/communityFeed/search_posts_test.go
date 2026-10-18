@@ -15,7 +15,7 @@ import (
 
 // searchPosts drives the handler over a raw query string and returns the
 // recorder plus the service that captured the request.
-func searchPosts(t *testing.T, query string, ctxDID string) (*httptest.ResponseRecorder, *fakeCommunityFeedService) {
+func searchPosts(t *testing.T, query, ctxDID string) (*httptest.ResponseRecorder, *fakeCommunityFeedService) {
 	t.Helper()
 
 	svc := &fakeCommunityFeedService{}

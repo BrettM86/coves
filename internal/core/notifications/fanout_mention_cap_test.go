@@ -186,7 +186,7 @@ func TestFanoutCommentEdit_ReaddedExistingHolderDoesNotUseSlot(t *testing.T) {
 	comment.FacetsJSON = notificationMentionFacets(append([]string{mentionRecipientBDID}, added...)...)
 	lookups := notificationEditLookups(comment)
 	lookups.indexedUsers = notificationCapIndexedUsers(append([]string{mentionRecipientBDID}, added...)...)
-	lookups.existingMentionRecipients = map[string][]string{comment.URI: []string{mentionRecipientBDID}}
+	lookups.existingMentionRecipients = map[string][]string{comment.URI: {mentionRecipientBDID}}
 	intents, err := FanoutCommentEdit(context.Background(), lookups, nil, comment, "")
 	require.NoError(t, err)
 	require.Equal(t, len(added), len(intents), "an already-notified recipient must not receive another intent")

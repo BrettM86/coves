@@ -491,8 +491,10 @@ func TestFirehose_RecoversFromJetstreamDeliveryDisorder(t *testing.T) {
 				}
 			},
 			awaits: []awaitStep{
-				{description: "the event stamped just before the cursor", match: MatchRKey("inside-allowance"),
-					timeout: 2 * time.Second, delivered: true, offsetUS: -5_000},
+				{
+					description: "the event stamped just before the cursor", match: MatchRKey("inside-allowance"),
+					timeout: 2 * time.Second, delivered: true, offsetUS: -5_000,
+				},
 			},
 		},
 		{
@@ -514,8 +516,10 @@ func TestFirehose_RecoversFromJetstreamDeliveryDisorder(t *testing.T) {
 				}
 			},
 			awaits: []awaitStep{
-				{description: "the event stamped far before the cursor", match: MatchRKey("beyond-allowance"),
-					timeout: 300 * time.Millisecond, delivered: false, failureMentions: "1.5s"},
+				{
+					description: "the event stamped far before the cursor", match: MatchRKey("beyond-allowance"),
+					timeout: 300 * time.Millisecond, delivered: false, failureMentions: "1.5s",
+				},
 			},
 		},
 	}
@@ -680,8 +684,10 @@ func TestFirehose_CursorIsCapturedAtConstruction(t *testing.T) {
 
 func TestMatchers(t *testing.T) {
 	event := commitEvent("did:plc:alice", "social.coves.community.post", "3kabc", "create", 42)
-	identity := &Event{DID: "did:plc:alice", Kind: "identity", TimeUS: 43,
-		Identity: &IdentityEvent{DID: "did:plc:alice", Handle: "alice.local.coves.dev"}}
+	identity := &Event{
+		DID: "did:plc:alice", Kind: "identity", TimeUS: 43,
+		Identity: &IdentityEvent{DID: "did:plc:alice", Handle: "alice.local.coves.dev"},
+	}
 
 	assert.True(t, MatchDID("did:plc:alice")(&event))
 	assert.False(t, MatchDID("did:plc:bob")(&event))

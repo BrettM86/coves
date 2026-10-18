@@ -480,7 +480,7 @@ func (r *refreshRace) seedIdentityCacheRow(t *testing.T, ctx context.Context, id
 	}
 }
 
-func (r *refreshRace) identityCacheRows(t *testing.T, ctx context.Context, where string, arg string) int {
+func (r *refreshRace) identityCacheRows(t *testing.T, ctx context.Context, where, arg string) int {
 	t.Helper()
 	var count int
 	if err := r.observer.QueryRowContext(ctx, `SELECT count(*) FROM identity_cache WHERE `+where, arg).Scan(&count); err != nil {

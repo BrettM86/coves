@@ -3,18 +3,18 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestUserRepo_Delete_ConcurrentDeletionsSharingCommunitiesDoNotDeadlock pins

@@ -4,15 +4,16 @@
 package errors_test
 
 import (
+	"errors"
+	"fmt"
+	"testing"
+
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
-	"errors"
-	"fmt"
-	"testing"
 
 	coreerrors "Coves/internal/core/errors"
 )

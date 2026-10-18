@@ -12,6 +12,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/votes"
 	"Coves/tests/testkit"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/require"

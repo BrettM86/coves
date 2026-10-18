@@ -3,10 +3,10 @@ package embeds
 import (
 	"testing"
 
+	"Coves/internal/core/blobs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/blobs"
 )
 
 const (

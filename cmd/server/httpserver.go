@@ -1,8 +1,9 @@
 package main
 
 import (
-	"Coves/internal/config"
 	"net/http"
+
+	"Coves/internal/config"
 )
 
 // newHTTPServer builds the HTTP server with every timeout set.

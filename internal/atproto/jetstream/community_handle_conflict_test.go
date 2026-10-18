@@ -3,13 +3,13 @@
 package jetstream
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"Coves/internal/atproto/identity"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"

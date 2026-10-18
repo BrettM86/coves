@@ -46,7 +46,7 @@ func TestCaddyfile_AppViewAllowlistCoversEveryNonXRPCRoute(t *testing.T) {
 	}
 
 	matched := map[string]bool{}
-	err := chi.Walk(theRouter().mux, func(_ string, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+	err := chi.Walk(theRouter().mux, func(_, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasPrefix(route, "/xrpc/") {
 			return nil // /xrpc/* is the first allowlist entry; nothing to check per route
 		}
@@ -95,7 +95,7 @@ func caddyAppViewPathPatterns(t *testing.T) map[string]bool {
 	if err != nil {
 		t.Fatalf("opening the production Caddyfile: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	patterns := map[string]bool{}
 	inBlock := false

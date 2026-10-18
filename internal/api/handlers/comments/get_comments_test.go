@@ -1,7 +1,6 @@
 package comments
 
 import (
-	"Coves/internal/core/moderation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
 )
 
 // The parameter surface of social.coves.community.comment.getComments.

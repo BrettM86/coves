@@ -3,14 +3,6 @@
 package users_test
 
 import (
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
-	"Coves/internal/validation"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +13,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
+	"Coves/internal/validation"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"

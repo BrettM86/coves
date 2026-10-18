@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/syntax"
-
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // --- Mock Repository ---
@@ -116,7 +116,7 @@ func (m *mockPDSClient) ListRecords(ctx context.Context, collection string, limi
 	return nil, nil
 }
 
-func (m *mockPDSClient) PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (string, string, error) {
+func (m *mockPDSClient) PutRecord(ctx context.Context, collection, rkey string, record any, swapRecord string) (string, string, error) {
 	return "", "", nil
 }
 

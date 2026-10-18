@@ -9,6 +9,7 @@ import (
 
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
+
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 

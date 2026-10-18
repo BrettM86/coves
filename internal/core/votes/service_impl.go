@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/atproto/pds"
+
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	oauthclient "Coves/internal/atproto/oauth"
-	"Coves/internal/atproto/pds"
 )
 
 const (
@@ -436,7 +437,7 @@ type existingVote struct {
 
 // findExistingVoteWithCache uses the vote cache for O(1) lookups when available.
 // Falls back to direct PDS pagination if cache is unavailable or cannot be populated.
-func (s *voteService) findExistingVoteWithCache(ctx context.Context, pdsClient pds.Client, userDID string, subjectURI string) (*existingVote, error) {
+func (s *voteService) findExistingVoteWithCache(ctx context.Context, pdsClient pds.Client, userDID, subjectURI string) (*existingVote, error) {
 	if s.cache != nil {
 		if !s.cache.IsCached(userDID) {
 			// Populate cache first (fetches all votes via pagination, then cached for subsequent O(1) lookups)

@@ -1,12 +1,13 @@
 package community
 
 import (
+	"encoding/json"
+	"net/http"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communities"
-	"encoding/json"
-	"net/http"
 )
 
 // CreateHandler handles community creation

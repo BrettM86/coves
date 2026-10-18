@@ -1,9 +1,10 @@
 package jetstream
 
 import (
-	"Coves/internal/core/bridgedvotes"
 	"log"
 	"time"
+
+	"Coves/internal/core/bridgedvotes"
 )
 
 // maxBridgedCount aliases the shared ceiling both ingestion channels enforce on a

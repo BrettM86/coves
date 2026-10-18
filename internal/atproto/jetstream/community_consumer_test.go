@@ -6,12 +6,13 @@ import (
 	"sync"
 	"testing"
 
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/communities"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"Coves/internal/atproto/identity"
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/communities"
 )
 
 // Unit coverage for the community consumer's record parsing.

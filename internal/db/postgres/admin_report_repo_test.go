@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/adminreports"
 	"Coves/tests/testkit"
+
+	"github.com/lib/pq/pqerror"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // admin_report_repo.go against real SQL: the table behind the "report this to
@@ -667,7 +667,7 @@ func TestAdminReportRepo_ExtractPQError(t *testing.T) {
 		assert.Equal(t, "valid_reason", pqErr.Constraint,
 			"Create and UpdateStatus both branch on strings.Contains of this exact field; an empty "+
 				"Constraint turns every constraint violation into an unclassifiable 500")
-		assert.Equal(t, pq.ErrorCode("23514"), pqErr.Code,
+		assert.Equal(t, pqerror.Code("23514"), pqErr.Code,
 			"23514 is check_violation, which is what distinguishes a bad value from a duplicate key")
 	})
 
@@ -697,7 +697,7 @@ func TestAdminReportRepo_ExtractPQError(t *testing.T) {
 		require.Error(t, fkErr)
 		pqErr := extractPQError(fkErr)
 		require.NotNil(t, pqErr)
-		assert.Equal(t, pq.ErrorCode("23503"), pqErr.Code,
+		assert.Equal(t, pqerror.Code("23503"), pqErr.Code,
 			"AtomicVote branches on this raw code rather than on a constraint name, so the code has "+
 				"to survive extraction intact")
 	})

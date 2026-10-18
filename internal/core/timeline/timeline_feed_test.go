@@ -27,12 +27,13 @@ import (
 	"testing"
 	"time"
 
-	timelinehandler "Coves/internal/api/handlers/timeline"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/timeline"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	timelinehandler "Coves/internal/api/handlers/timeline"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

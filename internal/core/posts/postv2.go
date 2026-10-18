@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/syntax"
-
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // The author-repo half of the write path (docs/POSTS.md §3.1,

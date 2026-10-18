@@ -785,7 +785,7 @@ func TestAggregatorAPIContract(t *testing.T) {
 			"did":    "did:plc:aaaaaaaaaneveraggregator",
 			"domain": "unreachable." + testkit.UniqueID(t) + ".invalid",
 		}, nil)
-		requireXRPCRefusal(t, err, http.StatusBadRequest, "DIDResolutionFailed",
+		_ = requireXRPCRefusal(t, err, http.StatusBadRequest, "DIDResolutionFailed",
 			"registering a DID no directory knows")
 	})
 
@@ -824,7 +824,7 @@ func TestAggregatorAPIContract(t *testing.T) {
 			// chasing this assertion the first time the network changes.
 			"domain": "notthehandle." + testkit.UniqueID(t) + ".invalid",
 		}, nil)
-		requireXRPCRefusal(t, err, http.StatusForbidden, "HandleMismatch",
+		_ = requireXRPCRefusal(t, err, http.StatusForbidden, "HandleMismatch",
 			"registering a resolvable DID against a domain that is not its handle")
 	})
 

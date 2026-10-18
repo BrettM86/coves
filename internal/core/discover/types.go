@@ -1,10 +1,11 @@
 package discover
 
 import (
-	coreerrors "Coves/internal/core/errors"
-	"Coves/internal/core/posts"
 	"context"
 	"errors"
+
+	coreerrors "Coves/internal/core/errors"
+	"Coves/internal/core/posts"
 )
 
 // Repository defines discover data access interface

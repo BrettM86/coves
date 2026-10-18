@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"Coves/tests/testkit"
+
+	"github.com/gorilla/websocket"
 )
 
 // --- Test doubles ---

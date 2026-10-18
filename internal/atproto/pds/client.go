@@ -25,21 +25,21 @@ type Client interface {
 	// CreateRecord creates a record in the user's repository.
 	// If rkey is empty, a TID will be generated.
 	// Returns the record URI and CID.
-	CreateRecord(ctx context.Context, collection string, rkey string, record any) (uri string, cid string, err error)
+	CreateRecord(ctx context.Context, collection, rkey string, record any) (uri, cid string, err error)
 
 	// DeleteRecord deletes a record from the user's repository.
-	DeleteRecord(ctx context.Context, collection string, rkey string) error
+	DeleteRecord(ctx context.Context, collection, rkey string) error
 
 	// ListRecords lists records in a collection with pagination.
 	// Returns records, next cursor (empty if no more), and error.
 	ListRecords(ctx context.Context, collection string, limit int, cursor string) (*ListRecordsResponse, error)
 
 	// GetRecord retrieves a single record by collection and rkey.
-	GetRecord(ctx context.Context, collection string, rkey string) (*RecordResponse, error)
+	GetRecord(ctx context.Context, collection, rkey string) (*RecordResponse, error)
 
 	// PutRecord creates or updates a record with optional optimistic locking.
 	// If swapRecord CID is provided, the operation fails if the current CID doesn't match.
-	PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (uri string, cid string, err error)
+	PutRecord(ctx context.Context, collection, rkey string, record any, swapRecord string) (uri, cid string, err error)
 
 	// UploadBlob uploads binary data to the user's PDS repository.
 	// Returns a BlobRef that can be used in records.
@@ -182,7 +182,7 @@ func (c *client) HostURL() string {
 }
 
 // CreateRecord creates a record in the user's repository.
-func (c *client) CreateRecord(ctx context.Context, collection string, rkey string, record any) (string, string, error) {
+func (c *client) CreateRecord(ctx context.Context, collection, rkey string, record any) (string, string, error) {
 	// Build request payload per com.atproto.repo.createRecord
 	payload := map[string]any{
 		"repo":       c.did,
@@ -215,7 +215,7 @@ func (c *client) CreateRecord(ctx context.Context, collection string, rkey strin
 }
 
 // DeleteRecord deletes a record from the user's repository.
-func (c *client) DeleteRecord(ctx context.Context, collection string, rkey string) error {
+func (c *client) DeleteRecord(ctx context.Context, collection, rkey string) error {
 	payload := map[string]any{
 		"repo":       c.did,
 		"collection": collection,
@@ -275,7 +275,7 @@ func (c *client) ListRecords(ctx context.Context, collection string, limit int, 
 }
 
 // GetRecord retrieves a single record by collection and rkey.
-func (c *client) GetRecord(ctx context.Context, collection string, rkey string) (*RecordResponse, error) {
+func (c *client) GetRecord(ctx context.Context, collection, rkey string) (*RecordResponse, error) {
 	params := map[string]any{
 		"repo":       c.did,
 		"collection": collection,
@@ -301,7 +301,7 @@ func (c *client) GetRecord(ctx context.Context, collection string, rkey string) 
 }
 
 // PutRecord creates or updates a record with optional optimistic locking.
-func (c *client) PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (string, string, error) {
+func (c *client) PutRecord(ctx context.Context, collection, rkey string, record any, swapRecord string) (string, string, error) {
 	payload := map[string]any{
 		"repo":       c.did,
 		"collection": collection,

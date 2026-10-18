@@ -618,7 +618,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret)
 	discoverHotStateCleaner, ok := discoverRepository.(discover.DiscoverHotStateCleaner)
 	if !ok {
-		return fmt.Errorf("Discover repository does not support expired Hot state cleanup")
+		return fmt.Errorf("discover repository does not support expired Hot state cleanup")
 	}
 	a.discoverHotStateCleaner = discoverHotStateCleaner
 	a.discoverService = discover.NewDiscoverService(discoverRepository)

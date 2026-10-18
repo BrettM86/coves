@@ -1,12 +1,6 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/identity"
-	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/richtext"
-	"Coves/internal/validation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +10,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/richtext"
+	"Coves/internal/validation"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/net/publicsuffix"

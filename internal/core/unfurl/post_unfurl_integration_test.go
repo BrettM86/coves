@@ -3,6 +3,15 @@
 package unfurl_test
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -14,14 +23,6 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

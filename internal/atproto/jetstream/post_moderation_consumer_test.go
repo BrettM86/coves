@@ -272,8 +272,10 @@ func TestModerationPostConsumerCDNPurgeIncomingCreateCommit(t *testing.T) {
 	assertPostModerationCDNCommitted(t, f, postModerationCIDThree)
 }
 
-type failingPostModerationCDNBinder struct{ moderation.TransactionBinder }
-type failingPostModerationCDNTransaction struct{ moderation.MediaTransaction }
+type (
+	failingPostModerationCDNBinder      struct{ moderation.TransactionBinder }
+	failingPostModerationCDNTransaction struct{ moderation.MediaTransaction }
+)
 
 func (binder failingPostModerationCDNBinder) BindTransaction(tx *sql.Tx) moderation.MediaTransaction {
 	return failingPostModerationCDNTransaction{binder.TransactionBinder.BindTransaction(tx)}

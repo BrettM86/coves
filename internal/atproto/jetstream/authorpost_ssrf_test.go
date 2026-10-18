@@ -7,10 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"Coves/internal/atproto/identity"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"Coves/internal/atproto/identity"
 	covesoauth "Coves/internal/atproto/oauth"
 )
 

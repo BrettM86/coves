@@ -301,7 +301,8 @@ func TestModerationModlogHiddenSubjectsAreNotAnOracle(t *testing.T) {
 	// Each walk filters on community or collection, which excludes hidden rows.
 	// The hidden actions below match every other predicate in every walk.
 	walks := []url.Values{
-		{"community": {f.communityDID}}, {"community": {f.communityHandle}},
+		{"community": {f.communityDID}},
+		{"community": {f.communityHandle}},
 		{"collection": {moderation.CommentCollection}},
 		{"community": {f.communityDID}, "collection": {moderation.CommentCollection}},
 		{"community": {f.communityDID}, "actor": {f.adminA}},
@@ -309,11 +310,15 @@ func TestModerationModlogHiddenSubjectsAreNotAnOracle(t *testing.T) {
 		{"community": {f.communityDID}, "origin": {"local"}},
 		{"community": {f.communityDID}, "authority": {fixtures.InstanceDID()}},
 		{"community": {f.communityDID}, "since": {since}, "until": {until}},
-		{"collection": {moderation.CommentCollection}, "actor": {"admin-a.test"}, "action": {"remove"},
-			"origin": {"local"}, "authority": {"authority.test"}, "since": {since}, "until": {until}},
-		{"community": {f.communityName + "@coves.social"}, "collection": {moderation.CommentCollection},
+		{
+			"collection": {moderation.CommentCollection}, "actor": {"admin-a.test"}, "action": {"remove"},
+			"origin": {"local"}, "authority": {"authority.test"}, "since": {since}, "until": {until},
+		},
+		{
+			"community": {f.communityName + "@coves.social"}, "collection": {moderation.CommentCollection},
 			"actor": {f.adminA}, "action": {"remove"}, "origin": {"local"}, "authority": {fixtures.InstanceDID()},
-			"since": {since}, "until": {until}},
+			"since": {since}, "until": {until},
+		},
 	}
 	walk := func(params url.Values) [][]byte {
 		query := url.Values{"limit": {"1"}}
@@ -352,14 +357,23 @@ func TestModerationModlogHiddenSubjectsAreNotAnOracle(t *testing.T) {
 	// indexed but never actioned. All four must answer identically.
 	subjects := []string{hiddenURI, activeURI, neverURI, indexedURI}
 	suffixes := []url.Values{
-		{}, {"community": {f.communityDID}}, {"community": {f.communityHandle}},
-		{"community": {f.communityName + "@coves.social"}}, {"collection": {moderation.CommentCollection}},
-		{"actor": {f.adminA}}, {"actor": {"admin-a.test"}}, {"action": {"remove"}}, {"origin": {"local"}},
-		{"authority": {fixtures.InstanceDID()}}, {"authority": {"authority.test"}},
+		{},
+		{"community": {f.communityDID}},
+		{"community": {f.communityHandle}},
+		{"community": {f.communityName + "@coves.social"}},
+		{"collection": {moderation.CommentCollection}},
+		{"actor": {f.adminA}},
+		{"actor": {"admin-a.test"}},
+		{"action": {"remove"}},
+		{"origin": {"local"}},
+		{"authority": {fixtures.InstanceDID()}},
+		{"authority": {"authority.test"}},
 		{"since": {since}, "until": {until}},
 		{"community": {f.communityDID}, "actor": {f.adminA}, "action": {"remove"}, "since": {since}, "until": {until}},
-		{"community": {f.communityHandle}, "collection": {moderation.CommentCollection}, "actor": {"admin-a.test"},
-			"action": {"remove"}, "origin": {"local"}, "authority": {"authority.test"}, "since": {since}, "until": {until}},
+		{
+			"community": {f.communityHandle}, "collection": {moderation.CommentCollection}, "actor": {"admin-a.test"},
+			"action": {"remove"}, "origin": {"local"}, "authority": {"authority.test"}, "since": {since}, "until": {until},
+		},
 	}
 	for _, suffix := range suffixes {
 		t.Run(suffix.Encode(), func(t *testing.T) {
@@ -484,11 +498,16 @@ func TestModerationModlogFilters(t *testing.T) {
 	f.restore(t, uri, cid, f.tokenB, firstID, version, modlogDiscretion, "second")
 	f.remove(t, otherURI, otherCID, f.tokenB, modlogSpam, "third")
 	for _, query := range []url.Values{
-		{"actor": {f.adminA}}, {"actor": {"admin-a.test"}},
-		{"authority": {fixtures.InstanceDID()}}, {"authority": {"authority.test"}},
-		{"subject": {uri}}, {"collection": {moderation.CommentCollection}},
-		{"action": {"restore"}}, {"origin": {"local"}},
-		{"community": {f.communityDID}}, {"community": {f.communityHandle}},
+		{"actor": {f.adminA}},
+		{"actor": {"admin-a.test"}},
+		{"authority": {fixtures.InstanceDID()}},
+		{"authority": {"authority.test"}},
+		{"subject": {uri}},
+		{"collection": {moderation.CommentCollection}},
+		{"action": {"restore"}},
+		{"origin": {"local"}},
+		{"community": {f.communityDID}},
+		{"community": {f.communityHandle}},
 		{"community": {f.communityName + "@coves.social"}},
 	} {
 		t.Run(query.Encode(), func(t *testing.T) {
@@ -519,9 +538,11 @@ func TestModerationModlogFilters(t *testing.T) {
 		})
 	}
 	for _, query := range []url.Values{
-		{"actor": {"missing.test"}}, {"authority": {"missing.test"}},
+		{"actor": {"missing.test"}},
+		{"authority": {"missing.test"}},
 		{"community": {"nonexistent.coves.social"}},
-		{"origin": {"inherited"}}, {"collection": {moderation.PostV2Collection}},
+		{"origin": {"inherited"}},
+		{"collection": {moderation.PostV2Collection}},
 	} {
 		response := f.list(t, false, "", query)
 		_, items := modlogPage(t, response, false)
@@ -543,8 +564,10 @@ func TestModerationModlogFilters(t *testing.T) {
 		when     time.Time
 		included bool
 	}{
-		{"since", stamp, true}, {"since", stamp.Add(100 * time.Nanosecond), false},
-		{"until", stamp, false}, {"until", stamp.Add(100 * time.Nanosecond), true},
+		{"since", stamp, true},
+		{"since", stamp.Add(100 * time.Nanosecond), false},
+		{"until", stamp, false},
+		{"until", stamp.Add(100 * time.Nanosecond), true},
 	} {
 		query := url.Values{"subject": {uri}, "action": {"remove"}, bound.key: {bound.when.Format(time.RFC3339Nano)}}
 		_, matches := modlogPage(t, f.list(t, false, "", query), false)
@@ -639,8 +662,10 @@ func TestModerationModlogFiltersReturnOnlyTheirOwnRows(t *testing.T) {
 		{url.Values{"community": {secondHandle}, "authority": {"authority.test"}}, []string{removeSecondPost}},
 		{url.Values{"community": {secondDID}, "collection": {moderation.CommentCollection}}, []string{removeSecondAuthority}},
 		{url.Values{"community": {f.communityHandle}, "origin": {"inherited"}}, []string{inheritedID}},
-		{url.Values{"collection": {moderation.CommentCollection}, "authority": {fixtures.InstanceDID()}, "origin": {"local"}},
-			[]string{removeFirst, restoreFirst, removeOther}},
+		{
+			url.Values{"collection": {moderation.CommentCollection}, "authority": {fixtures.InstanceDID()}, "origin": {"local"}},
+			[]string{removeFirst, restoreFirst, removeOther},
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.query.Encode(), func(t *testing.T) {

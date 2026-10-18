@@ -1,8 +1,6 @@
 package aggregator
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -892,7 +893,7 @@ func TestGetAPIKeyResponse_OmitsEmptyOptionalFields(t *testing.T) {
 
 // mockAPIKeyService implements aggregators.APIKeyServiceInterface for testing
 type mockAPIKeyService struct {
-	generateKeyFunc       func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey string, keyPrefix string, err error)
+	generateKeyFunc       func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey, keyPrefix string, err error)
 	getAPIKeyInfoFunc     func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
 	revokeKeyFunc         func(ctx context.Context, aggregatorDID string) error
 	failedLastUsedUpdates int64

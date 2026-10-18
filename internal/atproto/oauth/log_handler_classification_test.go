@@ -61,8 +61,10 @@ func TestOAuthPackage_LogMessagesAreCompileTimeLiterals(t *testing.T) {
 	fileSet := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
-	messageArgument := map[string]int{"Debug": 0, "Info": 0, "Warn": 0, "Error": 0, "Log": 2, "LogAttrs": 2,
-		"DebugContext": 1, "InfoContext": 1, "WarnContext": 1, "ErrorContext": 1}
+	messageArgument := map[string]int{
+		"Debug": 0, "Info": 0, "Warn": 0, "Error": 0, "Log": 2, "LogAttrs": 2,
+		"DebugContext": 1, "InfoContext": 1, "WarnContext": 1, "ErrorContext": 1,
+	}
 	var violations []string
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {

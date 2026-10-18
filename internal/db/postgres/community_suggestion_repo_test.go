@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/communitysuggestions"
 	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // community_suggestion_repo.go against real SQL: the "which community should we
@@ -505,13 +505,15 @@ func TestSuggestionRepo_List(t *testing.T) {
 		repo, _, ids := seed(t)
 
 		open, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "new", Status: string(communitysuggestions.StatusOpen), Limit: 10})
+			Sort: "new", Status: string(communitysuggestions.StatusOpen), Limit: 10,
+		})
 		require.NoError(t, err)
 		assert.Equal(t, []int64{ids["newest"], ids["middle"], ids["oldest"]}, suggestionIDsOf(open),
 			"the status filter is what keeps an already-approved community off the voting board")
 
 		approved, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "new", Status: string(communitysuggestions.StatusApproved), Limit: 10})
+			Sort: "new", Status: string(communitysuggestions.StatusApproved), Limit: 10,
+		})
 		require.NoError(t, err)
 		assert.Equal(t, []int64{ids["approved"]}, suggestionIDsOf(approved))
 	})
@@ -530,7 +532,8 @@ func TestSuggestionRepo_List(t *testing.T) {
 		repo, _, _ := seed(t)
 
 		list, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "new", Status: "shipped", Limit: 10})
+			Sort: "new", Status: "shipped", Limit: 10,
+		})
 		require.NoError(t, err, "the read path has no CHECK constraint to trip; an unknown status is "+
 			"a filter nothing matches")
 		assert.Empty(t, list)
@@ -566,12 +569,14 @@ func TestSuggestionRepo_List(t *testing.T) {
 		repo, _, ids := seed(t)
 
 		first, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "popular", Limit: 3, Offset: 0})
+			Sort: "popular", Limit: 3, Offset: 0,
+		})
 		require.NoError(t, err)
 		assert.Equal(t, []int64{ids["approved"], ids["oldest"], ids["newest"]}, suggestionIDsOf(first))
 
 		second, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "popular", Limit: 3, Offset: 3})
+			Sort: "popular", Limit: 3, Offset: 3,
+		})
 		require.NoError(t, err)
 		assert.Equal(t, []int64{ids["middle"]}, suggestionIDsOf(second),
 			"the row that ends page one must not reappear at the top of page two, and the row it "+
@@ -635,7 +640,8 @@ func TestSuggestionRepo_List(t *testing.T) {
 		repo, _, _ := seed(t)
 
 		_, err := repo.List(ctx, communitysuggestions.ListSuggestionsRequest{
-			Sort: "new", Limit: 10, Offset: -1})
+			Sort: "new", Limit: 10, Offset: -1,
+		})
 		require.Error(t, err, "the repository applies a floor to Limit but not to Offset; the "+
 			"clamping lives in ListSuggestionsRequest.Validate, which is a caller's obligation "+
 			"rather than this layer's guarantee")

@@ -45,10 +45,10 @@ var (
 	ErrMissingChatID = errors.New("TELEGRAM_CHAT_ID is required when TELEGRAM_ALERTS_ENABLED is true")
 
 	// ErrInvalidTimeout indicates a non-positive request timeout.
-	ErrInvalidTimeout = errors.New("Telegram request timeout must be positive")
+	ErrInvalidTimeout = errors.New("telegram request timeout must be positive")
 
 	// ErrDisabled indicates a client was requested from a disabled config.
-	ErrDisabled = errors.New("Telegram alerts are disabled")
+	ErrDisabled = errors.New("telegram alerts are disabled")
 )
 
 // lookup reads an environment variable, trimming surrounding whitespace.

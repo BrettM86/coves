@@ -101,10 +101,12 @@ func newCommentResurrectionRootFixture(t *testing.T) commentResurrectionRootFixt
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT comment_count FROM posts WHERE uri = $1`, secondPostURI).Scan(&secondCount))
 	require.Equal(t, 2, firstCount, "author delete retains X's placeholder in the old parent's count, beside Y")
 	require.Zero(t, secondCount)
-	return commentResurrectionRootFixture{db: db, consumer: consumer, commentKey: commentKey,
+	return commentResurrectionRootFixture{
+		db: db, consumer: consumer, commentKey: commentKey,
 		commentURI: commentURI, childReplyURI: childReplyURI, firstPostURI: firstPostURI,
 		secondPostURI: secondPostURI, secondPostCID: secondPostCID, createdAt: createdAt,
-		deleteRevision: deleteRevision, firstCount: firstCount, secondCount: secondCount}
+		deleteRevision: deleteRevision, firstCount: firstCount, secondCount: secondCount,
+	}
 }
 
 func (fixture commentResurrectionRootFixture) recreateEvent(t *testing.T, parentURI, parentCID string) *JetstreamEvent {

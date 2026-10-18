@@ -1,12 +1,13 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1084,8 +1085,10 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 			WithSessionHandleUpdater(updater))
 
 		require.NoError(t, consumer.HandleEvent(context.Background(),
-			&JetstreamEvent{Kind: "identity", Did: "did:plc:strangernobodyknows",
-				Identity: &IdentityEvent{Did: "did:plc:strangernobodyknows", Handle: "stranger.example.com"}}))
+			&JetstreamEvent{
+				Kind: "identity", Did: "did:plc:strangernobodyknows",
+				Identity: &IdentityEvent{Did: "did:plc:strangernobodyknows", Handle: "stranger.example.com"},
+			}))
 		assert.Empty(t, updater.calls)
 	})
 

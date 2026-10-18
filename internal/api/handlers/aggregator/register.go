@@ -1,12 +1,6 @@
 package aggregator
 
 import (
-	"Coves/internal/api/reqbody"
-	"Coves/internal/api/xrpc"
-	"Coves/internal/atproto/identity"
-	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/users"
-	"Coves/internal/validation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +10,13 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
+	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
+	"Coves/internal/core/users"
+	"Coves/internal/validation"
 )
 
 const (
@@ -164,7 +165,8 @@ func registerHTTPClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http
 // through, which in production is what PrivateHostOptions(false) returns —
 // nothing — so the guarded construction is what an empty slice lands on too.
 func NewRegisterHandler(userService users.UserService, identityResolver identity.Resolver,
-	opts ...RegisterHandlerOption) *RegisterHandler {
+	opts ...RegisterHandlerOption,
+) *RegisterHandler {
 	h := &RegisterHandler{
 		userService:      userService,
 		identityResolver: identityResolver,

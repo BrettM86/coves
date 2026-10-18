@@ -47,7 +47,7 @@ func (f *fakeCommunityFeedService) SearchPosts(_ context.Context, req communityF
 
 // getCommunity drives the handler over a raw query string and returns the
 // recorder plus the service that captured the request.
-func getCommunity(t *testing.T, query string, ctxDID string) (*httptest.ResponseRecorder, *fakeCommunityFeedService) {
+func getCommunity(t *testing.T, query, ctxDID string) (*httptest.ResponseRecorder, *fakeCommunityFeedService) {
 	t.Helper()
 
 	svc := &fakeCommunityFeedService{}

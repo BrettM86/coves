@@ -97,10 +97,14 @@ func TestCommentConsumer_ResurrectionLifecycle_DeleteKeepsRowsAndSameParentRecre
 	require.Len(t, after, 3, "only F receives a new notification")
 	require.Equal(t, before[0], after[0], "B keeps the original id, CID, root and sort time")
 	require.Equal(t, before[1], after[1], "D keeps the original id, CID, root and sort time")
-	require.Equal(t, notificationRowSnapshot{recipient: newDID, reason: "mention",
-		recordCID: sql.NullString{String: recreatedCID, Valid: true}, rootPostURI: postURI},
-		notificationRowSnapshot{recipient: after[2].recipient, reason: after[2].reason,
-			recordCID: after[2].recordCID, rootPostURI: after[2].rootPostURI}, "F alone receives the new CID")
+	require.Equal(t, notificationRowSnapshot{
+		recipient: newDID, reason: "mention",
+		recordCID: sql.NullString{String: recreatedCID, Valid: true}, rootPostURI: postURI,
+	},
+		notificationRowSnapshot{
+			recipient: after[2].recipient, reason: after[2].reason,
+			recordCID: after[2].recordCID, rootPostURI: after[2].rootPostURI,
+		}, "F alone receives the new CID")
 }
 
 func TestCommentConsumer_SameParentResurrectionNotificationFailureRollsBack(t *testing.T) {

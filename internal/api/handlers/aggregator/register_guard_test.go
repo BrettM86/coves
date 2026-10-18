@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/users"
-
-	"Coves/internal/atproto/identity"
 )
 
 // The registration handler's outbound client, and the one assertion that can

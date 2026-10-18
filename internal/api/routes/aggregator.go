@@ -1,14 +1,15 @@
 package routes
 
 import (
+	"net/http"
+	"time"
+
 	"Coves/internal/api/handlers/aggregator"
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
-	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )

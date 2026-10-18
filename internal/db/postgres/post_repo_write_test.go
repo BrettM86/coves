@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/posts"
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/posts"
-	"Coves/tests/testkit"
 )
 
 // The two writes on the post indexing path: Create, which is how a post enters

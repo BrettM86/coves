@@ -41,9 +41,14 @@ func assertWebLoginError(t *testing.T, response *httptest.ResponseRecorder, code
 func TestWebOAuth_LoginPersistsSafeDestinationAndBrowserBinding(t *testing.T) {
 	for _, entry := range []struct{ input, want string }{
 		{"/c/gardening?sort=new#comments", "/c/gardening?sort=new#comments"},
-		{"", "/"}, {"//attacker.example/steal", "/"}, {"https://attacker.example/steal", "/"},
-		{"/\\attacker.example/steal", "/"}, {"/c/back\\slash", "/"}, {"/\tattacker.example", "/"},
-		{"/c/\x00unsafe", "/"}, {"/c/\x7funsafe", "/"},
+		{"", "/"},
+		{"//attacker.example/steal", "/"},
+		{"https://attacker.example/steal", "/"},
+		{"/\\attacker.example/steal", "/"},
+		{"/c/back\\slash", "/"},
+		{"/\tattacker.example", "/"},
+		{"/c/\x00unsafe", "/"},
+		{"/c/\x7funsafe", "/"},
 	} {
 		t.Run(entry.input, func(t *testing.T) {
 			handler, store := newWebFlowHandler(t)

@@ -1,12 +1,13 @@
 package aggregator
 
 import (
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
 )
 
 // ListForCommunityHandler handles listing aggregators for a community

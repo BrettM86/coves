@@ -93,7 +93,7 @@ type cdnPurgeSweeper interface {
 
 // startCDNPurgeSweepJob retries due targets at boot and each interval.
 func startCDNPurgeSweepJob(ctx context.Context, waitGroup *sync.WaitGroup, sweeper cdnPurgeSweeper, interval time.Duration) {
-	if sweeper == nil || (reflect.ValueOf(sweeper).Kind() == reflect.Ptr && reflect.ValueOf(sweeper).IsNil()) || interval <= 0 {
+	if sweeper == nil || (reflect.ValueOf(sweeper).Kind() == reflect.Pointer && reflect.ValueOf(sweeper).IsNil()) || interval <= 0 {
 		return
 	}
 	runTicker(ctx, waitGroup, "cdn-purge-sweep", interval, func(ctx context.Context) {

@@ -3,13 +3,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
-	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
 )
 
 // The community repository's core write and read paths against real SQL.

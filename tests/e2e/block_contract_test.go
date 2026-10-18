@@ -203,7 +203,7 @@ func (p *pipeline) countersOrErr(consumer string) (consumerCounters, error) {
 	var total consumerCounters
 	for _, c := range report.Consumers {
 		base, _, hasFeed := strings.Cut(c.Name, "@")
-		if !(c.Name == consumer || (hasFeed && base == consumer)) {
+		if c.Name != consumer && (!hasFeed || base != consumer) {
 			continue
 		}
 		total.Processed += c.EventsProcessed
@@ -433,7 +433,7 @@ func TestCommunityBlockIngestion(t *testing.T) {
 	// the visible bound. Every bounding record is written into the BLOCKER's
 	// repo — the same repo the block goes into — because per-repo commit order
 	// is the whole guarantee.
-	measure := func(what string, write func(), bound func()) blockDelivery {
+	measure := func(what string, write, bound func()) blockDelivery {
 		t.Helper()
 		before := p.counters(t, "communities")
 		write()

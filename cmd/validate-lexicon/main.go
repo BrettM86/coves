@@ -1,7 +1,6 @@
 package main
 
 import (
-	"Coves/internal/validation"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -11,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"

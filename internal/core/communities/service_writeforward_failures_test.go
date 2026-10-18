@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
 )
 
 // What subscribing, unsubscribing, blocking and unblocking do when something

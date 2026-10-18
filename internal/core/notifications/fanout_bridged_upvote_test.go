@@ -37,51 +37,75 @@ func TestFanoutBridgedUpvoteChange_Intents(t *testing.T) {
 			wantActor: true, poisonGates: true,
 		},
 		{name: "equal_total", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 4, Upvotes: 4}, want: UpvoteGroupIntent{}},
-		{name: "decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 4, Upvotes: 2},
-			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutPost}},
-		{name: "decrease_to_zero", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 3, Upvotes: 0},
-			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutLegacyPost}},
-		{name: "withdrawn_decrease_ignores_withdrawal_and_recipient", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 4, Upvotes: 2},
+		{
+			name: "decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 4, Upvotes: 2},
+			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutPost},
+		},
+		{
+			name: "decrease_to_zero", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 3, Upvotes: 0},
+			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutLegacyPost},
+		},
+		{
+			name: "withdrawn_decrease_ignores_withdrawal_and_recipient", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 4, Upvotes: 2},
 			setup: func(lookups *commentFanoutLookups) {
 				lookups.referenceStates = map[string]ReferenceState{voteFanoutPost: ReferenceDeleted}
 				lookups.referenceStatesError = poison
 				lookups.recipientFactsError = poison
 			},
-			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutPost}},
+			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutAuthor, SubjectURI: voteFanoutPost},
+		},
 		{name: "unparsable_subject_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost + "/", PreviousUpvotes: 0, Upvotes: 3}, want: UpvoteGroupIntent{}},
 		{name: "unparsable_subject_decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost + "/", PreviousUpvotes: 3, Upvotes: 0}, want: UpvoteGroupIntent{}},
 		{name: "other_collection_increase", change: BridgedUpvoteChange{SubjectURI: unsupportedSubject, PreviousUpvotes: 0, Upvotes: 3}, want: UpvoteGroupIntent{}},
 		{name: "other_collection_decrease", change: BridgedUpvoteChange{SubjectURI: unsupportedSubject, PreviousUpvotes: 3, Upvotes: 0}, want: UpvoteGroupIntent{}},
-		{name: "missing_legacy_post_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 0, Upvotes: 3},
-			setup: func(lookups *commentFanoutLookups) { delete(lookups.legacyPostAuthors, voteFanoutLegacyPost) }, want: UpvoteGroupIntent{}},
-		{name: "missing_legacy_post_decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 3, Upvotes: 0},
-			setup: func(lookups *commentFanoutLookups) { delete(lookups.legacyPostAuthors, voteFanoutLegacyPost) }, want: UpvoteGroupIntent{}},
+		{
+			name: "missing_legacy_post_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 0, Upvotes: 3},
+			setup: func(lookups *commentFanoutLookups) { delete(lookups.legacyPostAuthors, voteFanoutLegacyPost) }, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "missing_legacy_post_decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutLegacyPost, PreviousUpvotes: 3, Upvotes: 0},
+			setup: func(lookups *commentFanoutLookups) { delete(lookups.legacyPostAuthors, voteFanoutLegacyPost) }, want: UpvoteGroupIntent{},
+		},
 		{name: "comment_empty_root_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, PreviousUpvotes: 0, Upvotes: 3}, want: UpvoteGroupIntent{}},
 		{name: "comment_unparsable_root_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, SubjectRootURI: voteFanoutPost + "/", PreviousUpvotes: 0, Upvotes: 3}, want: UpvoteGroupIntent{}},
 		{name: "comment_nonpost_root_increase", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, SubjectRootURI: voteFanoutComment, PreviousUpvotes: 0, Upvotes: 3}, want: UpvoteGroupIntent{}},
-		{name: "comment_without_post_root_decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, PreviousUpvotes: 3, Upvotes: 0},
-			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutCommenter, SubjectURI: voteFanoutCommenterComment}},
-		{name: "recipient_not_indexed", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
-			setup: func(lookups *commentFanoutLookups) { delete(lookups.indexedUsers, voteFanoutAuthor) }, want: UpvoteGroupIntent{}},
-		{name: "recipient_erased", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
-			setup: func(lookups *commentFanoutLookups) { lookups.erasedAccounts = map[string]bool{voteFanoutAuthor: true} }, want: UpvoteGroupIntent{}},
-		{name: "recipient_aggregator", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+		{
+			name: "comment_without_post_root_decrease", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, PreviousUpvotes: 3, Upvotes: 0},
+			want: UpvoteGroupIntent{Action: UpvoteGroupDeleteIfEmpty, RecipientDID: voteFanoutCommenter, SubjectURI: voteFanoutCommenterComment},
+		},
+		{
+			name: "recipient_not_indexed", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+			setup: func(lookups *commentFanoutLookups) { delete(lookups.indexedUsers, voteFanoutAuthor) }, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "recipient_erased", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+			setup: func(lookups *commentFanoutLookups) { lookups.erasedAccounts = map[string]bool{voteFanoutAuthor: true} }, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "recipient_aggregator", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
 			setup: func(lookups *commentFanoutLookups) {
 				lookups.aggregatorAccounts = map[string]bool{voteFanoutAuthor: true}
-			}, want: UpvoteGroupIntent{}},
-		{name: "recipient_on_trusted_bridge_pds", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+			}, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "recipient_on_trusted_bridge_pds", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
 			setup: func(lookups *commentFanoutLookups) {
 				lookups.userPDSURLs = map[string]string{voteFanoutAuthor: voteFanoutBridgePDS}
 			},
-			bridgeHosts: &notificationTestBridgeHosts{trustedURLs: map[string]bool{voteFanoutBridgePDS: true}}, want: UpvoteGroupIntent{}},
-		{name: "withdrawn_subject", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+			bridgeHosts: &notificationTestBridgeHosts{trustedURLs: map[string]bool{voteFanoutBridgePDS: true}}, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "withdrawn_subject", change: BridgedUpvoteChange{SubjectURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
 			setup: func(lookups *commentFanoutLookups) {
 				lookups.referenceStates = map[string]ReferenceState{voteFanoutPost: ReferenceRemovedByModerator}
-			}, want: UpvoteGroupIntent{}},
-		{name: "withdrawn_comment_root", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, SubjectRootURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
+			}, want: UpvoteGroupIntent{},
+		},
+		{
+			name: "withdrawn_comment_root", change: BridgedUpvoteChange{SubjectURI: voteFanoutCommenterComment, SubjectRootURI: voteFanoutPost, PreviousUpvotes: 0, Upvotes: 3},
 			setup: func(lookups *commentFanoutLookups) {
 				lookups.referenceStates = map[string]ReferenceState{voteFanoutPost: ReferenceDeleted}
-			}, want: UpvoteGroupIntent{}},
+			}, want: UpvoteGroupIntent{},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lookups := commentFanoutLookups{

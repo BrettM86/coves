@@ -1,7 +1,6 @@
 package comments
 
 import (
-	"Coves/internal/core/moderation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,8 +11,11 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/pds"
-	core "Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/votes"
+
+	core "Coves/internal/core/comments"
+
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/require"
@@ -35,6 +37,7 @@ func (s *commentVoteReader) EnsureCachePopulated(ctx context.Context, session *o
 	}
 	return s.Service.EnsureCachePopulated(ctx, session)
 }
+
 func (s *commentVoteReader) GetViewerVotesForSubjects(viewer string, subjects []string) map[string]*votes.CachedVote {
 	s.lookupCalls++
 	s.viewer = viewer

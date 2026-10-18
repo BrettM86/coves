@@ -198,7 +198,7 @@ func (r *postgresDiscoverRepo) createDiscoverHotSnapshot(ctx context.Context, vi
 	if err != nil {
 		return 0, nil, fmt.Errorf("open Discover Hot snapshot connection: %w", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 
 	lockKey := discoverHotSnapshotLockKey(scope)
 	if _, err := connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockKey); err != nil {
@@ -446,13 +446,11 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 }
 
 func copyDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, snapshotID int64, candidates []discover.DiscoverHotCandidate) error {
-	statement, err := tx.PrepareContext(ctx, pq.CopyIn(
-		"discover_hot_candidates", "snapshot_id", "uri", "community_did", "base_rank", "created_at",
-	))
+	statement, err := tx.PrepareContext(ctx, `COPY "discover_hot_candidates" ("snapshot_id", "uri", "community_did", "base_rank", "created_at") FROM STDIN`)
 	if err != nil {
 		return fmt.Errorf("prepare Discover Hot candidates: %w", err)
 	}
-	defer statement.Close()
+	defer func() { _ = statement.Close() }()
 
 	for _, candidate := range candidates {
 		if _, err := statement.ExecContext(ctx, snapshotID, candidate.URI, candidate.CommunityDID, candidate.BaseRank, candidate.CreatedAt); err != nil {
@@ -463,10 +461,6 @@ func copyDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, snapshotID int64
 		return fmt.Errorf("finish Discover Hot candidates: %w", err)
 	}
 	return nil
-}
-
-func (r *postgresDiscoverRepo) loadDiscoverHotCandidates(ctx context.Context, snapshotID int64) ([]discover.DiscoverHotCandidate, error) {
-	return loadDiscoverHotCandidates(ctx, r.db, snapshotID)
 }
 
 func loadDiscoverHotCandidates(ctx context.Context, querier discoverHotQuerier, snapshotID int64) ([]discover.DiscoverHotCandidate, error) {

@@ -3,12 +3,13 @@
 package live
 
 import (
+	"context"
+	"testing"
+
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
-	"context"
-	"testing"
 )
 
 // TestResolveHandleToDID_RealHandle resolves a handle that exists only on the

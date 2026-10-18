@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"Coves/tests/testkit"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/tests/testkit"
 )
 
 // allow() is the load-bearing primitive — every per-route rate limit and the

@@ -70,7 +70,7 @@ func NewCloudflarePurger(config CloudflarePurgerConfig) (*CloudflarePurger, erro
 		}
 	}
 	if config.Timeout <= 0 {
-		return nil, fmt.Errorf("Timeout must be greater than zero")
+		return nil, fmt.Errorf("timeout must be greater than zero")
 	}
 	presets := ListPresets()
 	if len(presets)*len(config.BaseURLs) > 100 || len(presets) == 0 {

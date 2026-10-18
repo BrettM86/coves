@@ -7,9 +7,9 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/syntax"
-
 	"Coves/internal/atproto/pds"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // The writers that publish a community's own records about a post.

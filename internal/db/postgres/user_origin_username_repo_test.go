@@ -6,12 +6,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestUserRepo_GetDIDByOriginUsername pins the bridged-user pair lookup behind

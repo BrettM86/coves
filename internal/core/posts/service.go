@@ -1536,7 +1536,7 @@ func (s *postService) applyViewerBlocks(ctx context.Context, viewerDID string, r
 // requireDIDAuthority. field names the request parameter for error attribution (e.g.
 // "uri" or "uris"). This is the single source of truth for post-URI structure rules,
 // shared by validatePostURI (get) and parsePostURI (delete). Pure (no I/O), so unit-testable.
-func parsePostURIParts(uri, field string) (authority string, rkey string, err error) {
+func parsePostURIParts(uri, field string) (authority, rkey string, err error) {
 	if !strings.HasPrefix(uri, "at://") {
 		return "", "", NewValidationError(field, "invalid AT-URI: must start with at://")
 	}
@@ -1690,7 +1690,7 @@ func validateDIDFormat(did string) error {
 		}
 		// Base32 uses lowercase a-z and 2-7
 		for _, c := range identifier {
-			if !((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7')) {
+			if (c < 'a' || c > 'z') && (c < '2' || c > '7') {
 				return fmt.Errorf("invalid did:plc format: identifier contains invalid characters")
 			}
 		}

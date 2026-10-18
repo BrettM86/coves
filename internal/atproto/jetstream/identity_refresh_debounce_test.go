@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const debouncedUserDID = "did:plc:identityrefreshdebounce"

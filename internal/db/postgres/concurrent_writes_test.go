@@ -3,6 +3,12 @@
 package postgres_test
 
 import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
@@ -11,11 +17,6 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-	"context"
-	"fmt"
-	"sync"
-	"testing"
-	"time"
 )
 
 // Row-level concurrency for the counters and unique indexes this package's

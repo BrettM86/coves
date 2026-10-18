@@ -105,11 +105,31 @@ func TestNotificationList_KeysetPagingIsExact(t *testing.T) {
 		label  string
 		micros int
 	}{
-		{"N25", 4}, {"N22", 7}, {"N18", 11}, {"N12", 17}, {"N08", 18},
-		{"N21", 7}, {"N17", 12}, {"N11", 17}, {"N07", 19}, {"N20", 7},
-		{"N16", 13}, {"N10", 17}, {"N06", 20}, {"N19", 7}, {"N15", 14},
-		{"N09", 17}, {"N05", 21}, {"N24", 5}, {"N14", 15}, {"N04", 22},
-		{"N23", 6}, {"N13", 16}, {"N03", 23}, {"N02", 24}, {"N01", 25},
+		{"N25", 4},
+		{"N22", 7},
+		{"N18", 11},
+		{"N12", 17},
+		{"N08", 18},
+		{"N21", 7},
+		{"N17", 12},
+		{"N11", 17},
+		{"N07", 19},
+		{"N20", 7},
+		{"N16", 13},
+		{"N10", 17},
+		{"N06", 20},
+		{"N19", 7},
+		{"N15", 14},
+		{"N09", 17},
+		{"N05", 21},
+		{"N24", 5},
+		{"N14", 15},
+		{"N04", 22},
+		{"N23", 6},
+		{"N13", 16},
+		{"N03", 23},
+		{"N02", 24},
+		{"N01", 25},
 	} {
 		record, _ := f.insertListedReply(t, f.recipient, "postReply", f.root, base.Add(time.Duration(row.micros)*time.Microsecond), base)
 		labels[record] = row.label
@@ -162,8 +182,10 @@ func TestNotificationList_IsReadAgainstSeenAt(t *testing.T) {
 			label string
 			at    time.Time
 		}{
-			{"before", base.Add(time.Second)}, {"equal", seenAt},
-			{"after", base.Add(3 * time.Second)}, {"newest", base.Add(4 * time.Second)},
+			{"before", base.Add(time.Second)},
+			{"equal", seenAt},
+			{"after", base.Add(3 * time.Second)},
+			{"newest", base.Add(4 * time.Second)},
 		} {
 			record, _ := f.insertListedReply(t, f.recipient, "postReply", f.root, row.at, base)
 			labels[record] = row.label

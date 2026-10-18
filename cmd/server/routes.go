@@ -1,14 +1,15 @@
 package main
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/reqbody"
-	"Coves/internal/api/routes"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"Coves/internal/api/handlers/aggregator"
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/routes"
+
 	commentsAPI "Coves/internal/api/handlers/comments"
 
 	"github.com/go-chi/chi/v5"

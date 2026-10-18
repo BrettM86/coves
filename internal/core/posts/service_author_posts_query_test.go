@@ -3,8 +3,6 @@
 package posts_test
 
 import (
-	"Coves/internal/core/moderation"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -20,9 +18,11 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
@@ -21,7 +22,6 @@ import (
 	"github.com/rivo/uniseg"
 
 	oauthclient "Coves/internal/atproto/oauth"
-	"Coves/internal/atproto/pds"
 )
 
 const (

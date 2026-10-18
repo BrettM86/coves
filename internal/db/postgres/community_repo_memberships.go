@@ -1,13 +1,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
+
+	"Coves/internal/core/communities"
 )
 
 // CreateMembership creates a new membership record

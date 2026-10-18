@@ -3,18 +3,18 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/communities"
-	"Coves/tests/testkit"
 )
 
 // The community repository's write-after-create paths and its search, all of

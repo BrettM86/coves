@@ -1,11 +1,12 @@
 package postgres
 
 import (
-	"Coves/internal/core/discover"
 	"context"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"Coves/internal/core/discover"
 )
 
 type postgresDiscoverRepo struct {
@@ -39,7 +40,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 
 	// Build cursor filter for pagination
 	// Discover uses $2+ for cursor params (after $1=limit)
-	cursorFilter, cursorValues, err := r.feedRepoBase.parseCursor(req.Cursor, req.Sort, 2)
+	cursorFilter, cursorValues, err := r.parseCursor(req.Cursor, req.Sort, 2)
 	if err != nil {
 		return nil, nil, discover.ErrInvalidCursor
 	}
@@ -103,7 +104,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 	var feedPosts []*discover.FeedViewPost
 	var hotRanks []float64
 	for rows.Next() {
-		postView, hotRank, err := r.feedRepoBase.scanFeedPost(rows)
+		postView, hotRank, err := r.scanFeedPost(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan discover post: %w", err)
 		}
@@ -122,7 +123,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		hotRanks = hotRanks[:req.Limit]
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
+		cursorStr := r.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
 		cursor = &cursorStr
 	}
 

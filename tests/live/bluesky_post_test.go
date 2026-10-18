@@ -3,14 +3,15 @@
 package live
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/blueskypost"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/blueskypost"
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -86,7 +86,7 @@ func retentionNewYorkTimezone(t *testing.T, db *sql.DB) {
 	db.SetMaxIdleConns(0)
 	connection, err := db.Conn(context.Background())
 	require.NoError(t, err)
-	defer connection.Close()
+	defer func() { require.NoError(t, connection.Close()) }()
 	var timezone string
 	require.NoError(t, connection.QueryRowContext(context.Background(), `SHOW timezone`).Scan(&timezone))
 	require.Equal(t, "America/New_York", timezone, "new connections must use the DST-crossing timezone")

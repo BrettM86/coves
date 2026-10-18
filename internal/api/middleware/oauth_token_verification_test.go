@@ -3,13 +3,14 @@
 package middleware_test
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"Coves/internal/api/middleware"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 )
 
 // TestOAuthTokenVerification tests end-to-end OAuth token verification

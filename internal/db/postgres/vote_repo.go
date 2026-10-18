@@ -1,12 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
+
+	"Coves/internal/core/votes"
 )
 
 type postgresVoteRepo struct {

@@ -3,13 +3,6 @@
 package comments_test
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/atproto/pds"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/comments"
-	"Coves/internal/db/postgres"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +12,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/pds"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/comments"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

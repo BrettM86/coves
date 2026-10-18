@@ -9,6 +9,7 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
+
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
 	"github.com/stretchr/testify/assert"

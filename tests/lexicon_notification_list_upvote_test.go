@@ -96,8 +96,10 @@ func assertInvalidUpvoteAggregates(t *testing.T) {
 		{"string count", func(view map[string]any) { view["upvoteCount"] = "2" }},
 		{"four voters", func(view map[string]any) {
 			view["recentUpvoters"] = []any{
-				map[string]any{"did": "did:plc:v1"}, map[string]any{"did": "did:plc:v2"},
-				map[string]any{"did": "did:plc:v3"}, map[string]any{"did": "did:plc:v4"},
+				map[string]any{"did": "did:plc:v1"},
+				map[string]any{"did": "did:plc:v2"},
+				map[string]any{"did": "did:plc:v3"},
+				map[string]any{"did": "did:plc:v4"},
 			}
 		}},
 		{"voter without DID", func(view map[string]any) {

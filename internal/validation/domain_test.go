@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"Coves/tests/domaincorpus"
+
+	"github.com/stretchr/testify/require"
 )
 
 // NormalizeDomain is the shared half of a two-mechanism defence, and this file

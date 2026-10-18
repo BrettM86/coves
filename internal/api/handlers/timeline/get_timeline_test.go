@@ -22,7 +22,7 @@ func (f *fakeTimelineService) GetTimeline(ctx context.Context, req timeline.GetT
 	return &timeline.TimelineResponse{Feed: []*timeline.FeedViewPost{}}, nil
 }
 
-func getTimeline(t *testing.T, query string, ctxDID string) (*httptest.ResponseRecorder, *fakeTimelineService) {
+func getTimeline(t *testing.T, query, ctxDID string) (*httptest.ResponseRecorder, *fakeTimelineService) {
 	t.Helper()
 
 	svc := &fakeTimelineService{}

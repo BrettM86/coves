@@ -54,12 +54,18 @@ func TestCachingResolver_DoesNotNegativeCacheExcludedFailures(t *testing.T) {
 		err        error
 		why        string
 	}{
-		{name: "canceled request", identifier: did, err: context.Canceled,
-			why: "caller cancellation is not a fact later callers should inherit"},
-		{name: "invalid identifier", identifier: did, err: &ErrInvalidIdentifier{Identifier: did, Reason: "malformed"},
-			why: "invalid input is rejected before a costly network lookup and needs no process-local entry"},
-		{name: "handle not found", identifier: "alice.example.com", err: &ErrNotFound{Identifier: "alice.example.com", Reason: "DNS not propagated"},
-			why: "a user's newly propagated DNS handle must not remain invisible for 90 seconds at login"},
+		{
+			name: "canceled request", identifier: did, err: context.Canceled,
+			why: "caller cancellation is not a fact later callers should inherit",
+		},
+		{
+			name: "invalid identifier", identifier: did, err: &ErrInvalidIdentifier{Identifier: did, Reason: "malformed"},
+			why: "invalid input is rejected before a costly network lookup and needs no process-local entry",
+		},
+		{
+			name: "handle not found", identifier: "alice.example.com", err: &ErrNotFound{Identifier: "alice.example.com", Reason: "DNS not propagated"},
+			why: "a user's newly propagated DNS handle must not remain invisible for 90 seconds at login",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

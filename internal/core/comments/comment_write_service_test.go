@@ -1,14 +1,15 @@
 package comments
 
 import (
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/blobs"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -216,7 +217,6 @@ func TestCreateComment_Success(t *testing.T) {
 
 	// Execute
 	resp, err := service.CreateComment(ctx, session, req)
-
 	// Verify
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
@@ -435,7 +435,6 @@ func TestCreateComment_ValidFacets(t *testing.T) {
 
 	// Execute
 	_, err := service.CreateComment(ctx, session, req)
-
 	// Verify
 	if err != nil {
 		t.Errorf("Expected comment with valid block facet to succeed, got: %v", err)
@@ -726,7 +725,6 @@ func TestUpdateComment_Success(t *testing.T) {
 
 	// Execute
 	resp, err := service.UpdateComment(ctx, session, req)
-
 	// Verify
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
@@ -1192,7 +1190,6 @@ func TestUpdateComment_PreservesReplyRefs(t *testing.T) {
 
 	// Execute
 	resp, err := service.UpdateComment(ctx, session, req)
-
 	// Verify
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
@@ -1282,7 +1279,6 @@ func TestDeleteComment_Success(t *testing.T) {
 
 	// Execute
 	err := service.DeleteComment(ctx, session, req)
-
 	// Verify
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)

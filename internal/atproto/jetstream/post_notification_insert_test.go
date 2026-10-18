@@ -268,8 +268,10 @@ func TestPostNotificationInsert_ConflictNeverCallsNotificationRepository(t *test
 	require.NoError(t, err)
 	applied, err := consumer.insertAuthorPost(ctx, authorPostInsert{
 		uri: uri, authorDID: pv2Author, record: parsed,
-		commit: &CommitEvent{Operation: "create", Collection: PostV2Collection,
-			RKey: key, Rev: revs[1], CID: "bafyreiinsertconflictnewer"},
+		commit: &CommitEvent{
+			Operation: "create", Collection: PostV2Collection,
+			RKey: key, Rev: revs[1], CID: "bafyreiinsertconflictnewer",
+		},
 		timeUS: time.Now().Add(time.Second).UnixMicro(),
 		facets: sql.NullString{String: string(facetsJSON), Valid: true},
 	})

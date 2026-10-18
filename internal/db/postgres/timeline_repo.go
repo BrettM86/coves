@@ -1,11 +1,12 @@
 package postgres
 
 import (
-	"Coves/internal/core/timeline"
 	"context"
 	"database/sql"
 	"fmt"
 	"time"
+
+	"Coves/internal/core/timeline"
 )
 
 type postgresTimelineRepo struct {
@@ -32,7 +33,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 
 	// Build cursor filter for pagination
 	// Timeline uses $3+ for cursor params (after $1=userDID and $2=limit)
-	cursorFilter, cursorValues, err := r.feedRepoBase.parseCursor(req.Cursor, req.Sort, 3)
+	cursorFilter, cursorValues, err := r.parseCursor(req.Cursor, req.Sort, 3)
 	if err != nil {
 		return nil, nil, timeline.ErrInvalidCursor
 	}
@@ -89,7 +90,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 	var feedPosts []*timeline.FeedViewPost
 	var hotRanks []float64 // Store hot ranks for cursor building
 	for rows.Next() {
-		postView, hotRank, err := r.feedRepoBase.scanFeedPost(rows)
+		postView, hotRank, err := r.scanFeedPost(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan timeline post: %w", err)
 		}
@@ -108,7 +109,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		hotRanks = hotRanks[:req.Limit]
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
+		cursorStr := r.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
 		cursor = &cursorStr
 	}
 

@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // processorBusyRetryAfterSeconds is the Retry-After the handler advertises when

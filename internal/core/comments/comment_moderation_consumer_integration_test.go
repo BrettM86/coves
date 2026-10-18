@@ -287,7 +287,8 @@ func TestModerationCommentConsumerReconcilesMalformedEmbeds(t *testing.T) {
 		{
 			name: "legacy cid blob beside malformed entries",
 			embed: map[string]interface{}{"$type": "social.coves.embed.images", "images": []interface{}{
-				"x", map[string]interface{}{"image": 7},
+				"x",
+				map[string]interface{}{"image": 7},
 				map[string]interface{}{"image": map[string]interface{}{"cid": moderatedCommentCID, "mimeType": "image/png"}},
 			}},
 			blocked: []string{moderatedCommentCID},

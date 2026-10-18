@@ -1,12 +1,13 @@
 package communitysuggestion
 
 import (
+	"log"
+	"net/http"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communitysuggestions"
-	"log"
-	"net/http"
 )
 
 // VoteHandler handles voting on community suggestions

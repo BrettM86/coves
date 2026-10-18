@@ -3,18 +3,18 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
 	"time"
 
+	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/communities"
-	"Coves/tests/testkit"
 )
 
 // community_repo_memberships.go against real SQL: memberships, moderation

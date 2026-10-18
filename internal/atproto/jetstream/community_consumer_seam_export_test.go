@@ -4,7 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,36 +46,43 @@ func TestNoExportedSeamCanReplaceTheGuardedClient(t *testing.T) {
 func exportedHTTPClientParameters(t *testing.T, dir string) []string {
 	t.Helper()
 
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err, "listing the package's own sources")
+
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(info fs.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
-	require.NoError(t, err, "parsing the package's own sources")
-	require.NotEmpty(t, pkgs, "the parser found no package, so this test would pass vacuously")
+	var files []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		require.NoError(t, err, "parsing the package's own sources")
+		files = append(files, file)
+	}
+	require.NotEmpty(t, files, "the parser found no source files, so this test would pass vacuously")
 
 	var offenders []string
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || !fn.Name.IsExported() {
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !fn.Name.IsExported() {
+				continue
+			}
+			for _, param := range fn.Type.Params.List {
+				star, ok := param.Type.(*ast.StarExpr)
+				if !ok {
 					continue
 				}
-				for _, param := range fn.Type.Params.List {
-					star, ok := param.Type.(*ast.StarExpr)
-					if !ok {
-						continue
-					}
-					sel, ok := star.X.(*ast.SelectorExpr)
-					if !ok {
-						continue
-					}
-					ident, ok := sel.X.(*ast.Ident)
-					if !ok || ident.Name != "http" || sel.Sel.Name != "Client" {
-						continue
-					}
-					offenders = append(offenders, fn.Name.Name)
+				sel, ok := star.X.(*ast.SelectorExpr)
+				if !ok {
+					continue
 				}
+				ident, ok := sel.X.(*ast.Ident)
+				if !ok || ident.Name != "http" || sel.Sel.Name != "Client" {
+					continue
+				}
+				offenders = append(offenders, fn.Name.Name)
 			}
 		}
 	}

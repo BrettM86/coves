@@ -145,7 +145,7 @@ type nonFatal struct {
 
 func (n *nonFatal) Fatalf(format string, args ...any) {
 	n.failed = true
-	n.TestingT.Errorf(format, args...)
+	n.Errorf(format, args...)
 }
 
 // send writes a request, waits for its response, and reports what the host

@@ -64,7 +64,8 @@ func notificationContractUnread(viewer *testkit.AppView) (int, error) {
 // The probe deliberately reads only the list; each phase checks unread once the
 // matching row has arrived, rather than spending the read quota inside Await.
 func awaitNotificationContractRow(t *testing.T, p *pipeline, viewer *testkit.AppView,
-	description string, matches func(notificationContractRow) bool) notificationContractRow {
+	description string, matches func(notificationContractRow) bool,
+) notificationContractRow {
 	t.Helper()
 	var found notificationContractRow
 	p.Await(t, description, func() (bool, error) {
@@ -162,7 +163,8 @@ func notificationContractQuota(t *testing.T, p *pipeline, token, reason string) 
 // each of its two status waits. reason must be unique within the test, because
 // the bucket is derived from it.
 func notificationContractAcceptedPost(t *testing.T, p *pipeline, community provisionedCommunity,
-	author *testkit.Account, record map[string]any, reason, description string) strongRef {
+	author *testkit.Account, record map[string]any, reason, description string,
+) strongRef {
 	t.Helper()
 	rkey := testkit.TID()
 	uri := authorPostURI(author.DID, rkey)

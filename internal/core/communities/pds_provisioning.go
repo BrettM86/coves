@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
-	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/xrpc"
 )
 
@@ -196,7 +195,7 @@ func FetchPDSDID(ctx context.Context, pdsURL string, opts ...PDSClientOption) (s
 		Host:   pdsURL,
 	}
 
-	resp, err := comatproto.ServerDescribeServer(ctx, client)
+	resp, err := atproto.ServerDescribeServer(ctx, client)
 	if err != nil {
 		return "", fmt.Errorf("failed to describe server at %s: %w", pdsURL, err)
 	}

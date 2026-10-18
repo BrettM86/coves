@@ -16,7 +16,7 @@ import (
 // PreviewThumbnail projects a stored post embed once and returns its proxied
 // first-image or link-card thumbnail and, for images, bounded alt text.
 // It may mutate view.Embed through the shared feed projection.
-func PreviewThumbnail(view *PostView) (url string, alt string) {
+func PreviewThumbnail(view *PostView) (url, alt string) {
 	config := blobs.GetImageURLConfig()
 	if view == nil || !config.ProxyEnabled {
 		return "", ""

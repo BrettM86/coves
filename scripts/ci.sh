@@ -20,6 +20,8 @@
 #   * Publishes no host ports, so it runs concurrently with `make dev-up` and
 #     cannot interfere with it in either direction. Keep hacking while it runs.
 #
+#   * Fails on any lint or formatting issue (`make lint`).
+#
 #   * Refuses to report success when the suite silently shrank. See
 #     cmd/ci-report — a skip is a failure unless the committed allowlist says
 #     otherwise.
@@ -67,9 +69,33 @@ stack_preflight
 TREE_BEFORE=$(git status --porcelain --untracked-files=all | sort)
 
 # ---------------------------------------------------------------------------
-# Bring up the system under test
+# Build, lint, then bring up the system under test
 # ---------------------------------------------------------------------------
-stack_up
+# stack_up's steps, with lint between the module prefetch and the stack start,
+# so a lint failure costs a minute instead of a full stack bring-up.
+#
+# make lint runs in the runner image (the toolchain the suite compiles with),
+# on Docker's default bridge because `go run` fetches the pinned golangci-lint
+# into the shared module cache. It is the full check: formatting plus every
+# linter, including files behind the integration, e2e and live tags.
+stack_discard_previous
+stack_build
+stack_prefetch_modules
+
+step "Linting"
+if ! docker run --rm \
+    -v "$REPO_ROOT:/src" -w /src \
+    -v coves-ci-go-mod-cache:/go/pkg/mod \
+    -v coves-ci-go-build-cache:/go-build-cache \
+    -e GOLANGCI_LINT_CACHE=/go-build-cache/golangci-lint \
+    --entrypoint make \
+    "$PROJECT-runner" --no-print-directory lint; then
+    fail "make lint failed; 'make lint-fix' fixes formatting, the rest needs code changes"
+    exit 1
+fi
+ok "lint clean"
+
+stack_start
 
 # ---------------------------------------------------------------------------
 # Run the suite

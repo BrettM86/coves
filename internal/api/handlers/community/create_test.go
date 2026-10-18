@@ -1,8 +1,6 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )

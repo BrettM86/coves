@@ -3,10 +3,11 @@
 package postgres
 
 import (
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
+
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/require"
 )

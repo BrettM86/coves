@@ -226,12 +226,18 @@ func TestStatusOf_IsZeroForTransportFailures(t *testing.T) {
 }
 
 func TestPendingIfNotFound_SplitsRetryableFromTerminal(t *testing.T) {
-	serviceNotFound := &StatusError{Method: "m", StatusCode: http.StatusNotFound,
-		XRPCError: "NotFound", XRPCShaped: true}
-	recordNotFound := &StatusError{Method: "m", StatusCode: http.StatusBadRequest,
-		XRPCError: "RecordNotFound", XRPCShaped: true}
-	routerNotFound := &StatusError{Method: "m", StatusCode: http.StatusNotFound,
-		Body: "404 page not found"}
+	serviceNotFound := &StatusError{
+		Method: "m", StatusCode: http.StatusNotFound,
+		XRPCError: "NotFound", XRPCShaped: true,
+	}
+	recordNotFound := &StatusError{
+		Method: "m", StatusCode: http.StatusBadRequest,
+		XRPCError: "RecordNotFound", XRPCShaped: true,
+	}
+	routerNotFound := &StatusError{
+		Method: "m", StatusCode: http.StatusNotFound,
+		Body: "404 page not found",
+	}
 	unauthorized := &StatusError{Method: "m", StatusCode: http.StatusUnauthorized}
 	serverError := &StatusError{Method: "m", StatusCode: http.StatusInternalServerError}
 	unavailable := &StatusError{Method: "m", StatusCode: http.StatusServiceUnavailable}
@@ -259,8 +265,10 @@ func TestPendingIfNotFound_SplitsRetryableFromTerminal(t *testing.T) {
 }
 
 func TestPendingIfUnavailable_ToleratesARestartingService(t *testing.T) {
-	notFound := &StatusError{Method: "m", StatusCode: http.StatusNotFound,
-		XRPCError: "NotFound", XRPCShaped: true}
+	notFound := &StatusError{
+		Method: "m", StatusCode: http.StatusNotFound,
+		XRPCError: "NotFound", XRPCShaped: true,
+	}
 	unauthorized := &StatusError{Method: "m", StatusCode: http.StatusUnauthorized}
 	badRequest := &StatusError{Method: "m", StatusCode: http.StatusBadRequest}
 

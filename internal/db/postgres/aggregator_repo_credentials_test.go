@@ -3,7 +3,6 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -12,12 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/aggregators"
-	"Coves/tests/testkit"
 )
 
 // The aggregator credential store: API keys, the OAuth session behind them, and

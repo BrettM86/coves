@@ -3,12 +3,13 @@
 package communities_test
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/tests/testkit"
 	"context"
 	"net/url"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

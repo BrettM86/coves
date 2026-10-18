@@ -38,8 +38,13 @@ func TestNotificationSeen_UpdateSeenIsMonotonic(t *testing.T) {
 		wantOff  []string
 	}{
 		{"no state row", nil, []time.Time{instant}, instant, []string{}},
-		{"preferences state with null seen at", []string{"mention", "upvote"},
-			[]time.Time{instant.Add(-time.Hour), instant}, instant, []string{"mention", "upvote"}},
+		{
+			"preferences state with null seen at",
+			[]string{"mention", "upvote"},
+			[]time.Time{instant.Add(-time.Hour), instant},
+			instant,
+			[]string{"mention", "upvote"},
+		},
 		{"backwards update ignored", nil, []time.Time{instant, instant.Add(-time.Hour)}, instant, []string{}},
 		{"later update advances", nil, []time.Time{instant.Add(-time.Hour), instant}, instant, []string{}},
 	} {

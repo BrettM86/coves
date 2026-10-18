@@ -13,6 +13,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
 	"Coves/internal/core/moderation"
+
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
@@ -60,7 +61,6 @@ func TestBuildInstanceAdminMiddlewareUsesModerationAdminsOnly(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Instance:   config.InstanceConfig{AllowedCommunityCreators: []string{creatorDID}},
 				Moderation: config.ModerationConfig{Admins: test.admins},
 			}
 			unsealer := wiringSessionUnsealer{}

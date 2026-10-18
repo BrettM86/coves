@@ -21,7 +21,6 @@
 package community_test
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,6 +32,7 @@ import (
 	"Coves/internal/api/handlers/community"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"

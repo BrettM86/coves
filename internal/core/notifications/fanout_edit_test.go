@@ -45,11 +45,16 @@ func TestFanoutCommentEdit_DiffsStoredAndEditedFacets(t *testing.T) {
 		mentioned    []string
 		want         []string
 	}{
-		{"adds D, not previously mentioned B", notificationMentionFacets(mentionRecipientBDID),
-			[]string{mentionRecipientBDID, mentionRecipientDDID}, []string{mentionRecipientDDID}},
-		{"preserves new facet order", notificationMentionFacets(mentionRecipientBDID),
+		{
+			"adds D, not previously mentioned B", notificationMentionFacets(mentionRecipientBDID),
+			[]string{mentionRecipientBDID, mentionRecipientDDID},
+			[]string{mentionRecipientDDID},
+		},
+		{
+			"preserves new facet order", notificationMentionFacets(mentionRecipientBDID),
 			[]string{mentionRecipientDDID, editMentionRecipientFDID, mentionRecipientBDID},
-			[]string{mentionRecipientDDID, editMentionRecipientFDID}},
+			[]string{mentionRecipientDDID, editMentionRecipientFDID},
+		},
 		{"SQL NULL stored facets", "", []string{mentionRecipientDDID}, []string{mentionRecipientDDID}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -345,8 +350,10 @@ func TestFanoutCommentEdit_RequiresPostRootAndResolvesLegacyOnlyForDirectReplies
 		{"unparsable root", "at://did:plc:editcommunity/social.coves.community.postv2/post/", "", false, 0},
 		{"non-post collection root", "at://did:plc:editcommunity/social.coves.community.comment/root", "", false, 0},
 		{"missing legacy root replied to directly", "at://did:plc:editcommunity/social.coves.community.post/missing", "", false, 1},
-		{"nested reply under missing legacy root", "at://did:plc:editcommunity/social.coves.community.post/missing",
-			"at://did:plc:editparent/social.coves.community.comment/parent", true, 0},
+		{
+			"nested reply under missing legacy root", "at://did:plc:editcommunity/social.coves.community.post/missing",
+			"at://did:plc:editparent/social.coves.community.comment/parent", true, 0,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			comment := notificationEditComment()

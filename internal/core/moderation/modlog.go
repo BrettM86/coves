@@ -427,8 +427,12 @@ func validateActionListParams(params ListActionsParams, actionID string) (Action
 		name  string
 		value string
 	}{
-		{"action", params.Action}, {"origin", params.Origin}, {"community", params.Community},
-		{"actor", params.Actor}, {"authority", params.Authority}, {"actionId", actionID},
+		{"action", params.Action},
+		{"origin", params.Origin},
+		{"community", params.Community},
+		{"actor", params.Actor},
+		{"authority", params.Authority},
+		{"actionId", actionID},
 	} {
 		if strings.ContainsFunc(field.value, unicode.IsControl) {
 			return ActionListQuery{}, fmt.Errorf("%w: %s contains a control character", ErrInvalidRequest, field.name)

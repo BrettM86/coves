@@ -1,7 +1,6 @@
 package blueskypost
 
 import (
-	"Coves/internal/atproto/oauth"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"Coves/internal/atproto/oauth"
 )
 
 // blueskyAPIBaseURL is the public Bluesky API endpoint

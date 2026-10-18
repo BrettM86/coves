@@ -3,14 +3,6 @@
 package comments_test
 
 import (
-	commentsAPI "Coves/internal/api/handlers/comments"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/comments"
-	"Coves/internal/core/moderation"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
-	"Coves/internal/db/postgres"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -20,6 +12,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -19,7 +19,9 @@ FROM golang:1.26.8-alpine3.24
 # grep: GNU grep, for --line-buffered, which the BusyBox build does not support.
 #   Only the cosmetic progress display needs it, but silently losing progress
 #   output is the kind of papercut that gets rediscovered every few months.
-RUN apk add --no-cache git curl bash ca-certificates grep
+# make: scripts/ci.sh runs `make lint` in this image, so the Makefile stays the
+#   one place the golangci-lint version is pinned.
+RUN apk add --no-cache git curl bash ca-certificates grep make
 
 # GOFLAGS=-mod=readonly makes an out-of-date go.sum a hard failure in CI rather
 # than something the toolchain silently repairs in a mounted checkout.

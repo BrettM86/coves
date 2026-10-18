@@ -34,8 +34,10 @@ func newUpvoteGroupFixture(t *testing.T) upvoteGroupFixture {
 	key := testkit.TID()
 	post := pv2URI(author, key)
 	seedIndexedPost(t, db, post, community, author, key)
-	return upvoteGroupFixture{db: db, author: author, community: community, post: post,
-		createdAt: activatedCommentNotificationTime(t, db, context.Background())}
+	return upvoteGroupFixture{
+		db: db, author: author, community: community, post: post,
+		createdAt: activatedCommentNotificationTime(t, db, context.Background()),
+	}
 }
 
 func (fixture upvoteGroupFixture) addPost(t *testing.T) string {
@@ -420,8 +422,10 @@ func TestVoteConsumer_UpvoteGroupFailureRollsBackVoteCountAndRev(t *testing.T) {
 	repository := &failingUpvoteGroupRepository{Repository: postgres.NewNotificationRepository(fixture.db), failure: injected}
 	consumer := fixture.consumer(WithVoteNotifications(repository))
 	err := consumer.HandleEvent(context.Background(), event)
-	require.Equal(t, []notifications.UpvoteGroupIntent{{Action: notifications.UpvoteGroupBump,
-		RecipientDID: fixture.author, SubjectURI: fixture.post, RootPostURI: fixture.post}}, repository.intents,
+	require.Equal(t, []notifications.UpvoteGroupIntent{{
+		Action:       notifications.UpvoteGroupBump,
+		RecipientDID: fixture.author, SubjectURI: fixture.post, RootPostURI: fixture.post,
+	}}, repository.intents,
 		"fan-out must request precisely the author's post group")
 	require.ErrorIs(t, err, injected, "notification write failure must propagate")
 	assert.Zero(t, countRows(t, fixture.db, `SELECT count(*) FROM votes WHERE uri = $1`, voteURI), "failed vote insert must roll back")

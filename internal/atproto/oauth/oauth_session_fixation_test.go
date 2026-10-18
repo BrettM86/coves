@@ -3,8 +3,6 @@
 package oauth_test
 
 import (
-	"Coves/internal/atproto/oauth"
-	"Coves/tests/testkit"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/oauth"
+	"Coves/tests/testkit"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"

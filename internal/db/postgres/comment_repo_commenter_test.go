@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/comments"
+	"Coves/tests/fixtures"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/comments"
-	"Coves/tests/fixtures"
 )
 
 // ListByCommenterWithCursor and the cursor codec it owns.

@@ -22,12 +22,12 @@ const (
 
 func qualifyingVoteFanout() (commentFanoutLookups, VoteRecord) {
 	return commentFanoutLookups{
-		indexedUsers:      map[string]bool{voteFanoutAuthor: true, voteFanoutVoter: true},
-		legacyPostAuthors: map[string]string{voteFanoutLegacyPost: voteFanoutAuthor},
-	}, VoteRecord{
-		VoterDID: voteFanoutVoter, SubjectURI: voteFanoutPost, Direction: "up",
-		CreatedAt: time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC),
-	}
+			indexedUsers:      map[string]bool{voteFanoutAuthor: true, voteFanoutVoter: true},
+			legacyPostAuthors: map[string]string{voteFanoutLegacyPost: voteFanoutAuthor},
+		}, VoteRecord{
+			VoterDID: voteFanoutVoter, SubjectURI: voteFanoutPost, Direction: "up",
+			CreatedAt: time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC),
+		}
 }
 
 func requireVoteBump(t *testing.T, lookups commentFanoutLookups, bridgeHosts BridgeHostChecker, vote VoteRecord, recipient, root string) {

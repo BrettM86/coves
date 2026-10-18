@@ -1,13 +1,14 @@
 package community
 
 import (
-	"Coves/internal/api/handlers/common"
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/api/handlers/common"
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 )
 
 // ListHandler handles listing communities

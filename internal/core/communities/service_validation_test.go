@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"Coves/internal/core/communities"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/communities"
 )
 
 // The validation rules that are pure functions of the request, and therefore

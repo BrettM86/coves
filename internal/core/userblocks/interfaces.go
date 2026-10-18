@@ -1,8 +1,9 @@
 package userblocks
 
 import (
-	"Coves/internal/atproto/pds"
 	"context"
+
+	"Coves/internal/atproto/pds"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )

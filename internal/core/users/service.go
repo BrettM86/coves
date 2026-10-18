@@ -1,10 +1,6 @@
 package users
 
 import (
-	"Coves/internal/atproto/identity"
-	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/blobs"
-	"Coves/internal/validation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,6 +15,11 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
+	"Coves/internal/core/blobs"
+	"Coves/internal/validation"
 )
 
 // atProto handle validation regex (per official atProto spec: https://atproto.com/specs/handle)
@@ -750,7 +751,6 @@ func (s *userService) indexUserRecord(ctx context.Context, did, handle, pdsURL s
 		Handle: handle,
 		PDSURL: pdsURL,
 	})
-
 	if err != nil {
 		// Check if it's a handle conflict (user exists with different handle)
 		// In this case, update the handle instead

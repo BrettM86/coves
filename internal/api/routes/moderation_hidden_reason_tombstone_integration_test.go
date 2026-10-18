@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	commentsAPI "Coves/internal/api/handlers/comments"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/core/comments"
@@ -22,6 +21,8 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	commentsAPI "Coves/internal/api/handlers/comments"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"

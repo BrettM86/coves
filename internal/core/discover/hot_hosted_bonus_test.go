@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
-	discoverhandler "Coves/internal/api/handlers/discover"
 	"Coves/internal/core/discover"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	discoverhandler "Coves/internal/api/handlers/discover"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

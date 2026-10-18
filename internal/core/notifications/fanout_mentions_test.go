@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Coves/internal/core/richtext"
+
 	"github.com/stretchr/testify/require"
 )
 

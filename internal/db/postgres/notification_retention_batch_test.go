@@ -14,6 +14,7 @@ import (
 	"Coves/tests/testkit"
 
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/require"
 )
 
@@ -240,7 +241,7 @@ func TestNotificationRetention_EmptyGroupRechecksAfterCandidateLocks(t *testing.
 	err = holder.QueryRowContext(ctx, `SELECT id FROM notifications WHERE id = $1 FOR UPDATE NOWAIT`, ids["blocked_group"]).Scan(&id)
 	var lockError *pq.Error
 	require.ErrorAs(t, err, &lockError, "the sweep must already hold the blocked group's row lock")
-	require.Equal(t, pq.ErrorCode("55P03"), lockError.Code, "the candidate must be locked before DELETE starts")
+	require.Equal(t, pqerror.Code("55P03"), lockError.Code, "the candidate must be locked before DELETE starts")
 	_, err = holder.ExecContext(ctx, `ROLLBACK TO SAVEPOINT retention_probe`)
 	require.NoError(t, err)
 	_, err = holder.ExecContext(ctx, `DELETE FROM user_blocks WHERE blocker_did = $1 AND blocked_did = $2`, recipient, voter)

@@ -225,16 +225,26 @@ func TestStartNotificationRetentionJob_StopsCycleWhenContextEnds(t *testing.T) {
 		wantHidden                      int64
 		skipped                         []string
 	}{
-		{name: "cancelled during read sweep", interruptSweep: "read",
-			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"}},
-		{name: "deadline exceeded during read sweep", interruptSweep: "read", deadline: true,
-			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"}},
-		{name: "cancelled during a full read batch", interruptSweep: "read", fullBatch: true,
-			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"}},
-		{name: "deadline exceeded during unread_cap sweep", interruptSweep: "unread_cap", deadline: true,
-			wantRead: 1, wantUnread: 1, wantHidden: 0, skipped: []string{"empty_groups", "hidden_references"}},
-		{name: "deadline exceeded during empty_groups sweep", interruptSweep: "empty_groups", deadline: true,
-			wantRead: 1, wantUnread: 1, wantGroup: 1, wantHidden: 0, skipped: []string{"hidden_references"}},
+		{
+			name: "cancelled during read sweep", interruptSweep: "read",
+			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"},
+		},
+		{
+			name: "deadline exceeded during read sweep", interruptSweep: "read", deadline: true,
+			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"},
+		},
+		{
+			name: "cancelled during a full read batch", interruptSweep: "read", fullBatch: true,
+			wantRead: 1, wantHidden: 0, skipped: []string{"unread_cap", "empty_groups", "hidden_references"},
+		},
+		{
+			name: "deadline exceeded during unread_cap sweep", interruptSweep: "unread_cap", deadline: true,
+			wantRead: 1, wantUnread: 1, wantHidden: 0, skipped: []string{"empty_groups", "hidden_references"},
+		},
+		{
+			name: "deadline exceeded during empty_groups sweep", interruptSweep: "empty_groups", deadline: true,
+			wantRead: 1, wantUnread: 1, wantGroup: 1, wantHidden: 0, skipped: []string{"hidden_references"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

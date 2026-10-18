@@ -242,7 +242,8 @@ func holdRestoreBeforeCommit(t *testing.T, db *sql.DB) (*sql.Conn, func()) {
 // lock, split into advisory-lock waits (the test's own gates) and all others.
 func countLockWaiters(ctx context.Context, observer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}) (advisory, other int, err error) {
+},
+) (advisory, other int, err error) {
 	err = observer.QueryRowContext(ctx, `
 		SELECT count(*) FILTER (WHERE wait_event = 'advisory'),
 		       count(*) FILTER (WHERE wait_event <> 'advisory')

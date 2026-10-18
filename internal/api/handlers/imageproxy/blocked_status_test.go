@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"Coves/internal/core/imageproxy"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/imageproxy"
 )
 
 // The external half of the ErrPDSBlocked contract.

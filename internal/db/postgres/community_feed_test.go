@@ -3,6 +3,15 @@
 package postgres_test
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
 	"Coves/internal/api/handlers/communityFeed"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
@@ -12,14 +21,6 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -1106,7 +1106,7 @@ func (e *dialAggregateError) Timeout() bool {
 }
 
 func (e *dialAggregateError) Temporary() bool {
-	return e.everyMemberSatisfies(net.Error.Temporary)
+	return e.everyMemberSatisfies(net.Error.Temporary) //nolint:staticcheck // net.Error still declares Temporary, so the aggregate must answer it; it delegates to its members instead of deciding anything itself
 }
 
 // everyMemberSatisfies reports whether every joined error is a net.Error for

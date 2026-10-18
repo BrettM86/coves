@@ -11,11 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"Coves/tests/testkit"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-
-	"Coves/tests/testkit"
 )
 
 // backfillSettle is the window over which the skip-path tests hold their

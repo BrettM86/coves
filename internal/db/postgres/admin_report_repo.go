@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/adminreports"
 	"context"
 	"database/sql"
 	"errors"
@@ -9,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"Coves/internal/core/adminreports"
 
 	"github.com/lib/pq"
 )
@@ -59,7 +60,6 @@ func (r *postgresAdminReportRepo) Create(ctx context.Context, report *adminrepor
 		report.ReporterDID, report.TargetURI, string(report.TargetType),
 		string(report.Reason), explanation, string(status),
 	).Scan(&report.ID, &report.CreatedAt)
-
 	if err != nil {
 		// Check for constraint violations using pq.Error type
 		if pqErr := extractPQError(err); pqErr != nil {

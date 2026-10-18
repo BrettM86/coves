@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/communitysuggestions"
 	"context"
 	"database/sql"
 	"errors"
@@ -9,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"Coves/internal/core/communitysuggestions"
 
 	"github.com/lib/pq"
 )
@@ -50,7 +51,6 @@ func (r *postgresCommunitySuggestionRepo) Create(ctx context.Context, suggestion
 		suggestion.Title, suggestion.Description,
 		suggestion.SubmitterDID, string(status),
 	).Scan(&suggestion.ID, &suggestion.CreatedAt, &suggestion.UpdatedAt)
-
 	if err != nil {
 		if pqErr := extractPQError(err); pqErr != nil {
 			if strings.Contains(pqErr.Constraint, "valid_suggestion_status") {
@@ -121,7 +121,7 @@ func (r *postgresCommunitySuggestionRepo) List(ctx context.Context, req communit
 
 	// Optional status filter
 	if req.Status != "" {
-		queryBuilder.WriteString(fmt.Sprintf(" WHERE status = $%d", argIndex))
+		fmt.Fprintf(&queryBuilder, " WHERE status = $%d", argIndex)
 		args = append(args, req.Status)
 		argIndex++
 	}
@@ -137,7 +137,7 @@ func (r *postgresCommunitySuggestionRepo) List(ctx context.Context, req communit
 	}
 
 	// Pagination
-	queryBuilder.WriteString(fmt.Sprintf(" LIMIT $%d OFFSET $%d", argIndex, argIndex+1))
+	fmt.Fprintf(&queryBuilder, " LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 50

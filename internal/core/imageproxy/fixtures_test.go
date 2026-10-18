@@ -128,13 +128,6 @@ func pngRawChunk(chunkType string, data []byte, crc uint32) []byte {
 	return binary.BigEndian.AppendUint32(out, crc)
 }
 
-// pngIHDROnly builds a PNG that stops right after a well-formed IHDR. The
-// decoder reads the header, then hits EOF before any image data.
-func pngIHDROnly(t *testing.T, width, height uint32) []byte {
-	t.Helper()
-	return append(pngSignature(), pngChunk("IHDR", pngIHDRData(width, height))...)
-}
-
 // pngTruncatedIHDR builds a PNG whose IHDR chunk announces 13 bytes of data
 // but the file ends after `keep` of them, so the decoder runs out of input in
 // the middle of the header it needs to size anything.

@@ -16,10 +16,11 @@ import (
 	"testing"
 	"time"
 
-	moderationhandlers "Coves/internal/api/handlers/moderation"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/moderation"
 	"Coves/tests/testkit"
+
+	moderationhandlers "Coves/internal/api/handlers/moderation"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

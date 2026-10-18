@@ -93,7 +93,7 @@ type Service interface {
 type APIKeyServiceInterface interface {
 	// GenerateKey creates a new API key for an aggregator.
 	// Returns the plain-text key (only shown once) and the key prefix for reference.
-	GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey string, keyPrefix string, err error)
+	GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey, keyPrefix string, err error)
 
 	// GetAPIKeyInfo returns information about an aggregator's API key (without the actual key).
 	GetAPIKeyInfo(ctx context.Context, aggregatorDID string) (*APIKeyInfo, error)

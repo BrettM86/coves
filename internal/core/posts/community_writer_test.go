@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
 )
 
 // The community-record writers at T0: everything about their behaviour that a

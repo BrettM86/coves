@@ -283,7 +283,6 @@ func TestService_ResolvePost_SetCacheError(t *testing.T) {
 	atURI := "at://did:plc:alice123/app.bsky.feed.post/abc123"
 
 	result, err := svc.ResolvePost(ctx, atURI)
-
 	// The cache write fails, and the request still succeeds: caching is
 	// best-effort, so its failure is logged rather than surfaced.
 	if err != nil {

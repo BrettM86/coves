@@ -22,7 +22,7 @@ func (f *fakeDiscoverService) GetDiscover(ctx context.Context, req discover.GetD
 	return &discover.DiscoverResponse{Feed: []*discover.FeedViewPost{}}, nil
 }
 
-func getDiscover(t *testing.T, query string, ctxDID string) (*httptest.ResponseRecorder, *fakeDiscoverService) {
+func getDiscover(t *testing.T, query, ctxDID string) (*httptest.ResponseRecorder, *fakeDiscoverService) {
 	t.Helper()
 
 	svc := &fakeDiscoverService{}

@@ -1,14 +1,15 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher"
 
 	"github.com/lib/pq"
 )

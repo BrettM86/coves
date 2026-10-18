@@ -345,15 +345,29 @@ func TestModlogListCancellationIsNotUnavailable(t *testing.T) {
 		cause       error
 		unavailable bool
 	}{
-		{"handle resolver canceled", moderation.ListActionsParams{Actor: "actor.example"}, nil,
-			&identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "canceled", Err: context.Canceled}, nil, context.Canceled, false},
-		{"community resolver canceled", moderation.ListActionsParams{Community: "name@coves.social"},
-			fmt.Errorf("resolve community: %w", context.Canceled), nil, nil, context.Canceled, false},
+		{
+			"handle resolver canceled",
+			moderation.ListActionsParams{Actor: "actor.example"},
+			nil,
+			&identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "canceled", Err: context.Canceled}, nil, context.Canceled, false,
+		},
+		{
+			"community resolver canceled",
+			moderation.ListActionsParams{Community: "name@coves.social"},
+			fmt.Errorf("resolve community: %w", context.Canceled), nil, nil, context.Canceled, false,
+		},
 		{"store canceled", moderation.ListActionsParams{}, nil, nil, fmt.Errorf("query: %w", context.Canceled), context.Canceled, false},
-		{"handle resolver deadline", moderation.ListActionsParams{Actor: "actor.example"}, nil,
-			&identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "deadline", Err: context.DeadlineExceeded}, nil, context.DeadlineExceeded, true},
-		{"community resolver deadline", moderation.ListActionsParams{Community: "name@coves.social"},
-			fmt.Errorf("resolve community: %w", context.DeadlineExceeded), nil, nil, context.DeadlineExceeded, true},
+		{
+			"handle resolver deadline",
+			moderation.ListActionsParams{Actor: "actor.example"},
+			nil,
+			&identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "deadline", Err: context.DeadlineExceeded}, nil, context.DeadlineExceeded, true,
+		},
+		{
+			"community resolver deadline",
+			moderation.ListActionsParams{Community: "name@coves.social"},
+			fmt.Errorf("resolve community: %w", context.DeadlineExceeded), nil, nil, context.DeadlineExceeded, true,
+		},
 		{"store deadline", moderation.ListActionsParams{}, nil, nil, fmt.Errorf("query: %w", context.DeadlineExceeded), context.DeadlineExceeded, true},
 	} {
 		for _, admin := range []bool{false, true} {
@@ -453,10 +467,17 @@ func TestModlogListUnavailabilityNamesItsOrigin(t *testing.T) {
 		store      error
 		resolution bool
 	}{
-		{"handle outage", moderation.ListActionsParams{Actor: "actor.example"}, nil,
-			&modlogFilterHandleResolver{err: &identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "down", Err: errors.New("dial tcp: refused")}}, nil, true},
-		{"community outage", moderation.ListActionsParams{Community: "name@coves.social"},
-			&modlogFilterCommunityResolver{err: errors.New("community resolver down")}, nil, nil, true},
+		{
+			"handle outage",
+			moderation.ListActionsParams{Actor: "actor.example"},
+			nil,
+			&modlogFilterHandleResolver{err: &identity.ErrResolutionFailed{Identifier: "actor.example", Reason: "down", Err: errors.New("dial tcp: refused")}}, nil, true,
+		},
+		{
+			"community outage",
+			moderation.ListActionsParams{Community: "name@coves.social"},
+			&modlogFilterCommunityResolver{err: errors.New("community resolver down")}, nil, nil, true,
+		},
 		{"missing handle resolver", moderation.ListActionsParams{Authority: "authority.example"}, nil, nil, nil, true},
 		{"missing community resolver", moderation.ListActionsParams{Community: "name@coves.social"}, nil, nil, nil, true},
 		{"store outage", moderation.ListActionsParams{}, nil, nil, errors.New("pq: connection refused"), false},

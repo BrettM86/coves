@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/aggregators"
-	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"errors"
@@ -10,6 +8,9 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher"
 )
 
 type postgresAggregatorRepo struct {

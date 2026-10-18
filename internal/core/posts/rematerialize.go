@@ -12,10 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/core/blobs"
+
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	covesoauth "Coves/internal/atproto/oauth"
-	"Coves/internal/core/blobs"
 )
 
 // The re-materialization tool: the cutover step that moves every legacy
@@ -1628,10 +1629,10 @@ func (c *httpRematerializeBlobClient) Present(ctx context.Context, host, did, ci
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, int64(c.maxBytes)))
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		return true, nil
-	case resp.StatusCode == http.StatusNotFound:
+	case http.StatusNotFound:
 		return false, nil
 	default:
 		return false, fmt.Errorf("getBlob for %s in %s returned status %d, which is neither 'here' nor 'absent'", cid, did, resp.StatusCode)

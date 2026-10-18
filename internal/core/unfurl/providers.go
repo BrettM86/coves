@@ -399,9 +399,10 @@ func fetchKagiKite(ctx context.Context, urlStr string, client *http.Client, user
 		if n.Type == html.ElementNode && n.Data == "meta" {
 			var property, content string
 			for _, attr := range n.Attr {
-				if attr.Key == "property" {
+				switch attr.Key {
+				case "property":
 					property = attr.Val
-				} else if attr.Key == "content" {
+				case "content":
 					content = attr.Val
 				}
 			}

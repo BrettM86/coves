@@ -3,13 +3,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/comments"
-	"Coves/tests/fixtures"
-	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/comments"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 )

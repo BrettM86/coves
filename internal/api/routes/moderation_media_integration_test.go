@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	imagehandler "Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
@@ -26,6 +25,8 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
+
+	imagehandler "Coves/internal/api/handlers/imageproxy"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ipfs/go-cid"
@@ -115,9 +116,11 @@ func (r mediaPDSResolver) ResolveDID(_ context.Context, did string) (*identity.D
 		Type: "AtprotoPersonalDataServer", ServiceEndpoint: r.url,
 	}}}, nil
 }
+
 func (mediaPDSResolver) Resolve(context.Context, string) (*identity.Identity, error) {
 	return nil, fmt.Errorf("image proxy must resolve the blob owner DID")
 }
+
 func (mediaPDSResolver) ResolveHandle(context.Context, string) (string, string, error) {
 	return "", "", fmt.Errorf("image proxy must resolve the blob owner DID")
 }
@@ -244,8 +247,10 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(
 	routes.RegisterImageProxyRoutes(router, imagehandler.NewHandler(proxyService, mediaPDSResolver{url: pdsServer.URL}))
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
-	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds, queue: queue,
-		moderation: service, postURI: postURI, postCID: post.CID, ownerA: ownerA, ownerB: ownerB}, waiting
+	return &moderationMediaHarness{
+		db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds, queue: queue,
+		moderation: service, postURI: postURI, postCID: post.CID, ownerA: ownerA, ownerB: ownerB,
+	}, waiting
 }
 
 func newMediaCloudflarePurger(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint, token string) *imageproxy.CloudflarePurger {
@@ -331,7 +336,7 @@ func (h *moderationMediaHarness) cachePath(preset, owner, cid string) string {
 	return filepath.Join(h.cacheDir, preset, strings.ReplaceAll(owner, ":", "_"), cid)
 }
 
-func (h *moderationMediaHarness) assertNoCachedBlob(t *testing.T, cid string, owner string) {
+func (h *moderationMediaHarness) assertNoCachedBlob(t *testing.T, cid, owner string) {
 	t.Helper()
 	require.NoError(t, filepath.WalkDir(h.cacheDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -348,7 +353,7 @@ func TestModerationMediaServing(t *testing.T) {
 	const spam = "social.coves.moderation.defs#reasonSpam"
 	const illegal = "social.coves.moderation.defs#reasonIllegalContent"
 	const preset = "content_preview"
-	var cid1, cid2, cid5, cid6, cid7 = mediaImageCID("a"), mediaImageCID("b"), mediaImageCID("e"), mediaImageCID("f"), mediaImageCID("g")
+	cid1, cid2, cid5, cid6, cid7 := mediaImageCID("a"), mediaImageCID("b"), mediaImageCID("e"), mediaImageCID("f"), mediaImageCID("g")
 
 	t.Run("spam purges warm images across presets and blocks cold fetches", func(t *testing.T) {
 		h, _ := newModerationMediaHarness(t, false)
@@ -520,7 +525,8 @@ func TestModerationMediaBlocksEveryServedEncoding(t *testing.T) {
 			{
 				name: "valid image beside malformed entries",
 				embed: map[string]any{"$type": "social.coves.embed.images", "images": []any{
-					"x", map[string]any{"image": 7},
+					"x",
+					map[string]any{"image": 7},
 					map[string]any{"image": map[string]any{"ref": map[string]any{"$link": valid}}},
 				}},
 				blocked: []string{valid},

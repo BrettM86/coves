@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"Coves/internal/core/posts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/posts"
 )
 
 func TestDecisionClassification(t *testing.T) {

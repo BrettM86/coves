@@ -1,12 +1,13 @@
 package blueskypost
 
 import (
-	"Coves/internal/atproto/identity"
 	"context"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"Coves/internal/atproto/identity"
 )
 
 // blueskyPostURLPattern matches https://bsky.app/profile/{handle}/post/{rkey}

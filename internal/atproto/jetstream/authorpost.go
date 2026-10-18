@@ -1545,23 +1545,6 @@ func parseRecordURI(uri string) (repoDID, collection, rkey string, ok bool) {
 	return parts[0], parts[1], parts[2], true
 }
 
-// indexedPostCommunity returns the community an indexed post was submitted to.
-//
-// Soft-deleted rows COUNT as indexed: a tombstoned post has been seen, and
-// treating it as absent would send the direct fetch to resurrect content its
-// author deleted.
-func (c *PostEventConsumer) indexedPostCommunity(ctx context.Context, uri string) (string, bool, error) {
-	var communityDID string
-	err := c.db.QueryRowContext(ctx, `SELECT community_did FROM posts WHERE uri = $1`, uri).Scan(&communityDID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("reading the indexed community of %s: %w", uri, err)
-	}
-	return communityDID, true, nil
-}
-
 // nullableString converts a serialized JSON column back to the pointer shape
 // posts.Post uses, where nil means "the record carried none".
 func nullableString(v sql.NullString) *string {

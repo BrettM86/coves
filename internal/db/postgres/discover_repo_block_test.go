@@ -3,11 +3,12 @@
 package postgres
 
 import (
-	"Coves/internal/core/discover"
-	"Coves/tests/testkit"
 	"context"
 	"testing"
 	"time"
+
+	"Coves/internal/core/discover"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"

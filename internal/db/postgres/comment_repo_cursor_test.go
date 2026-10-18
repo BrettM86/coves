@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/comments"
+
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/core/comments"
 )
 
 // The sort clause, the timeframe filter and the cursor codec behind

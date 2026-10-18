@@ -1,12 +1,13 @@
 package main
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/posts"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/posts"
 )
 
 // consumerStalledThreshold is how long a consumer may be disconnected before

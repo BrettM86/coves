@@ -9,11 +9,12 @@ import (
 	"net/url"
 	"testing"
 
-	coreerrors "Coves/internal/core/errors"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 const completionDID = "did:plc:abcdefghijklmnopqrstuvwx"

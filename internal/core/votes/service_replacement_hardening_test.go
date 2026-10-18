@@ -3,8 +3,6 @@ package votes_test
 import (
 	"bytes"
 	"context"
-	"github.com/bluesky-social/indigo/atproto/atclient"
-	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"log/slog"
 	"testing"
 	"testing/synctest"
@@ -12,6 +10,10 @@ import (
 
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/votes"
+
+	"github.com/bluesky-social/indigo/atproto/atclient"
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+
 	"github.com/stretchr/testify/require"
 )
 

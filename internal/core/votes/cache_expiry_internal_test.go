@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/require"
-
-	"Coves/internal/atproto/pds"
-	"Coves/internal/core/blobs"
 )
 
 // What happens to a vote cache after its TTL passes — and what happens to it

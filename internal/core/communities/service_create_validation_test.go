@@ -3,11 +3,12 @@
 package communities_test
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/tests/testkit"
 	"context"
 	"strings"
 	"testing"
+
+	"Coves/internal/core/communities"
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

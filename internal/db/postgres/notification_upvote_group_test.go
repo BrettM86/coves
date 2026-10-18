@@ -13,6 +13,7 @@ import (
 	"Coves/tests/testkit"
 
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/require"
 )
 
@@ -339,5 +340,5 @@ func TestNotificationRepository_ApplyUpvoteGroupTx_PropagatesOtherDatabaseErrors
 	require.Error(t, err, "an error other than the recipient foreign-key violation must be returned")
 	var postgresError *pq.Error
 	require.True(t, errors.As(err, &postgresError), "the error must wrap the Postgres error")
-	require.Equal(t, pq.ErrorCode("22021"), postgresError.Code, "a NUL byte in text is an invalid byte sequence")
+	require.Equal(t, pqerror.Code("22021"), postgresError.Code, "a NUL byte in text is an invalid byte sequence")
 }

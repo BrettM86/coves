@@ -62,9 +62,11 @@ func TestListNotifications_PlaceholdersOmitLabelsAndThumbnail(t *testing.T) {
 			t.Run(state.name+"/"+scenario.name, func(t *testing.T) {
 				at := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 				post := func(uri, owner, imageCID, alt, label string) *posts.PostView {
-					return &posts.PostView{URI: uri, CID: imageCID, Author: &posts.AuthorView{DID: owner}, Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.coves.social", Name: "Community"},
+					return &posts.PostView{
+						URI: uri, CID: imageCID, Author: &posts.AuthorView{DID: owner}, Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.coves.social", Name: "Community"},
 						Record: map[string]interface{}{"title": "Image", "labels": posts.SelfLabels{Values: []posts.SelfLabel{{Val: label}}}},
-						Embed:  map[string]interface{}{"$type": "social.coves.embed.images", "images": []interface{}{map[string]interface{}{"alt": alt, "image": map[string]interface{}{"$type": "blob", "ref": map[string]interface{}{"$link": imageCID}, "mimeType": "image/jpeg", "size": 123}}}}}
+						Embed:  map[string]interface{}{"$type": "social.coves.embed.images", "images": []interface{}{map[string]interface{}{"alt": alt, "image": map[string]interface{}{"$type": "blob", "ref": map[string]interface{}{"$link": imageCID}, "mimeType": "image/jpeg", "size": 123}}}},
+					}
 				}
 				label := func(val string) *string { value := `{"values":[{"val":"` + val + `"}]}`; return &value }
 				postsByURI := anonymousPosts{

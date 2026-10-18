@@ -1,14 +1,15 @@
 package common
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/votes"
 	"context"
 	"fmt"
 	"log"
 	"net/http"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/votes"
 )
 
 // FeedPostProvider is implemented by any feed post wrapper that contains a PostView.

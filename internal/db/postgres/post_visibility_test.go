@@ -3,7 +3,6 @@
 package postgres
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -15,6 +14,7 @@ import (
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"

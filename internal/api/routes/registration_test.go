@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"Coves/internal/core/moderation"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +10,13 @@ import (
 	"sync/atomic"
 	"testing"
 
-	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/go-chi/chi/v5"
-
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/userblocks"
+
+	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/go-chi/chi/v5"
 )
 
 // The whole HTTP surface of the AppView, declared once and checked against the

@@ -3,16 +3,17 @@
 package comments
 
 import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
-	"encoding/json"
-	"log"
-	"net/http"
-	"strconv"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"Coves/internal/api/xrpc"
+
 	coreDiscover "Coves/internal/core/discover"
 
 	"github.com/stretchr/testify/assert"

@@ -1,10 +1,6 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/userblocks"
-	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +9,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/userblocks"
+	"Coves/internal/core/users"
 )
 
 // CovesProfileCollection is the atProto collection for Coves user profiles.

@@ -17,6 +17,7 @@ import (
 
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,6 +85,7 @@ func (s *diagnosticStore) SaveAuthRequestInfo(ctx context.Context, data indigooa
 	}
 	return s.webFlowRecordingStore.SaveAuthRequestInfo(ctx, data)
 }
+
 func (s *diagnosticStore) ClaimWebOAuthData(ctx context.Context, state, nonce string) (*WebOAuthData, error) {
 	s.claimCalls++
 	if s.claimError != nil {
@@ -91,6 +93,7 @@ func (s *diagnosticStore) ClaimWebOAuthData(ctx context.Context, state, nonce st
 	}
 	return s.webFlowRecordingStore.ClaimWebOAuthData(ctx, state, nonce)
 }
+
 func attachDiagnosticStore(handler *OAuthHandler, recording *webFlowRecordingStore) *diagnosticStore {
 	store := &diagnosticStore{webFlowRecordingStore: recording}
 	wrapper := NewMobileAwareStoreWrapper(store)
@@ -99,6 +102,7 @@ func attachDiagnosticStore(handler *OAuthHandler, recording *webFlowRecordingSto
 	handler.client.ClientApp.Store = wrapper
 	return store
 }
+
 func privateDatabaseError() error {
 	return fmt.Errorf("%s: %w", diagnosticPrivateMarker, &pq.Error{Code: "42703", Message: diagnosticPrivateMarker, Detail: diagnosticPrivateMarker})
 }
@@ -149,9 +153,15 @@ func TestWebOAuth_LoginPersistenceFailureHasSafeActionableDiagnostic(t *testing.
 
 func TestWebOAuth_CallbackFailureDiagnosticsDistinguishRejectionFromOutage(t *testing.T) {
 	for _, scenario := range []struct{ name, code, level string }{
-		{"missing cookie", "invalid_request", "WARN"}, {"empty cookie", "invalid_request", "WARN"}, {"missing state", "invalid_request", "WARN"},
-		{"mismatch", "invalid_request", "WARN"}, {"expired", "invalid_request", "WARN"}, {"consumed", "invalid_request", "WARN"},
-		{"unsupported store", "server_error", "ERROR"}, {"claim database failure", "server_error", "ERROR"}, {"mobile lookup failure", "server_error", "ERROR"},
+		{"missing cookie", "invalid_request", "WARN"},
+		{"empty cookie", "invalid_request", "WARN"},
+		{"missing state", "invalid_request", "WARN"},
+		{"mismatch", "invalid_request", "WARN"},
+		{"expired", "invalid_request", "WARN"},
+		{"consumed", "invalid_request", "WARN"},
+		{"unsupported store", "server_error", "ERROR"},
+		{"claim database failure", "server_error", "ERROR"},
+		{"mobile lookup failure", "server_error", "ERROR"},
 		{"claim timeout", "server_error", "ERROR"},
 		{"malformed database code", "server_error", "ERROR"},
 	} {
@@ -182,7 +192,7 @@ func TestWebOAuth_CallbackFailureDiagnosticsDistinguishRejectionFromOutage(t *te
 			case "mobile lookup failure":
 				store.lookupErr = privateDatabaseError()
 			case "malformed database code":
-				store.claimError = &pq.Error{Code: pq.ErrorCode(diagnosticPrivateMarker), Message: diagnosticPrivateMarker}
+				store.claimError = &pq.Error{Code: pqerror.Code(diagnosticPrivateMarker), Message: diagnosticPrivateMarker}
 			case "claim timeout":
 				store.claimError = fmt.Errorf("%s: %w", diagnosticPrivateMarker, context.DeadlineExceeded)
 			}

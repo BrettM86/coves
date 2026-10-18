@@ -124,8 +124,7 @@ func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
 
 func (store *inMemoryModerationStore) seedActiveLabel(action moderation.Action) {
 	store.state.actions[action.ID] = action
-	store.state.labelDecisions[inMemoryModerationLabelKey{action.AuthorityDID, action.SubjectURI, action.LabelValue}] =
-		inMemoryModerationLabelDecision{actionID: action.ID, active: true}
+	store.state.labelDecisions[inMemoryModerationLabelKey{action.AuthorityDID, action.SubjectURI, action.LabelValue}] = inMemoryModerationLabelDecision{actionID: action.ID, active: true}
 }
 
 func (store *inMemoryModerationStore) InTransaction(ctx context.Context, fn func(context.Context, moderation.Transaction) error) error {
@@ -377,5 +376,7 @@ func (transaction *inMemoryModerationTransaction) DeactivateMediaBlocks(_ contex
 	return nil
 }
 
-var _ moderation.Store = (*inMemoryModerationStore)(nil)
-var _ moderation.Transaction = (*inMemoryModerationTransaction)(nil)
+var (
+	_ moderation.Store       = (*inMemoryModerationStore)(nil)
+	_ moderation.Transaction = (*inMemoryModerationTransaction)(nil)
+)

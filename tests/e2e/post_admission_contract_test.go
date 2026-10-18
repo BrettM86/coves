@@ -154,7 +154,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		// path instead of the resolution path under test. Nothing indexes this
 		// DID, on a fresh stack or a kept one.
 		err := submitPost(asAggregator, "did:plc:aaaaaaaaaanevercommunity", title)
-		requireXRPCRefusal(t, err, http.StatusNotFound, "CommunityNotFound",
+		_ = requireXRPCRefusal(t, err, http.StatusNotFound, "CommunityNotFound",
 			"a submission to a community nobody has indexed")
 	})
 
@@ -163,7 +163,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		// record for this aggregator — admitPost step 4, carried through the
 		// mapper as the aggregators-package 403.
 		err := submitPost(asAggregator, community.DID, title)
-		requireXRPCRefusal(t, err, http.StatusForbidden, "NotAuthorized",
+		_ = requireXRPCRefusal(t, err, http.StatusForbidden, "NotAuthorized",
 			"a submission from an aggregator the community never authorized")
 
 		// The SAME submission again. §8's check order is observable right here:
@@ -173,7 +173,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		// would answer 409 DuplicateSubmission instead, and this is the only
 		// tier that can catch the production wiring doing that.
 		err = submitPost(asAggregator, community.DID, title)
-		requireXRPCRefusal(t, err, http.StatusForbidden, "NotAuthorized",
+		_ = requireXRPCRefusal(t, err, http.StatusForbidden, "NotAuthorized",
 			"the identical resubmission of a refused submission — a 409 here means a refusal "+
 				"consumed a dedupe slot, which §8 forbids")
 	})
@@ -204,7 +204,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 			// path ran to the PDS and back. The reservation is now CONFIRMED on
 			// the ledger, so the identical resubmission is the full dedupe proof.
 			err = submitPost(asAggregator, community.DID, title)
-			requireXRPCRefusal(t, err, http.StatusConflict, "DuplicateSubmission",
+			_ = requireXRPCRefusal(t, err, http.StatusConflict, "DuplicateSubmission",
 				"an identical resubmission of an admitted post inside the dedupe window")
 			return
 		}
@@ -222,7 +222,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		// that has no classification at all — which is what this arc used to
 		// assert, back when the ceiling was the community-credential refresh, and
 		// is precisely the vagueness the named sentinel removed.
-		requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
+		_ = requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
 			"an ADMITTED submission stopping at the author-repo open — any 4xx here means the "+
 				"admission decision refused a submission the community has authorized, and any 500 "+
 				"means it broke somewhere unclassified instead")
@@ -237,7 +237,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		// does not exist: the §8 failure mode where a transient outage becomes a
 		// lockout until the dedupe window rolls.
 		err = submitPost(asAggregator, community.DID, title)
-		requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
+		_ = requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
 			"the retry of a failed write — a 409 means the failed write's reservation was never "+
 				"released, turning one failure into a lockout until the dedupe window rolls")
 	})

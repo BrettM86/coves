@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const blueskyMediaCDN = "https://cdn.bsky.app" // coves:allow-public-host: inert media URLs in a stubbed resolved post; no test fetches them.

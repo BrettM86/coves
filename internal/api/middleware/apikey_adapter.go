@@ -1,8 +1,9 @@
 package middleware
 
 import (
-	"Coves/internal/core/aggregators"
 	"context"
+
+	"Coves/internal/core/aggregators"
 )
 
 // APIKeyValidatorAdapter adapts the aggregators.APIKeyService to the middleware.APIKeyValidator interface

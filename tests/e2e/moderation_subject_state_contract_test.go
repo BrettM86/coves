@@ -68,22 +68,22 @@ func TestModerationSubjectStateAPIContract(t *testing.T) {
 	t.Run("non-admin service JWT is forbidden", func(t *testing.T) {
 		token := nonAdmin.ServiceAuth(t, communityInstanceDID, subjectStateMethod)
 		err := p.AppView.As(token).Query(t.Context(), subjectStateMethod, params, nil)
-		requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin's valid service JWT")
+		_ = requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin's valid service JWT")
 	})
 	t.Run("missing credential requires authentication", func(t *testing.T) {
 		err := p.AppView.Query(t.Context(), subjectStateMethod, params, nil)
-		requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "an unauthenticated request")
+		_ = requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "an unauthenticated request")
 	})
 	t.Run("service JWT for another method is rejected", func(t *testing.T) {
 		account := testkit.ModerationAdmin(t, 1)
 		token := account.ServiceAuth(t, communityInstanceDID, "social.coves.community.post.create")
 		err := p.AppView.As(token).Query(t.Context(), subjectStateMethod, params, nil)
-		requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "a service JWT bound to another method")
+		_ = requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "a service JWT bound to another method")
 	})
 	t.Run("service JWT for another audience is rejected", func(t *testing.T) {
 		account := testkit.ModerationAdmin(t, 1)
 		token := account.ServiceAuth(t, "did:web:other.test", subjectStateMethod)
 		err := p.AppView.As(token).Query(t.Context(), subjectStateMethod, params, nil)
-		requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "a service JWT addressed to another service")
+		_ = requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "a service JWT addressed to another service")
 	})
 }

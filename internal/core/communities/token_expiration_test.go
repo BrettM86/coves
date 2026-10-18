@@ -3,11 +3,12 @@
 package communities_test
 
 import (
-	"Coves/internal/core/communities"
 	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

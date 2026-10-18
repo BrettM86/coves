@@ -75,7 +75,8 @@ func moderationCDNTarget(t *testing.T, db *sql.DB, owner, cid string) (target st
 	state, failureCode string
 	attempts           int
 	nextAttemptAt      time.Time
-}) {
+},
+) {
 	t.Helper()
 	var failure sql.NullString
 	require.NoError(t, db.QueryRowContext(t.Context(), `
@@ -404,8 +405,10 @@ func TestModerationCDNPurgeIllegalContentRecordsOnlyOwner(t *testing.T) {
 	assert.ElementsMatch(t, moderationCDNFiles(h.ownerA, imageCID), endpoint.Requests()[0].Files)
 }
 
-type failingCDNRecordStore struct{ moderation.Store }
-type failingCDNRecordTransaction struct{ moderation.Transaction }
+type (
+	failingCDNRecordStore       struct{ moderation.Store }
+	failingCDNRecordTransaction struct{ moderation.Transaction }
+)
 
 func (store failingCDNRecordStore) InTransaction(ctx context.Context, fn func(context.Context, moderation.Transaction) error) error {
 	return store.Store.InTransaction(ctx, func(ctx context.Context, tx moderation.Transaction) error {
@@ -537,7 +540,8 @@ func TestModerationCDNPurgeSweepRecordsOutcomesAfterContextEnds(t *testing.T) {
 	go func() { swept <- queue.Sweep(sweepCtx) }()
 	awaitModerationCDN(t, "sweep purge request", purger.entered)
 	cancelSweep()
-	awaitModerationCDN(t, "interrupted sweep to return", swept)
+	assert.ErrorIs(t, awaitModerationCDN(t, "interrupted sweep to return", swept), context.Canceled,
+		"a sweep whose context ended reports the cancellation")
 
 	assert.Equal(t, "completed", moderationCDNTarget(t, h.db, h.ownerA, first).state,
 		"an acknowledged pair completes even though the sweep's context ended")

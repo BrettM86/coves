@@ -3,7 +3,6 @@
 package jetstream
 
 import (
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 

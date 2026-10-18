@@ -26,8 +26,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const ownerlessUnmappableDirectory = "did_web_example.test_alice"
-const ownerlessOwnerC = "did:web:example.test"
+const (
+	ownerlessUnmappableDirectory = "did_web_example.test_alice"
+	ownerlessOwnerC              = "did:web:example.test"
+)
 
 type ownerlessCDNFixture struct {
 	h        *moderationMediaHarness
@@ -77,8 +79,8 @@ func requireOwnerlessCachedEntries(t *testing.T, h *moderationMediaHarness, cid 
 func seedOwnerlessUnmappableEntry(t *testing.T, h *moderationMediaHarness, cid string) string {
 	t.Helper()
 	path := filepath.Join(h.cacheDir, "content_preview", ownerlessUnmappableDirectory, cid)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
-	require.NoError(t, os.WriteFile(path, testkit.TestPNG(32, 32), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, testkit.TestPNG(32, 32), 0o644))
 	_, err := os.Stat(path)
 	require.NoError(t, err)
 	return path
@@ -147,7 +149,7 @@ func (boundary *ownerlessDeletionBoundary) Delete(preset, owner, cid string) err
 }
 
 func (boundary *ownerlessDeletionBoundary) DeleteOwner(owner, cid string) error {
-	boundary.check(cid, func(_ string, candidateOwner string) bool { return candidateOwner == owner })
+	boundary.check(cid, func(_, candidateOwner string) bool { return candidateOwner == owner })
 	return boundary.DiskCache.DeleteOwner(owner, cid)
 }
 

@@ -111,7 +111,7 @@ func TestModerationContentLabelContract(t *testing.T) {
 	}
 	err = p.AppView.As(outsider.ServiceAuth(t, communityInstanceDID, labelContentMethod)).Procedure(
 		t.Context(), labelContentMethod, input, nil)
-	requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin label request")
+	_ = requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin label request")
 	stillClear, err := readPost()
 	require.NoError(t, err)
 	require.Equal(t, post.URI, stillClear["uri"])
@@ -286,7 +286,7 @@ func TestModerationCommentRemovalContract(t *testing.T) {
 	}
 	err = p.AppView.As(outsider.ServiceAuth(t, communityInstanceDID, removeContentMethod)).Procedure(
 		t.Context(), removeContentMethod, removeInput, nil)
-	requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin removal")
+	_ = requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin removal")
 	unchangedState, err := readState()
 	require.NoError(t, err)
 	require.Equal(t, "v0", unchangedState.State.Version)
@@ -457,7 +457,7 @@ func TestModerationCommentRemovalContract(t *testing.T) {
 	require.Equal(t, removeInput["privateNote"], adminActions[1]["privateNote"])
 
 	err = p.AppView.Query(t.Context(), listAdminActionsMethod, url.Values{"subject": {uri}}, nil)
-	requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "an anonymous admin action log request")
+	_ = requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "an anonymous admin action log request")
 }
 
 func requireModlogActions(t *testing.T, body map[string]any) []map[string]any {

@@ -8,8 +8,9 @@ import (
 
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
-	coreerrors "Coves/internal/core/errors"
 	"Coves/internal/core/users"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 // Mapping is the XRPC error response a Go error resolves to.

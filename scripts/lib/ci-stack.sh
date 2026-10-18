@@ -390,7 +390,8 @@ stack_captured_logs() {
     echo "$names"
 }
 
-# stack_up is the whole bring-up: the sequence both callers need, in one call.
+# stack_up is the whole bring-up in one call. scripts/ci.sh runs the same steps
+# itself so it can lint between the module prefetch and the stack start.
 stack_up() {
     stack_discard_previous
     stack_build

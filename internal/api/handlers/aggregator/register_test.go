@@ -1,9 +1,6 @@
 package aggregator
 
 import (
-	"Coves/internal/api/reqbody"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,6 +14,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"Coves/internal/api/reqbody"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
 )
 
 // Registration is how an aggregator tells this instance it exists, and the only

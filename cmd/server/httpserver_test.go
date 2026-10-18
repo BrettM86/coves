@@ -1,11 +1,12 @@
 package main
 
 import (
-	"Coves/internal/config"
-	"Coves/internal/core/imageproxy"
 	"net/http"
 	"testing"
 	"time"
+
+	"Coves/internal/config"
+	"Coves/internal/core/imageproxy"
 )
 
 // A zero timeout in net/http means "no deadline", so every one of these must

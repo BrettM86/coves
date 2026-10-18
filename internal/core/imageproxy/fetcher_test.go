@@ -44,7 +44,7 @@ func TestPDSFetcher_Fetch_Success(t *testing.T) {
 			t.Errorf("unexpected cid: %s", r.URL.Query().Get("cid"))
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write(expectedData)
+		_, _ = w.Write(expectedData)
 	}))
 	defer server.Close()
 
@@ -165,7 +165,7 @@ func TestPDSFetcher_Fetch_URLConstruction(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedURL = r.URL.String()
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("data"))
+		_, _ = w.Write([]byte("data"))
 	}))
 	defer server.Close()
 
@@ -208,7 +208,7 @@ func TestPDSFetcher_Fetch_ImageTooLarge_StreamingBody(t *testing.T) {
 	largeData := make([]byte, 2*1024*1024) // 2MB of zeros
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(largeData)
+		_, _ = w.Write(largeData)
 	}))
 	defer server.Close()
 
@@ -230,7 +230,7 @@ func TestPDSFetcher_Fetch_SizeWithinLimit(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(testData)
+		_, _ = w.Write(testData)
 	}))
 	defer server.Close()
 

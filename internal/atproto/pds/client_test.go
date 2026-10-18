@@ -418,7 +418,9 @@ func TestClient_CreateRecord(t *testing.T) {
 				// Send response
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				if err := json.NewEncoder(w).Encode(tt.serverResponse); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -522,10 +524,12 @@ func TestClient_DeleteRecord(t *testing.T) {
 				w.WriteHeader(tt.serverStatus)
 				if tt.serverStatus != http.StatusOK {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]any{
+					if err := json.NewEncoder(w).Encode(map[string]any{
 						"error":   "Error",
 						"message": "Operation failed",
-					})
+					}); err != nil {
+						t.Errorf("encoding test server response: %v", err)
+					}
 				}
 			}))
 			defer server.Close()
@@ -671,7 +675,9 @@ func TestClient_ListRecords(t *testing.T) {
 				// Send response
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				if err := json.NewEncoder(w).Encode(tt.serverResponse); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -810,7 +816,9 @@ func TestClient_GetRecord(t *testing.T) {
 				// Send response
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				if err := json.NewEncoder(w).Encode(tt.serverResponse); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1039,10 +1047,12 @@ func TestClient_TypedErrors_CreateRecord(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(map[string]any{
+				if err := json.NewEncoder(w).Encode(map[string]any{
 					"error":   "TestError",
 					"message": "Test error message",
-				})
+				}); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1098,10 +1108,12 @@ func TestClient_TypedErrors_DeleteRecord(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(map[string]any{
+				if err := json.NewEncoder(w).Encode(map[string]any{
 					"error":   "TestError",
 					"message": "Test error message",
-				})
+				}); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1152,10 +1164,12 @@ func TestClient_TypedErrors_ListRecords(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(map[string]any{
+				if err := json.NewEncoder(w).Encode(map[string]any{
 					"error":   "TestError",
 					"message": "Test error message",
-				})
+				}); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1303,7 +1317,9 @@ func TestClient_PutRecord(t *testing.T) {
 				// Send response
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(tt.serverResponse)
+				if err := json.NewEncoder(w).Encode(tt.serverResponse); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1377,10 +1393,12 @@ func TestClient_TypedErrors_PutRecord(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.serverStatus)
-				json.NewEncoder(w).Encode(map[string]any{
+				if err := json.NewEncoder(w).Encode(map[string]any{
 					"error":   "TestError",
 					"message": "Test error message",
-				})
+				}); err != nil {
+					t.Errorf("encoding test server response: %v", err)
+				}
 			}))
 			defer server.Close()
 
@@ -1462,14 +1480,16 @@ func TestClient_UploadBlob(t *testing.T) {
 			// Send response
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{
+			if err := json.NewEncoder(w).Encode(map[string]any{
 				"blob": map[string]any{
 					"$type":    "blob",
 					"ref":      map[string]string{"$link": validCID},
 					"mimeType": "image/png",
 					"size":     len(uploadData),
 				},
-			})
+			}); err != nil {
+				t.Errorf("encoding test server response: %v", err)
+			}
 		}))
 		defer server.Close()
 
@@ -1563,10 +1583,12 @@ func TestClient_UploadBlob(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]any{
+			if err := json.NewEncoder(w).Encode(map[string]any{
 				"error":   "TestError",
 				"message": "Test error message",
-			})
+			}); err != nil {
+				t.Errorf("encoding test server response: %v", err)
+			}
 		}))
 		defer server.Close()
 

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCommunityConsumer_ProfileOriginTimeoutIsDebouncedAndDeferred drives a

@@ -3,9 +3,9 @@ package jetstream
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"time"
 )
 
 // Canonical consumer names. These key the persisted rows in

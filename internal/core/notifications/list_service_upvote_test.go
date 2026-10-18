@@ -31,8 +31,10 @@ func TestListNotifications_UpvoteHydrationOmissions(t *testing.T) {
 		if subject == rootURI {
 			subjectReference = livePost
 		}
-		return notifications.ListedNotification{Reason: notifications.ReasonUpvote, SubjectURI: subject, RootPostURI: rootURI,
-			Subject: subjectReference, RootPost: livePost, UpvoteCount: 2, RecentUpvoterDIDs: []string{"did:plc:voter"}, SortAt: at}
+		return notifications.ListedNotification{
+			Reason: notifications.ReasonUpvote, SubjectURI: subject, RootPostURI: rootURI,
+			Subject: subjectReference, RootPost: livePost, UpvoteCount: 2, RecentUpvoterDIDs: []string{"did:plc:voter"}, SortAt: at,
+		}
 	}
 	rows := []notifications.ListedNotification{
 		group(missingPost, missingPost),
@@ -42,8 +44,10 @@ func TestListNotifications_UpvoteHydrationOmissions(t *testing.T) {
 		group(present, present),
 		group(placeholder, root),
 		group(presentComment, missingRoot),
-		{Reason: notifications.ReasonPostReply, RecordURI: reply, ActorDID: "did:plc:actor", SubjectURI: root, RootPostURI: root,
-			Record: notifications.ListedReference{State: notifications.ReferenceLive, CID: "bafyreply"}, Subject: livePost, RootPost: livePost, RecordCreatedAt: at, SortAt: at},
+		{
+			Reason: notifications.ReasonPostReply, RecordURI: reply, ActorDID: "did:plc:actor", SubjectURI: root, RootPostURI: root,
+			Record: notifications.ListedReference{State: notifications.ReferenceLive, CID: "bafyreply"}, Subject: livePost, RootPost: livePost, RecordCreatedAt: at, SortAt: at,
+		},
 	}
 	rows[5].Subject = notifications.ListedReference{State: notifications.ReferenceDeleted, CID: "bafydeletedcomment"}
 	logs := captureDefaultLogs(t)
