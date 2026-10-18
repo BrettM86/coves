@@ -158,8 +158,8 @@ func TestProfileOriginNativeUserRejectsFieldsWithoutResolution(t *testing.T) {
 	}
 	c.assertOrigin(t, profileOriginFields{})
 	user := c.read(t)
-	if user.DisplayName != "Native Name" || user.Bio != "Native bio" {
-		t.Errorf("native displayName/bio = %q/%q, want Native Name/Native bio", user.DisplayName, user.Bio)
+	if user.DisplayName != "Native Name" || user.Description != "Native bio" {
+		t.Errorf("native displayName/bio = %q/%q, want Native Name/Native bio", user.DisplayName, user.Description)
 	}
 	if c.uncached.resolves != 0 || c.caching.resolves != 0 {
 		t.Errorf("native Resolve calls: uncached=%d, caching=%d; want 0, 0", c.uncached.resolves, c.caching.resolves)

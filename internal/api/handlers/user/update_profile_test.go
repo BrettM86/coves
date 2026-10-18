@@ -410,28 +410,80 @@ func TestUpdateProfileHandler_DisplayNameTooLong(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "DisplayNameTooLong")
 }
 
-// TestUpdateProfileHandler_BioTooLong tests that bio exceeding limit is rejected
-func TestUpdateProfileHandler_BioTooLong(t *testing.T) {
-	handler := createTestHandler()
-
-	longBio := strings.Repeat("a", MaxBioGraphemes+1)
-	reqBody := UpdateProfileRequest{
-		Bio: &longBio,
+// TestUpdateProfileHandler_DescriptionTooLong tests that a description over 256 graphemes is rejected
+func TestUpdateProfileHandler_DescriptionTooLong(t *testing.T) {
+	family := "👨\u200d👩\u200d👧\u200d👦" // one grapheme, 25 bytes
+	tests := []struct {
+		name        string
+		description string
+	}{
+		{name: "over 256 graphemes", description: strings.Repeat("a", 257)},
+		{name: "over 2560 bytes within 256 graphemes", description: strings.Repeat(family, 103)}, // 2575 bytes
 	}
-	body, _ := json.Marshal(reqBody)
 
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := createTestHandler()
+			body, err := json.Marshal(map[string]string{"description": tt.description})
+			require.NoError(t, err)
 
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	req = setTestOAuthSession(req, testDID, session)
+			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			const testDID = "did:plc:testuser123"
+			req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
 
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "BioTooLong")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "DescriptionTooLong")
+		})
+	}
+}
+
+// TestUpdateProfileHandler_DescriptionWireKey pins the input property name to
+// the lexicon's `description`, the same name the profile record uses. `bio` was
+// the old input name and is no longer read.
+func TestUpdateProfileHandler_DescriptionWireKey(t *testing.T) {
+	tests := []struct {
+		wantDescription any
+		name            string
+		body            string
+	}{
+		{name: "description sets the record description", body: `{"description":"Hello from description"}`, wantDescription: "Hello from description"},
+		{name: "bio is not read", body: `{"bio":"Hello from bio"}`, wantDescription: "Existing description"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &mockPDSClient{
+				getRecordResponse: &pds.RecordResponse{
+					CID: "bafyexisting",
+					Value: map[string]any{
+						"$type":       CovesProfileCollection,
+						"description": "Existing description",
+					},
+				},
+				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
+				putRecordCID: "bafyupdated",
+			}
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			const testDID = "did:plc:testuser123"
+			req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			profile, ok := mockClient.putRecordValue.(map[string]any)
+			assert.True(t, ok)
+			assert.Equal(t, tt.wantDescription, profile["description"])
+			assert.NotContains(t, profile, "bio")
+		})
+	}
 }
 
 // TestUpdateProfileHandler_MissingHostURL tests that missing PDS host URL returns error
@@ -765,7 +817,7 @@ func TestUpdateProfileHandler_Success(t *testing.T) {
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
-		Bio:         strPtr("Hello world"),
+		Description: strPtr("Hello world"),
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -839,7 +891,7 @@ func TestUpdateProfileHandler_TextUpdatePreservesExistingRecord(t *testing.T) {
 	assert.Equal(t, "bafyexisting", mockClient.putRecordSwap)
 }
 
-func TestUpdateProfileHandler_BioChangeRemovesDescriptionFacets(t *testing.T) {
+func TestUpdateProfileHandler_DescriptionChangeRemovesDescriptionFacets(t *testing.T) {
 	facets := []any{
 		map[string]any{
 			"index": map[string]any{"byteStart": float64(0), "byteEnd": float64(8)},
@@ -851,11 +903,11 @@ func TestUpdateProfileHandler_BioChangeRemovesDescriptionFacets(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		bio  string
+		name        string
+		description string
 	}{
-		{name: "changed", bio: "A new bio"},
-		{name: "cleared", bio: ""},
+		{name: "changed", description: "A new bio"},
+		{name: "cleared", description: ""},
 	}
 
 	for _, tt := range tests {
@@ -874,7 +926,7 @@ func TestUpdateProfileHandler_BioChangeRemovesDescriptionFacets(t *testing.T) {
 			}
 			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
-			body, _ := json.Marshal(UpdateProfileRequest{Bio: strPtr(tt.bio)})
+			body, _ := json.Marshal(UpdateProfileRequest{Description: strPtr(tt.description)})
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			const testDID = "did:plc:testuser123"
@@ -886,15 +938,15 @@ func TestUpdateProfileHandler_BioChangeRemovesDescriptionFacets(t *testing.T) {
 			assert.Equal(t, http.StatusOK, w.Code)
 			profile, ok := mockClient.putRecordValue.(map[string]any)
 			assert.True(t, ok)
-			assert.Equal(t, tt.bio, profile["description"])
+			assert.Equal(t, tt.description, profile["description"])
 			assert.NotContains(t, profile, "descriptionFacets",
 				"facets indexed into the old description must not survive a changed or cleared bio")
 		})
 	}
 }
 
-func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.T) {
-	const existingBio = "Keep https://example.com"
+func TestUpdateProfileHandler_UnchangedDescriptionPreservesDescriptionFacets(t *testing.T) {
+	const existingDescription = "Keep https://example.com"
 	facets := []any{
 		map[string]any{
 			"index": map[string]any{"byteStart": float64(5), "byteEnd": float64(24)},
@@ -906,11 +958,11 @@ func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.
 	}
 
 	tests := []struct {
-		name string
-		bio  *string
+		name        string
+		description *string
 	}{
 		{name: "omitted"},
-		{name: "explicitly unchanged", bio: strPtr(existingBio)},
+		{name: "explicitly unchanged", description: strPtr(existingDescription)},
 	}
 
 	for _, tt := range tests {
@@ -920,7 +972,7 @@ func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.
 					CID: "bafyexisting",
 					Value: map[string]any{
 						"$type":             CovesProfileCollection,
-						"description":       existingBio,
+						"description":       existingDescription,
 						"descriptionFacets": facets,
 					},
 				},
@@ -929,7 +981,7 @@ func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.
 			}
 			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
-			body, _ := json.Marshal(UpdateProfileRequest{Bio: tt.bio})
+			body, _ := json.Marshal(UpdateProfileRequest{Description: tt.description})
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			const testDID = "did:plc:testuser123"
@@ -941,7 +993,7 @@ func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.
 			assert.Equal(t, http.StatusOK, w.Code)
 			profile, ok := mockClient.putRecordValue.(map[string]any)
 			assert.True(t, ok)
-			assert.Equal(t, existingBio, profile["description"])
+			assert.Equal(t, existingDescription, profile["description"])
 			assert.Equal(t, facets, profile["descriptionFacets"])
 		})
 	}
@@ -1223,7 +1275,7 @@ func TestUpdateProfileHandler_GetRecordRateLimitedStopsWrite(t *testing.T) {
 	mockClient := &mockPDSClient{getRecordError: pds.ErrRateLimited}
 	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
-	body, _ := json.Marshal(UpdateProfileRequest{Bio: strPtr("New bio")})
+	body, _ := json.Marshal(UpdateProfileRequest{Description: strPtr("New bio")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	const testDID = "did:plc:testuser123"
@@ -1907,7 +1959,7 @@ func TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack(t *testing.T) 
 
 	body, _ := json.Marshal(UpdateProfileRequest{
 		DisplayName:    strPtr("Written Through"),
-		Bio:            strPtr("and read back by the consumer"),
+		Description:    strPtr("and read back by the consumer"),
 		AvatarBlob:     []byte("fake image data"),
 		AvatarMimeType: "image/png",
 	})
@@ -1938,9 +1990,8 @@ func TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack(t *testing.T) 
 	assert.Equal(t, "social.coves.actor.profile", record["$type"])
 	assert.Equal(t, "Written Through", record["displayName"])
 	assert.Equal(t, "and read back by the consumer", record["description"],
-		"the bio is called `bio` on the request and `description` in the record, and the "+
-			"consumer reads `description` back into the bio column: three names for one field, "+
-			"and this is the only place all three are in scope at once")
+		"the request's `description` is written to the record's `description`, and the "+
+			"consumer reads it back into the description column")
 
 	// The blob reference, in the shape jetstream.extractBlobCID insists on:
 	// $type == "blob" and a string at ref.$link. Anything else and the consumer

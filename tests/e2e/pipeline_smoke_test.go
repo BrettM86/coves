@@ -46,7 +46,7 @@ import (
 //
 // Backfill is conditional, so the fix is to falsify its condition first. It
 // touches a profile only when EVERY field is empty, checked twice: at the spawn
-// site (`if user.DisplayName != "" || user.Bio != "" || ...  return`) and again
+// site (`if user.DisplayName != "" || user.Description != "" || ...  return`) and again
 // immediately before the write, after the fetch, so that a firehose event
 // arriving mid-fetch is never clobbered ("firehose delivered a profile while we
 // were fetching — keep it"). Once the first display name is in the row, both

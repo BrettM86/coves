@@ -14,7 +14,7 @@ type User struct {
 	Handle      string    `json:"handle" db:"handle"`
 	PDSURL      string    `json:"pdsUrl" db:"pds_url"`
 	DisplayName string    `json:"displayName,omitempty" db:"display_name"`
-	Bio         string    `json:"bio,omitempty" db:"bio"`
+	Description string    `json:"description,omitempty" db:"description"`
 	AvatarCID   string    `json:"avatarCid,omitempty" db:"avatar_cid"`
 	BannerCID   string    `json:"bannerCid,omitempty" db:"banner_cid"`
 	// Origin fields: the bridged account's fediverse address and display hints.
@@ -83,11 +83,11 @@ type ProfileViewDetailed struct {
 	CreatedAt   time.Time     `json:"createdAt"`
 	Stats       *ProfileStats `json:"stats,omitempty"`
 	DisplayName string        `json:"displayName,omitempty"`
-	// Bio is the user's biography/description. Maps to JSON "description" for atProto lexicon compatibility.
-	Bio    string              `json:"description,omitempty"`
-	Avatar string              `json:"avatar,omitempty"` // URL, not CID
-	Banner string              `json:"banner,omitempty"` // URL, not CID
-	Viewer *ProfileViewerState `json:"viewer,omitempty"`
+	// Description is the user's bio.
+	Description string              `json:"description,omitempty"`
+	Avatar      string              `json:"avatar,omitempty"` // URL, not CID
+	Banner      string              `json:"banner,omitempty"` // URL, not CID
+	Viewer      *ProfileViewerState `json:"viewer,omitempty"`
 	// Origin fields (bridged accounts only); empty values are omitted.
 	Origin         string `json:"origin,omitempty"`
 	OriginUsername string `json:"originUsername,omitempty"`

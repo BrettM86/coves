@@ -745,7 +745,7 @@ func TestUserRepo_UpdateProfile(t *testing.T) {
 
 	input := users.UpdateProfileInput{
 		DisplayName: &displayName,
-		Bio:         &bio,
+		Description: &bio,
 		AvatarCID:   &avatarCID,
 		BannerCID:   &bannerCID,
 	}
@@ -757,7 +757,7 @@ func TestUserRepo_UpdateProfile(t *testing.T) {
 	assert.Equal(t, testDID, updated.DID)
 	assert.Equal(t, testHandle, updated.Handle)
 	assert.Equal(t, displayName, updated.DisplayName)
-	assert.Equal(t, bio, updated.Bio)
+	assert.Equal(t, bio, updated.Description)
 	assert.Equal(t, avatarCID, updated.AvatarCID)
 	assert.Equal(t, bannerCID, updated.BannerCID)
 }
@@ -794,14 +794,14 @@ func TestUserRepo_UpdateProfile_PartialUpdate(t *testing.T) {
 	// Second update: only update bio (leave other fields alone)
 	bio := "New bio text"
 	input2 := users.UpdateProfileInput{
-		Bio: &bio,
+		Description: &bio,
 	}
 	updated, err := repo.UpdateProfile(ctx, testDID, input2)
 	assert.NoError(t, err)
 	require.NotNil(t, updated)
 
 	// Verify bio was updated
-	assert.Equal(t, bio, updated.Bio)
+	assert.Equal(t, bio, updated.Description)
 
 	// Verify previous values are preserved (nil means "don't change")
 	assert.Equal(t, displayName, updated.DisplayName)
@@ -886,11 +886,11 @@ func TestUserRepo_UpdateProfile_ClearFields(t *testing.T) {
 
 	// Set profile fields
 	displayName := "Has Name"
-	bio := "Has Bio"
+	bio := "Has Description"
 	avatarCID := "bafyhasavatar"
 	input1 := users.UpdateProfileInput{
 		DisplayName: &displayName,
-		Bio:         &bio,
+		Description: &bio,
 		AvatarCID:   &avatarCID,
 	}
 	_, err = repo.UpdateProfile(ctx, testDID, input1)
@@ -908,7 +908,7 @@ func TestUserRepo_UpdateProfile_ClearFields(t *testing.T) {
 	// Verify display name was cleared
 	assert.Empty(t, updated.DisplayName)
 	// Other fields should remain
-	assert.Equal(t, bio, updated.Bio)
+	assert.Equal(t, bio, updated.Description)
 	assert.Equal(t, avatarCID, updated.AvatarCID)
 }
 
@@ -938,7 +938,7 @@ func TestUserRepo_GetByDID_ReturnsNewFields(t *testing.T) {
 	bannerCID := "bafyprofilebanner"
 	input := users.UpdateProfileInput{
 		DisplayName: &displayName,
-		Bio:         &bio,
+		Description: &bio,
 		AvatarCID:   &avatarCID,
 		BannerCID:   &bannerCID,
 	}
@@ -954,7 +954,7 @@ func TestUserRepo_GetByDID_ReturnsNewFields(t *testing.T) {
 	assert.Equal(t, testDID, retrieved.DID)
 	assert.Equal(t, testHandle, retrieved.Handle)
 	assert.Equal(t, displayName, retrieved.DisplayName)
-	assert.Equal(t, bio, retrieved.Bio)
+	assert.Equal(t, bio, retrieved.Description)
 	assert.Equal(t, avatarCID, retrieved.AvatarCID)
 	assert.Equal(t, bannerCID, retrieved.BannerCID)
 }
@@ -985,7 +985,7 @@ func TestUserRepo_GetByHandle_ReturnsNewFields(t *testing.T) {
 	bannerCID := "bafyhandlebanner"
 	input := users.UpdateProfileInput{
 		DisplayName: &displayName,
-		Bio:         &bio,
+		Description: &bio,
 		AvatarCID:   &avatarCID,
 		BannerCID:   &bannerCID,
 	}
@@ -1001,7 +1001,7 @@ func TestUserRepo_GetByHandle_ReturnsNewFields(t *testing.T) {
 	assert.Equal(t, testDID, retrieved.DID)
 	assert.Equal(t, testHandle, retrieved.Handle)
 	assert.Equal(t, displayName, retrieved.DisplayName)
-	assert.Equal(t, bio, retrieved.Bio)
+	assert.Equal(t, bio, retrieved.Description)
 	assert.Equal(t, avatarCID, retrieved.AvatarCID)
 	assert.Equal(t, bannerCID, retrieved.BannerCID)
 }
@@ -1057,7 +1057,7 @@ func TestUserRepo_GetByDIDs_ReturnsNewFields(t *testing.T) {
 	require.NoError(t, err)
 	input2 := users.UpdateProfileInput{
 		DisplayName: &displayName2,
-		Bio:         &bio2,
+		Description: &bio2,
 	}
 	_, err = repo.UpdateProfile(ctx, testDID2, input2)
 	require.NoError(t, err)
@@ -1072,13 +1072,13 @@ func TestUserRepo_GetByDIDs_ReturnsNewFields(t *testing.T) {
 	require.NotNil(t, u1)
 	assert.Equal(t, displayName1, u1.DisplayName)
 	assert.Equal(t, avatarCID1, u1.AvatarCID)
-	assert.Empty(t, u1.Bio)
+	assert.Empty(t, u1.Description)
 
 	// Verify user 2
 	u2 := userMap[testDID2]
 	require.NotNil(t, u2)
 	assert.Equal(t, displayName2, u2.DisplayName)
-	assert.Equal(t, bio2, u2.Bio)
+	assert.Equal(t, bio2, u2.Description)
 	assert.Empty(t, u2.AvatarCID)
 }
 

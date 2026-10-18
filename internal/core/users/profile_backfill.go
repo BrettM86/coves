@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/rivo/uniseg"
 )
 
 // ProfileCollection is the atProto collection holding Coves user profiles.
@@ -23,14 +25,16 @@ const profileRecordRKey = "self"
 // misbehaving or malicious PDS streaming an unbounded body.
 const maxProfileResponseBytes = 1 << 20 // 1 MiB
 
-// Field caps mirror the users table CHECK constraints (migration 027:
-// display_name <= 64, bio <= 256 — Postgres length() counts characters, so
-// these are rune counts, not bytes). Overlong values from an untrusted PDS are
-// truncated rather than rejected: a truncated profile indexes fine, while an
-// over-limit UPDATE would fail the constraint forever on every re-index.
+// Field caps are the social.coves.actor.profile lexicon's. The users CHECK
+// constraints (migration 060) enforce the byte caps; Postgres cannot count
+// graphemes. Overlong values from an untrusted PDS are truncated rather than
+// rejected: a truncated profile indexes fine, while an over-limit UPDATE would
+// fail the constraint forever on every re-index.
 const (
-	maxDisplayNameChars = 64
-	maxBioChars         = 256
+	maxDisplayNameGraphemes = 64
+	maxDisplayNameBytes     = 640
+	maxDescriptionGraphemes = 256
+	maxDescriptionBytes     = 2560
 )
 
 // maxBlobCIDLength caps the accepted length of a blob ref's $link. Real CIDs
@@ -105,7 +109,7 @@ func FetchProfileRecord(ctx context.Context, client *http.Client, pdsURL, did st
 	}
 
 	input := parseProfileRecord(parsed.Value)
-	if input.DisplayName == nil && input.Bio == nil && input.AvatarCID == nil && input.BannerCID == nil {
+	if input.DisplayName == nil && input.Description == nil && input.AvatarCID == nil && input.BannerCID == nil {
 		return nil, nil // record exists but carries nothing we index
 	}
 	return &input, nil
@@ -184,18 +188,18 @@ func isRecordNotFoundBody(body []byte) bool {
 // (internal/atproto/jetstream/user_consumer.go handleProfileUpdate): only fields present
 // in the record are set, and avatar/banner must be well-formed blob refs.
 // SECURITY: the record comes from an untrusted PDS — displayName/description are
-// truncated to the DB CHECK constraint limits so an overlong value indexes
-// (truncated) instead of failing the UPDATE forever on every re-index.
+// truncated to the lexicon caps so an overlong value indexes (truncated)
+// instead of failing the UPDATE forever on every re-index.
 func parseProfileRecord(record map[string]interface{}) UpdateProfileInput {
 	input := UpdateProfileInput{}
 
 	if displayName, ok := record["displayName"].(string); ok {
-		displayName = truncateRunes(displayName, maxDisplayNameChars)
+		displayName = truncateGraphemes(displayName, maxDisplayNameGraphemes, maxDisplayNameBytes)
 		input.DisplayName = &displayName
 	}
 	if description, ok := record["description"].(string); ok {
-		description = truncateRunes(description, maxBioChars)
-		input.Bio = &description
+		description = truncateGraphemes(description, maxDescriptionGraphemes, maxDescriptionBytes)
+		input.Description = &description
 	}
 	if avatar, ok := record["avatar"].(map[string]interface{}); ok {
 		if cid, ok := extractProfileBlobCID(avatar); ok {
@@ -247,19 +251,24 @@ func isPlausibleCID(link string) bool {
 	return true
 }
 
-// truncateRunes returns s truncated to at most maxRunes characters without
-// splitting a multi-byte rune (the DB constraints count characters, so the cut
-// must be by runes, not bytes).
-func truncateRunes(s string, maxRunes int) string {
-	if len(s) <= maxRunes {
-		return s // byte length within the cap implies rune count is too
+// truncateGraphemes returns the longest prefix of s holding at most
+// maxGraphemes grapheme clusters and maxBytes bytes. It cuts only between
+// clusters, so a flag or ZWJ sequence is never left half-rendered.
+func truncateGraphemes(s string, maxGraphemes, maxBytes int) string {
+	if len(s) <= maxBytes && uniseg.GraphemeClusterCount(s) <= maxGraphemes {
+		return s
 	}
-	count := 0
-	for i := range s {
-		if count == maxRunes {
-			return s[:i]
+	end, count := 0, 0
+	state := -1
+	rest := s
+	for len(rest) > 0 && count < maxGraphemes {
+		var cluster string
+		cluster, rest, _, state = uniseg.StepString(rest, state)
+		if end+len(cluster) > maxBytes {
+			break
 		}
+		end += len(cluster)
 		count++
 	}
-	return s
+	return s[:end]
 }

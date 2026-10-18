@@ -419,7 +419,7 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 }
 
 // handleProfileUpdate processes profile create/update operations
-// Extracts displayName, description (bio), avatar, banner, and origin from the record.
+// Extracts displayName, description, avatar, banner, and origin from the record.
 // discoveredIdentity is already freshly verified when discovery indexed this DID.
 func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string, commit *CommitEvent, storedPDSURL string, discoveredIdentity *identity.Identity) error {
 	if commit.Record == nil {
@@ -436,9 +436,9 @@ func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string,
 		input.DisplayName = &dn
 	}
 
-	// Extract description (bio)
+	// Extract description
 	if desc, ok := commit.Record["description"].(string); ok {
-		input.Bio = &desc
+		input.Description = &desc
 	}
 
 	// Extract avatar CID from blob ref structure
@@ -639,7 +639,7 @@ func (c *UserEventConsumer) handleProfileDelete(ctx context.Context, did string)
 	empty := ""
 	input := users.UpdateProfileInput{
 		DisplayName:    &empty,
-		Bio:            &empty,
+		Description:    &empty,
 		AvatarCID:      &empty,
 		BannerCID:      &empty,
 		Origin:         &empty,

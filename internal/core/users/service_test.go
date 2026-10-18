@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -524,7 +525,7 @@ func TestGetProfile_WithAvatarAndBanner(t *testing.T) {
 		Handle:      "avataruser.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: "Avatar User",
-		Bio:         "Test bio for avatar user",
+		Description: "Test bio for avatar user",
 		AvatarCID:   "bafkreiabc123avatar",
 		BannerCID:   "bafkreixyz789banner",
 		CreatedAt:   time.Now(),
@@ -550,7 +551,7 @@ func TestGetProfile_WithAvatarAndBanner(t *testing.T) {
 	assert.Equal(t, testDID, profile.DID)
 	assert.Equal(t, "avataruser.test", profile.Handle)
 	assert.Equal(t, "Avatar User", profile.DisplayName)
-	assert.Equal(t, "Test bio for avatar user", profile.Bio)
+	assert.Equal(t, "Test bio for avatar user", profile.Description)
 
 	// Verify CID-to-URL transformation (DID is URL-encoded in query params)
 	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aavataruser&cid=bafkreiabc123avatar"
@@ -572,7 +573,7 @@ func TestGetProfile_WithAvatarOnly(t *testing.T) {
 		Handle:      "avataronly.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: "Avatar Only User",
-		Bio:         "",
+		Description: "",
 		AvatarCID:   "bafkreiavataronly",
 		BannerCID:   "", // No banner
 		CreatedAt:   time.Now(),
@@ -609,7 +610,7 @@ func TestGetProfile_WithNoCIDsOrProfile(t *testing.T) {
 		Handle:      "basicuser.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: "",
-		Bio:         "",
+		Description: "",
 		AvatarCID:   "",
 		BannerCID:   "",
 		CreatedAt:   time.Now(),
@@ -627,7 +628,7 @@ func TestGetProfile_WithNoCIDsOrProfile(t *testing.T) {
 
 	// All profile fields should be empty
 	assert.Empty(t, profile.DisplayName)
-	assert.Empty(t, profile.Bio)
+	assert.Empty(t, profile.Description)
 	assert.Empty(t, profile.Avatar)
 	assert.Empty(t, profile.Banner)
 
@@ -645,7 +646,7 @@ func TestGetProfile_WithEmptyPDSURL(t *testing.T) {
 		Handle:      "nopdsurl.test",
 		PDSURL:      "", // No PDS URL
 		DisplayName: "No PDS URL User",
-		Bio:         "Test bio",
+		Description: "Test bio",
 		AvatarCID:   "bafkreiavatarcid", // Has CID but no PDS URL
 		BannerCID:   "bafkreibannercid",
 		CreatedAt:   time.Now(),
@@ -667,7 +668,7 @@ func TestGetProfile_WithEmptyPDSURL(t *testing.T) {
 
 	// But display name and bio should still be set
 	assert.Equal(t, "No PDS URL User", profile.DisplayName)
-	assert.Equal(t, "Test bio", profile.Bio)
+	assert.Equal(t, "Test bio", profile.Description)
 
 	mockRepo.AssertExpectations(t)
 }
@@ -688,7 +689,7 @@ func TestUpdateProfile_Success(t *testing.T) {
 		Handle:      "updateuser.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: displayName,
-		Bio:         bio,
+		Description: bio,
 		AvatarCID:   avatarCID,
 		BannerCID:   bannerCID,
 		CreatedAt:   time.Now(),
@@ -697,7 +698,7 @@ func TestUpdateProfile_Success(t *testing.T) {
 
 	input := UpdateProfileInput{
 		DisplayName: &displayName,
-		Bio:         &bio,
+		Description: &bio,
 		AvatarCID:   &avatarCID,
 		BannerCID:   &bannerCID,
 	}
@@ -710,7 +711,7 @@ func TestUpdateProfile_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, displayName, user.DisplayName)
-	assert.Equal(t, bio, user.Bio)
+	assert.Equal(t, bio, user.Description)
 	assert.Equal(t, avatarCID, user.AvatarCID)
 	assert.Equal(t, bannerCID, user.BannerCID)
 
@@ -731,7 +732,7 @@ func TestUpdateProfile_PartialUpdate(t *testing.T) {
 		Handle:      "partialupdate.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: displayName,
-		Bio:         "existing bio",
+		Description: "existing bio",
 		AvatarCID:   "existingavatar",
 		BannerCID:   "existingbanner",
 		CreatedAt:   time.Now(),
@@ -752,7 +753,7 @@ func TestUpdateProfile_PartialUpdate(t *testing.T) {
 
 	assert.Equal(t, displayName, user.DisplayName)
 	// Existing values should be preserved
-	assert.Equal(t, "existing bio", user.Bio)
+	assert.Equal(t, "existing bio", user.Description)
 	assert.Equal(t, "existingavatar", user.AvatarCID)
 
 	mockRepo.AssertExpectations(t)
@@ -772,7 +773,7 @@ func TestUpdateProfile_ClearFields(t *testing.T) {
 		Handle:      "clearfields.test",
 		PDSURL:      "https://test.pds",
 		DisplayName: "",
-		Bio:         "",
+		Description: "",
 		AvatarCID:   "existingavatar",
 		BannerCID:   "existingbanner",
 		CreatedAt:   time.Now(),
@@ -781,7 +782,7 @@ func TestUpdateProfile_ClearFields(t *testing.T) {
 
 	input := UpdateProfileInput{
 		DisplayName: &emptyDisplayName,
-		Bio:         &emptyBio,
+		Description: &emptyBio,
 	}
 	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(updatedUser, nil)
 
@@ -792,7 +793,7 @@ func TestUpdateProfile_ClearFields(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Empty(t, user.DisplayName)
-	assert.Empty(t, user.Bio)
+	assert.Empty(t, user.Description)
 
 	mockRepo.AssertExpectations(t)
 }
@@ -1145,4 +1146,60 @@ func TestRequestSignupToken_ConcurrentRequestsMintDistinctCodes(t *testing.T) {
 		seen[c] = struct{}{}
 	}
 	assert.Len(t, seen, N)
+}
+
+// TestUpdateProfile_TruncatesOnlyBeyondLexiconCaps covers firehose writers,
+// whose records are untrusted. A lexicon-valid value is stored as written, even
+// when its graphemes are several code points each. A value beyond the
+// lexicon's grapheme or byte cap is cut at a grapheme boundary within both.
+func TestUpdateProfile_TruncatesOnlyBeyondLexiconCaps(t *testing.T) {
+	family := "👨\u200d👩\u200d👧\u200d👦" // one grapheme, 25 bytes
+	tests := []struct {
+		name            string
+		displayName     string
+		description     string
+		wantDisplayName string
+		wantDescription string
+	}{
+		{
+			name:            "lexicon-valid multi-code-point text is kept",
+			displayName:     strings.Repeat("🇺🇸", 64),
+			description:     strings.Repeat("🇺🇸", 256),
+			wantDisplayName: strings.Repeat("🇺🇸", 64),
+			wantDescription: strings.Repeat("🇺🇸", 256),
+		},
+		{
+			name:            "over the grapheme cap keeps whole graphemes",
+			displayName:     strings.Repeat("🇺🇸", 65),
+			description:     "a" + strings.Repeat("🇺🇸", 300),
+			wantDisplayName: strings.Repeat("🇺🇸", 64),
+			wantDescription: "a" + strings.Repeat("🇺🇸", 255),
+		},
+		{
+			name:            "over the byte cap keeps whole graphemes",
+			displayName:     strings.Repeat(family, 30),  // 750 bytes
+			description:     strings.Repeat(family, 200), // 5000 bytes
+			wantDisplayName: strings.Repeat(family, 25),  // 625 bytes
+			wantDescription: strings.Repeat(family, 102), // 2550 bytes
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockRepo := new(MockUserRepository)
+			const testDID = "did:plc:longprofile"
+			mockRepo.On("UpdateProfile", mock.Anything, testDID, UpdateProfileInput{
+				DisplayName: &tt.wantDisplayName,
+				Description: &tt.wantDescription,
+			}).Return(&User{DID: testDID}, nil)
+
+			service := NewUserService(mockRepo, new(MockIdentityResolver), "https://default.pds", nil, "")
+			_, err := service.UpdateProfile(context.Background(), testDID, UpdateProfileInput{
+				DisplayName: &tt.displayName,
+				Description: &tt.description,
+			})
+			require.NoError(t, err)
+			mockRepo.AssertExpectations(t)
+		})
+	}
 }

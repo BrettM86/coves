@@ -322,6 +322,8 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	// all sit on top of 034, so all twenty-five have to come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 60, testkit.MigrateDownOne(t, db, 60),
+		"060 (users bio renamed to description) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
 		"059 (users origin username index) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),

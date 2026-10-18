@@ -93,8 +93,8 @@ func TestFetchProfileRecord_AllFields(t *testing.T) {
 
 	require.NotNil(t, input.DisplayName)
 	assert.Equal(t, "Alice", *input.DisplayName)
-	require.NotNil(t, input.Bio)
-	assert.Equal(t, "hello from alice", *input.Bio)
+	require.NotNil(t, input.Description)
+	assert.Equal(t, "hello from alice", *input.Description)
 	require.NotNil(t, input.AvatarCID)
 	assert.Equal(t, "bafkreiavatar", *input.AvatarCID)
 	require.NotNil(t, input.BannerCID)
@@ -215,9 +215,9 @@ func TestFetchProfileRecord_LocateMessageWithWrongErrorCodeIsError(t *testing.T)
 }
 
 func TestParseProfileRecord_TruncatesOverlongFields(t *testing.T) {
-	// The users table CHECK constraints cap display_name at 64 and bio at 256
-	// characters (Postgres length() counts characters, so truncation must be by
-	// runes). Multi-byte runes prove the cut is not by bytes and never splits a rune.
+	// The lexicon caps displayName at 64 and description at 256 graphemes.
+	// Multi-byte runes prove the cut counts graphemes, not bytes, and never
+	// splits a rune.
 	longName := strings.Repeat("é", 70)         // 70 runes, 140 bytes
 	longDescription := strings.Repeat("日", 300) // 300 runes, 900 bytes
 
@@ -231,10 +231,10 @@ func TestParseProfileRecord_TruncatesOverlongFields(t *testing.T) {
 	assert.Equal(t, strings.Repeat("é", 64), *input.DisplayName)
 	assert.True(t, utf8.ValidString(*input.DisplayName), "truncation must not split a rune")
 
-	require.NotNil(t, input.Bio)
-	assert.Equal(t, 256, utf8.RuneCountInString(*input.Bio))
-	assert.Equal(t, strings.Repeat("日", 256), *input.Bio)
-	assert.True(t, utf8.ValidString(*input.Bio), "truncation must not split a rune")
+	require.NotNil(t, input.Description)
+	assert.Equal(t, 256, utf8.RuneCountInString(*input.Description))
+	assert.Equal(t, strings.Repeat("日", 256), *input.Description)
+	assert.True(t, utf8.ValidString(*input.Description), "truncation must not split a rune")
 
 	// At-limit values pass through untouched
 	atLimit := parseProfileRecord(map[string]interface{}{
@@ -243,8 +243,8 @@ func TestParseProfileRecord_TruncatesOverlongFields(t *testing.T) {
 	})
 	require.NotNil(t, atLimit.DisplayName)
 	assert.Equal(t, strings.Repeat("a", 64), *atLimit.DisplayName)
-	require.NotNil(t, atLimit.Bio)
-	assert.Equal(t, strings.Repeat("b", 256), *atLimit.Bio)
+	require.NotNil(t, atLimit.Description)
+	assert.Equal(t, strings.Repeat("b", 256), *atLimit.Description)
 }
 
 func TestParseProfileRecord_RejectsImplausibleBlobCID(t *testing.T) {
@@ -323,7 +323,7 @@ func TestIndexUser_BackfillsEmptyProfile(t *testing.T) {
 	mockRepo.On("UpdateProfile", mock.Anything, testDID, mock.MatchedBy(func(input UpdateProfileInput) bool {
 		return input.DisplayName != nil && *input.DisplayName == "Backfilled" &&
 			input.AvatarCID != nil && *input.AvatarCID == "bafkreiavatar" &&
-			input.Bio == nil && input.BannerCID == nil
+			input.Description == nil && input.BannerCID == nil
 	})).Return(newUser, nil).Run(func(args mock.Arguments) { close(done) })
 
 	service := NewUserService(mockRepo, nil, "https://default.pds", nil, "",

@@ -32,10 +32,10 @@ const (
 	MaxDisplayNameGraphemes = 64
 	// MaxDisplayNameBytes is the maximum display name length in bytes (per atProto lexicon)
 	MaxDisplayNameBytes = 640
-	// MaxBioGraphemes is the maximum bio/description length in graphemes (per atProto lexicon)
-	MaxBioGraphemes = 256
-	// MaxBioBytes is the maximum bio/description length in bytes (per atProto lexicon)
-	MaxBioBytes = 2560
+	// MaxDescriptionGraphemes is the maximum description length in graphemes (per atProto lexicon)
+	MaxDescriptionGraphemes = 256
+	// MaxDescriptionBytes is the maximum description length in bytes (per atProto lexicon)
+	MaxDescriptionBytes = 2560
 	// MaxAvatarBlobSize is the maximum allowed avatar size in bytes (1MB per lexicon)
 	MaxAvatarBlobSize = 1_000_000
 	// MaxBannerBlobSize is the maximum allowed banner size in bytes (2MB per lexicon)
@@ -45,7 +45,7 @@ const (
 // UpdateProfileRequest represents the request body for updating a user profile
 type UpdateProfileRequest struct {
 	DisplayName    *string `json:"displayName,omitempty"`
-	Bio            *string `json:"bio,omitempty"`
+	Description    *string `json:"description,omitempty"`
 	AvatarBlob     []byte  `json:"avatarBlob,omitempty"`
 	AvatarMimeType string  `json:"avatarMimeType,omitempty"`
 	BannerBlob     []byte  `json:"bannerBlob,omitempty"`
@@ -150,11 +150,11 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate bio length (grapheme + byte caps per lexicon)
-	if req.Bio != nil &&
-		(uniseg.GraphemeClusterCount(*req.Bio) > MaxBioGraphemes || len(*req.Bio) > MaxBioBytes) {
-		writeUpdateProfileError(w, http.StatusBadRequest, "BioTooLong",
-			fmt.Sprintf("Bio exceeds %d character limit", MaxBioGraphemes))
+	// Validate description length (grapheme + byte caps per lexicon)
+	if req.Description != nil &&
+		(uniseg.GraphemeClusterCount(*req.Description) > MaxDescriptionGraphemes || len(*req.Description) > MaxDescriptionBytes) {
+		writeUpdateProfileError(w, http.StatusBadRequest, "DescriptionTooLong",
+			fmt.Sprintf("Description exceeds %d character limit", MaxDescriptionGraphemes))
 		return
 	}
 
@@ -236,13 +236,13 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		profile["displayName"] = *req.DisplayName
 	}
 
-	// Add bio (description) if provided
-	if req.Bio != nil {
-		existingBio, hadDescription := profile["description"].(string)
-		if !hadDescription || existingBio != *req.Bio {
+	// Add description if provided
+	if req.Description != nil {
+		existingDescription, hadDescription := profile["description"].(string)
+		if !hadDescription || existingDescription != *req.Description {
 			delete(profile, "descriptionFacets")
 		}
-		profile["description"] = *req.Bio
+		profile["description"] = *req.Description
 	}
 
 	// 7. Upload avatar blob if provided

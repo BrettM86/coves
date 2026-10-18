@@ -25,7 +25,7 @@ func TestHandleMe_Success(t *testing.T) {
 		Handle:      "alice.test",
 		CreatedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		DisplayName: "Alice",
-		Bio:         "Hello world",
+		Description: "Hello world",
 		Avatar:      "https://cdn.example.com/avatar.jpg",
 		Stats: &users.ProfileStats{
 			PostCount:      10,
@@ -51,8 +51,8 @@ func TestHandleMe_Success(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &raw)
 	assert.NoError(t, err)
 
-	// Bio field has json:"description" tag — verify the wire key is "description", not "bio"
-	assert.Contains(t, raw, "description", "Bio should serialize as 'description' per json tag")
+	// Description field has json:"description" tag — verify the wire key is "description", not "bio"
+	assert.Contains(t, raw, "description", "Description should serialize as 'description' per json tag")
 	assert.NotContains(t, raw, "bio", "'bio' key should not appear in JSON output")
 
 	// Also verify typed deserialization
@@ -62,7 +62,7 @@ func TestHandleMe_Success(t *testing.T) {
 	assert.Equal(t, testDID, resp.DID)
 	assert.Equal(t, "alice.test", resp.Handle)
 	assert.Equal(t, "Alice", resp.DisplayName)
-	assert.Equal(t, "Hello world", resp.Bio)
+	assert.Equal(t, "Hello world", resp.Description)
 	assert.Equal(t, 10, resp.Stats.PostCount)
 
 	mockService.AssertExpectations(t)

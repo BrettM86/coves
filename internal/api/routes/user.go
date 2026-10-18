@@ -101,7 +101,7 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.deleteAccount", deleteHandler.HandleDeleteAccount)
 
 	// social.coves.actor.updateProfile - procedure endpoint (authenticated)
-	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, bio).
+	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, description).
 	// This writes directly to the user's PDS and the Jetstream consumer will index the change.
 	var updateProfileHandler *user.UpdateProfileHandler
 	if opts != nil && opts.PDSClientFactory != nil {

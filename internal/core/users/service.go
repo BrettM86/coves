@@ -789,7 +789,7 @@ func (s *userService) maybeBackfillProfile(ctx context.Context, user *User) {
 	if s.profileBackfillClient == nil || user == nil {
 		return
 	}
-	if user.DisplayName != "" || user.Bio != "" || user.AvatarCID != "" || user.BannerCID != "" {
+	if user.DisplayName != "" || user.Description != "" || user.AvatarCID != "" || user.BannerCID != "" {
 		return // profile already indexed — firehose keeps it current
 	}
 
@@ -824,7 +824,7 @@ func (s *userService) backfillProfile(ctx context.Context, did, pdsURL string) {
 			slog.String("error", err.Error()))
 		return
 	}
-	if current.DisplayName != "" || current.Bio != "" || current.AvatarCID != "" || current.BannerCID != "" {
+	if current.DisplayName != "" || current.Description != "" || current.AvatarCID != "" || current.BannerCID != "" {
 		return // firehose delivered a profile while we were fetching — keep it
 	}
 
@@ -867,7 +867,7 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 		CreatedAt:      user.CreatedAt,
 		Stats:          stats,
 		DisplayName:    user.DisplayName,
-		Bio:            user.Bio,
+		Description:    user.Description,
 		Origin:         user.Origin,
 		OriginUsername: user.OriginUsername,
 		OriginURL:      user.OriginURL,
@@ -886,15 +886,28 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 	return profile, nil
 }
 
-// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+// UpdateProfile updates a user's profile fields (display name, description, avatar, banner).
 // Nil values in the input mean "don't change this field" - only non-nil values are updated.
 // Empty string values will clear the field in the database.
+// Display name and description beyond the lexicon's grapheme or byte caps are
+// truncated at a grapheme boundary.
 // Returns the updated user with all fields populated.
 // Returns ErrUserNotFound if the user does not exist.
 func (s *userService) UpdateProfile(ctx context.Context, did string, input UpdateProfileInput) (*User, error) {
 	did = strings.TrimSpace(did)
 	if did == "" {
 		return nil, fmt.Errorf("DID is required")
+	}
+
+	// Firehose records are untrusted: anything past the lexicon caps is cut to
+	// fit rather than failing the users CHECK on every re-index.
+	if input.DisplayName != nil {
+		displayName := truncateGraphemes(*input.DisplayName, maxDisplayNameGraphemes, maxDisplayNameBytes)
+		input.DisplayName = &displayName
+	}
+	if input.Description != nil {
+		description := truncateGraphemes(*input.Description, maxDescriptionGraphemes, maxDescriptionBytes)
+		input.Description = &description
 	}
 
 	return s.userRepo.UpdateProfile(ctx, did, input)

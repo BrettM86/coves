@@ -88,7 +88,7 @@ func main() {
 		SELECT did, pds_url
 		FROM users
 		WHERE COALESCE(display_name, '') = ''
-		  AND COALESCE(bio, '') = ''
+		  AND COALESCE(description, '') = ''
 		  AND COALESCE(avatar_cid, '') = ''
 		  AND COALESCE(banner_cid, '') = ''
 		ORDER BY did
@@ -228,8 +228,8 @@ func processUser(
 	}
 
 	if dryRun {
-		log.Printf("WOULD UPDATE %s: displayName=%v avatar=%v banner=%v bio=%v",
-			u.did, input.DisplayName != nil, input.AvatarCID != nil, input.BannerCID != nil, input.Bio != nil)
+		log.Printf("WOULD UPDATE %s: displayName=%v avatar=%v banner=%v description=%v",
+			u.did, input.DisplayName != nil, input.AvatarCID != nil, input.BannerCID != nil, input.Description != nil)
 		stats.updated.Add(1)
 		return
 	}
@@ -240,7 +240,7 @@ func processUser(
 		return
 	}
 
-	log.Printf("UPDATED %s: displayName=%v avatar=%v banner=%v bio=%v",
-		u.did, input.DisplayName != nil, input.AvatarCID != nil, input.BannerCID != nil, input.Bio != nil)
+	log.Printf("UPDATED %s: displayName=%v avatar=%v banner=%v description=%v",
+		u.did, input.DisplayName != nil, input.AvatarCID != nil, input.BannerCID != nil, input.Description != nil)
 	stats.updated.Add(1)
 }

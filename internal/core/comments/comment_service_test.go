@@ -274,8 +274,8 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, did string, input user
 	if input.DisplayName != nil {
 		user.DisplayName = *input.DisplayName
 	}
-	if input.Bio != nil {
-		user.Bio = *input.Bio
+	if input.Description != nil {
+		user.Description = *input.Description
 	}
 	if input.AvatarCID != nil {
 		user.AvatarCID = *input.AvatarCID

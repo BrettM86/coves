@@ -64,12 +64,12 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 // GetByDID retrieves a user by their DID
 func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = $1`
 
-	var displayName, bio, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
+	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &bio, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -79,7 +79,7 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 	}
 
 	user.DisplayName = displayName.String
-	user.Bio = bio.String
+	user.Description = description.String
 	user.AvatarCID = avatarCID.String
 	user.BannerCID = bannerCID.String
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
@@ -91,12 +91,12 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 // GetByHandle retrieves a user by their handle
 func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE handle = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE handle = $1`
 
-	var displayName, bio, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
+	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, handle).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &bio, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -106,7 +106,7 @@ func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*use
 	}
 
 	user.DisplayName = displayName.String
-	user.Bio = bio.String
+	user.Description = description.String
 	user.AvatarCID = avatarCID.String
 	user.BannerCID = bannerCID.String
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
@@ -191,12 +191,12 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		UPDATE users
 		SET handle = $2, updated_at = NOW()
 		WHERE did = $1
-		RETURNING did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`
 
-	var displayName, bio, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
+	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did, newHandle).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &bio, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -210,7 +210,7 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 	}
 
 	user.DisplayName = displayName.String
-	user.Bio = bio.String
+	user.Description = description.String
 	user.AvatarCID = avatarCID.String
 	user.BannerCID = bannerCID.String
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
@@ -244,7 +244,7 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 
 	// Build parameterized query with IN clause
 	// Use ANY($1) for PostgreSQL array support with pq.Array() for type conversion
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = ANY($1)`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = ANY($1)`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(dids))
 	if err != nil {
@@ -260,14 +260,14 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	result := make(map[string]*users.User, len(dids))
 	for rows.Next() {
 		user := &users.User{}
-		var displayName, bio, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
+		var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 		err := rows.Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &bio, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user row: %w", err)
 		}
 		user.DisplayName = displayName.String
-		user.Bio = bio.String
+		user.Description = description.String
 		user.AvatarCID = avatarCID.String
 		user.BannerCID = bannerCID.String
 		user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
@@ -544,7 +544,7 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	return nil
 }
 
-// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner, origin).
+// UpdateProfile updates a user's profile fields (display name, description, avatar, banner, origin).
 // Nil values in the input mean "don't change this field" - only non-nil values are updated.
 // Empty string values will clear the field in the database.
 // Returns the updated user with all fields populated.
@@ -565,9 +565,9 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 		args = append(args, *input.DisplayName)
 		argNum++
 	}
-	if input.Bio != nil {
-		setClauses = append(setClauses, fmt.Sprintf("bio = $%d", argNum))
-		args = append(args, *input.Bio)
+	if input.Description != nil {
+		setClauses = append(setClauses, fmt.Sprintf("description = $%d", argNum))
+		args = append(args, *input.Description)
 		argNum++
 	}
 	if input.AvatarCID != nil {
@@ -608,15 +608,15 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 		UPDATE users
 		SET %s
 		WHERE did = $%d
-		RETURNING did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`,
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`,
 		strings.Join(setClauses, ", "), argNum)
 
 	user := &users.User{}
-	var displayNameVal, bioVal, avatarCIDVal, bannerCIDVal, origin, originUsername, originURL, originSoftware sql.NullString
+	var displayNameVal, descriptionVal, avatarCIDVal, bannerCIDVal, origin, originUsername, originURL, originSoftware sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, args...).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayNameVal, &bioVal, &avatarCIDVal, &bannerCIDVal, &origin, &originUsername, &originURL, &originSoftware)
+			&displayNameVal, &descriptionVal, &avatarCIDVal, &bannerCIDVal, &origin, &originUsername, &originURL, &originSoftware)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -626,7 +626,7 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 	}
 
 	user.DisplayName = displayNameVal.String
-	user.Bio = bioVal.String
+	user.Description = descriptionVal.String
 	user.AvatarCID = avatarCIDVal.String
 	user.BannerCID = bannerCIDVal.String
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =

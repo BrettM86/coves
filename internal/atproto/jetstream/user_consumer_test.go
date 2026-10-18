@@ -125,8 +125,8 @@ func (m *mockUserService) UpdateProfile(ctx context.Context, did string, input u
 	if input.DisplayName != nil {
 		user.DisplayName = *input.DisplayName
 	}
-	if input.Bio != nil {
-		user.Bio = *input.Bio
+	if input.Description != nil {
+		user.Description = *input.Description
 	}
 	if input.AvatarCID != nil {
 		user.AvatarCID = *input.AvatarCID
@@ -362,8 +362,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		}
 
 		call := mockService.updatedCalls[0]
-		if call.Bio == nil || *call.Bio != "This is my bio" {
-			t.Errorf("Expected bio 'This is my bio', got %v", call.Bio)
+		if call.Description == nil || *call.Description != "This is my bio" {
+			t.Errorf("Expected bio 'This is my bio', got %v", call.Description)
 		}
 	})
 
@@ -514,8 +514,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.DisplayName == nil || *call.DisplayName != "Full Profile User" {
 			t.Errorf("Expected displayName 'Full Profile User', got %v", call.DisplayName)
 		}
-		if call.Bio == nil || *call.Bio != "A complete bio" {
-			t.Errorf("Expected bio 'A complete bio', got %v", call.Bio)
+		if call.Description == nil || *call.Description != "A complete bio" {
+			t.Errorf("Expected bio 'A complete bio', got %v", call.Description)
 		}
 		if call.AvatarCID == nil || *call.AvatarCID != "bafkfullav123" {
 			t.Errorf("Expected avatar CID 'bafkfullav123', got %v", call.AvatarCID)
@@ -532,7 +532,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Handle:      "testuser.bsky.social",
 			PDSURL:      bskySocialPDS,
 			DisplayName: "Existing Name",
-			Bio:         "Existing Bio",
+			Description: "Existing Description",
 			AvatarCID:   "existingavatar",
 			BannerCID:   "existingbanner",
 		}
@@ -566,8 +566,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.DisplayName == nil || *call.DisplayName != "" {
 			t.Errorf("Expected empty displayName for delete, got %v", call.DisplayName)
 		}
-		if call.Bio == nil || *call.Bio != "" {
-			t.Errorf("Expected empty bio for delete, got %v", call.Bio)
+		if call.Description == nil || *call.Description != "" {
+			t.Errorf("Expected empty bio for delete, got %v", call.Description)
 		}
 		if call.AvatarCID == nil || *call.AvatarCID != "" {
 			t.Errorf("Expected empty avatar CID for delete, got %v", call.AvatarCID)
@@ -619,8 +619,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.DisplayName == nil || *call.DisplayName != "Updated Name" {
 			t.Errorf("Expected displayName 'Updated Name', got %v", call.DisplayName)
 		}
-		if call.Bio == nil || *call.Bio != "Updated bio" {
-			t.Errorf("Expected bio 'Updated bio', got %v", call.Bio)
+		if call.Description == nil || *call.Description != "Updated bio" {
+			t.Errorf("Expected bio 'Updated bio', got %v", call.Description)
 		}
 	})
 

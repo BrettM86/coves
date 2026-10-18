@@ -7,7 +7,7 @@ import "context"
 // Empty string values (*string pointing to "") will clear the field in the database.
 type UpdateProfileInput struct {
 	DisplayName *string
-	Bio         *string
+	Description *string
 	AvatarCID   *string
 	BannerCID   *string
 	// Origin fields: bridge-written, display only. nil leaves the stored value, "" clears it.
@@ -95,9 +95,11 @@ type UserRepository interface {
 	// Returns counts of posts, comments, subscriptions, memberships, and total reputation.
 	GetProfileStats(ctx context.Context, did string) (*ProfileStats, error)
 
-	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// UpdateProfile updates a user's profile fields (display name, description, avatar, banner).
 	// Nil values in the input mean "don't change this field" - only non-nil values are updated.
 	// Empty string values will clear the field in the database.
+	// Display name and description beyond the lexicon's grapheme or byte caps are
+	// truncated at a grapheme boundary.
 	// Returns the updated user with all fields populated.
 	// Returns ErrUserNotFound if the user does not exist.
 	UpdateProfile(ctx context.Context, did string, input UpdateProfileInput) (*User, error)
@@ -191,7 +193,7 @@ type UserService interface {
 	// Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
 	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
 
-	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// UpdateProfile updates a user's profile fields (display name, description, avatar, banner).
 	// Nil values in the input mean "don't change this field" - only non-nil values are updated.
 	// Empty string values will clear the field in the database.
 	// Returns the updated user with all fields populated.

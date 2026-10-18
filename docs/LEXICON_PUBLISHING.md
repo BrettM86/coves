@@ -37,8 +37,9 @@ Edit the commands with that test in mind.
   is single-post CRUD, and `community.search` returns communities.
 - Embed `alt` text is optional, permanently. It matches live bridge content
   and clients.
-- `updateProfile` input takes `bio`; the profile record stores `description`.
-  Both are wire truth.
+- The bio is `description` everywhere: the profile record,
+  `profileViewDetailed` and the `updateProfile` input (renamed from `bio` on 2026-10-17), matching
+  `app.bsky.actor.profile`.
 - The post body cap is 50,000 graphemes / 500,000 bytes, set on `postv2`
   before its first publish and raised on `post.create` / `post.update`
   (2026-09-07). It matches Lemmy's 50k post-body limit, the platform we bridge
@@ -54,8 +55,8 @@ those.
 
 ## Accepted evolution-rule exceptions
 
-`goat lex breaking` flags these on every run. Each was accepted for one of two
-reasons:
+`goat lex breaking` flags these on every run. Each was accepted for one of
+three reasons:
 
 - The published schema described something the AppView never served or had
   already stopped accepting, so the local schema is the wire truth.
@@ -64,6 +65,10 @@ reasons:
   bound replaces the length limit the dropped `format` implied. The 2026-09-07
   `community` parameter entry and the 2026-10-13 `actor` parameter entry are
   this kind.
+
+- The owner approved a hard switch of an input property, and every client
+  that sends that input is Coves-controlled and switched in the same change.
+  The 2026-10-17 `updateProfile` entry is this kind.
 
 Do not add to this list without one of these justifications.
 
@@ -103,6 +108,15 @@ Accepted 2026-10-13, input-loosening:
   input that validated before still validates. The parameter is bounded at
   `maxLength: 2048`, the longest DID `at-identifier` allowed and the limit
   `getPosts` and `getComments` already enforce in code.
+
+Accepted 2026-10-17, owner-approved hard switch:
+
+- The `updateProfile` input property `bio` was renamed to `description`, the
+  name the profile record and `profileViewDetailed` already use. This is a
+  real input break under the owner-approved hard-switch justification: the
+  only clients of this input are the Coves web and mobile apps, and both
+  switched in the same change. A request still sending `bio` is accepted and
+  the field is ignored.
 
 ## Published and held back
 
