@@ -240,6 +240,11 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 			rootView.Community = root.Community
 			rootView.Labels = notificationPostLabels(root)
 			rootView.Thumbnail, rootView.ThumbnailAlt = thumbnails[row.RootPostURI].url, thumbnails[row.RootPostURI].alt
+			rootView.Author, rootView.Stats = root.Author, root.Stats
+			// A view built without a creation time omits createdAt rather than serving year 1.
+			if !root.CreatedAt.IsZero() {
+				rootView.CreatedAt = notificationTime(root.CreatedAt)
+			}
 		}
 		view := NotificationView{
 			Reason: row.Reason, SortAt: notificationTime(row.SortAt), IsRead: row.IsRead,

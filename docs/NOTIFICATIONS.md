@@ -79,7 +79,7 @@ The gate is the whole `TRUSTED_BRIDGE_PDS_HOSTS` setting, not a host. `cmd/serve
 Decided 2026-10-01, extended to admin removals 2026-10-06. Notifications about deleted or removed content stay as placeholders, and that content gets no new notifications.
 
 - An author delete keeps every row, including on a zero-row soft delete.
-- The API returns a `status` on the reference (`rootPost`, `subject` or `record`), never placeholder text: `deleted`, `removedByModerator` or `removedByServerAdmin`. A reference with a status carries no title, community, preview, excerpt, labels or thumbnail; its CID is the record's current one.
+- The API returns a `status` on the reference (`rootPost`, `subject` or `record`), never placeholder text: `deleted`, `removedByModerator` or `removedByServerAdmin`. A reference with a status carries no title, community, preview, excerpt, labels, thumbnail or, on `rootPost`, author, createdAt or stats; its CID is the record's current one.
 - Any active instance-scope admin removal gives `removedByServerAdmin`, even alongside a community removal. Community removals alone give `removedByModerator`. An author's delete wins over both. Label decisions change nothing.
 - A comment whose root post has an active admin removal reads the root's status, so a reply's text never shows inside a removed thread. A live reply under an author-deleted or community-withdrawn root keeps its own excerpt.
 - Placeholder rows are visible rows: they are listed, count as unread, and follow retention. Blocks and preferences still hide them.
@@ -140,6 +140,7 @@ Decided 2026-10-03.
 - Each reference carries its own author's self-labels in `labels`, unfiltered and not inherited between positions. Values over 128 bytes are dropped and the first 10 kept, to stay valid against `com.atproto.label.defs#selfLabels`. A live comment whose stored labels do not parse omits the row rather than show unlabeled text.
 - A post reference may carry `thumbnail`: the first image of an image post or the link card's thumbnail. `posts.PreviewThumbnail` is the only source. It projects only a blob the stored record carries with a valid CID through the image proxy, and rejects an embed already claiming the served `#view` shape or a URL string in the record. Feeds, `post.get` and comment views do not reject those. Comments, videos and quoted posts get none. With the image proxy disabled, as in dev, there are no thumbnails.
 - `thumbnailAlt` is the first image's alt text, bounded to 1,000 grapheme clusters and 10,000 bytes and omitted when blank. Link cards have none.
+- A live `rootPost` also carries the post's `author`, `createdAt` and `stats`, taken from the same post hydration; all three are absent when the root post has a status.
 - Community `contentWarnings` are not applied. That waits until community NSFW is part of the NSFW system.
 
 `TestNotificationListLexicon_Contract` checks view field names against `defs.json`, so a new view field needs a lexicon property.

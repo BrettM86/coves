@@ -94,6 +94,19 @@ func TestNotificationListLexicon_Contract(t *testing.T) {
 	communityRef, ok := root.Properties["community"].Inner.(lexicon.SchemaRef)
 	require.True(t, ok, "rootPost.community must reference the shared community view")
 	require.Equal(t, "social.coves.community.post.defs#communityRef", communityRef.Ref)
+	rootAuthorRef, ok := root.Properties["author"].Inner.(lexicon.SchemaRef)
+	require.True(t, ok, "rootPost.author must reference the shared post author view")
+	require.Equal(t, "social.coves.community.post.defs#authorView", rootAuthorRef.Ref)
+	rootStatsRef, ok := root.Properties["stats"].Inner.(lexicon.SchemaRef)
+	require.True(t, ok, "rootPost.stats must reference the shared post stats")
+	require.Equal(t, "social.coves.community.post.defs#postStats", rootStatsRef.Ref)
+	rootCreatedAt, ok := root.Properties["createdAt"].Inner.(lexicon.SchemaString)
+	require.True(t, ok, "rootPost.createdAt must be a string")
+	require.NotNil(t, rootCreatedAt.Format, "rootPost.createdAt must declare a format")
+	require.Equal(t, "datetime", *rootCreatedAt.Format)
+	for _, optional := range []string{"author", "createdAt", "stats"} {
+		require.NotContains(t, root.Required, optional, "rootPost.%s must be optional", optional)
+	}
 	for _, nested := range []struct {
 		field    string
 		response any
@@ -122,10 +135,12 @@ func TestNotificationListLexicon_Contract(t *testing.T) {
 	addPreferencesRecord(t, catalog, "test.coves.notification.listOutput", output)
 
 	name := "Reply Author"
+	rootAuthorName := "Root Author"
+	rootAuthorAvatar := "https://img.example/avatar.jpg"
 	valid := notifications.ListNotificationsOutput{Notifications: []notifications.NotificationView{
 		{
 			Reason: notifications.ReasonPostReply, SortAt: "2026-09-20T09:03:00Z", IsRead: false,
-			RootPost: &notifications.RootPostView{URI: "at://did:plc:owner/social.coves.community.postv2/root", CID: "bafyroot", Title: "Root", Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.coves.social", Name: "Community"}},
+			RootPost: &notifications.RootPostView{URI: "at://did:plc:owner/social.coves.community.postv2/root", CID: "bafyroot", Title: "Root", Community: &posts.CommunityRef{DID: "did:plc:community", Handle: "community.coves.social", Name: "Community"}, Author: &posts.AuthorView{DID: "did:plc:owner", Handle: "owner.coves.social", DisplayName: &rootAuthorName, Avatar: &rootAuthorAvatar}, CreatedAt: "2026-09-20T08:00:00Z", Stats: &posts.PostStats{Upvotes: 7, Downvotes: 2, Score: 5, CommentCount: 3}},
 			Subject:  &notifications.SubjectView{URI: "at://did:plc:owner/social.coves.community.postv2/root", CID: "bafyroot", Preview: "Root"},
 			Record:   &notifications.RecordView{URI: "at://did:plc:actor/social.coves.community.comment/one", CID: "bafyreplyone", Excerpt: "First reply", CreatedAt: "2026-09-20T09:02:00Z"},
 			Author:   &notifications.ProfileView{DID: "did:plc:actor", Handle: "actor.test", DisplayName: &name},

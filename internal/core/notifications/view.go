@@ -32,6 +32,9 @@ type RootPostView struct {
 	Labels       *posts.SelfLabels   `json:"labels,omitempty"`
 	Thumbnail    string              `json:"thumbnail,omitempty"`
 	ThumbnailAlt string              `json:"thumbnailAlt,omitempty"`
+	Author       *posts.AuthorView   `json:"author,omitempty"`
+	CreatedAt    string              `json:"createdAt,omitempty"`
+	Stats        *posts.PostStats    `json:"stats,omitempty"`
 }
 
 // SubjectView is the recipient's own post or comment.
