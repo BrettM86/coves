@@ -156,10 +156,11 @@ func TestValidateCID(t *testing.T) {
 			cid:     "bafkreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi",
 			wantErr: nil,
 		},
+		// atproto has no CIDv0; indigo's syntax.ParseCID rejects every "Qm" string.
 		{
-			name:    "valid CIDv0",
+			name:    "CIDv0 is not an atproto CID",
 			cid:     "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
-			wantErr: nil,
+			wantErr: ErrInvalidCID,
 		},
 		// Invalid CIDs
 		{
@@ -412,7 +413,7 @@ func TestCanonicalCID(t *testing.T) {
 		{name: "canonical CIDv1 is unchanged", value: canonical, want: canonical},
 		{name: "base58btc CIDv1 is canonicalized", value: base58, want: canonical},
 		{name: "base16 CIDv1 is canonicalized", value: base16, want: canonical},
-		{name: "CIDv0 keeps its canonical form", value: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", want: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"},
+		{name: "CIDv0 is not an atproto CID", value: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", wantErr: ErrInvalidCID},
 		{name: "syntax-valid string that is not a CID", value: "bafybeimockimagetest123", wantErr: ErrInvalidCID},
 		{name: "path traversal", value: "../../../etc/passwd", wantErr: ErrInvalidCID},
 		{name: "empty", value: "", wantErr: ErrInvalidCID},

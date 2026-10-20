@@ -103,8 +103,10 @@ func TestDiscoverRepo_HotContinuationPinsSnapshotAgainstConcurrentCleanup(t *tes
 		_, cleanupErr := repository.CleanupExpiredDiscoverHotState(cleanupContext, 100)
 		cleanupResults <- cleanupErr
 	}()
-	<-cleanupResults
+	cleanupErr := <-cleanupResults
 	cancelCleanup()
+	require.NoError(t, cleanupErr,
+		"cleanup must run to completion against the admitted snapshot; a cleanup that failed never raced the continuation")
 
 	_, err = lockConnection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, lockKey)
 	require.NoError(t, err)

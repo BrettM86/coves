@@ -22,7 +22,7 @@ import (
 	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
-	"github.com/bluesky-social/indigo/repo"
+	"github.com/bluesky-social/indigo/repo" //nolint:staticcheck // SA1019: atproto/repo.LoadRepoFromCAR expands the whole MST eagerly; untrusted CARs need the lazy loader
 )
 
 // Ingesting author-owned posts and the community records that decide about

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/bluesky-social/indigo/xrpc" //nolint:staticcheck // SA1019: atclient changes error formatting and URL handling; migration tracked separately
 
 	covesoauth "Coves/internal/atproto/oauth"
 )

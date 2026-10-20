@@ -27,7 +27,7 @@ import (
 // requirement that failed, because a lenient fake is how a helper passes here
 // and then fails against @atproto/oauth-provider with an error nobody can map
 // back to a missing header. The provider-side requirements are the ones
-// @atproto/oauth-provider 0.22.1 (the pinned PDS 0.4.5027) enforces in
+// @atproto/oauth-provider 0.23.1 (the pinned PDS 0.4.5037) enforces in
 // create-authorization-page-middleware.js, create-api-middleware.js and
 // assets/csrf.js; where a fake is stricter than the provider (an exact Referer,
 // a required Origin) it is only ever stricter.

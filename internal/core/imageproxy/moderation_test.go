@@ -158,8 +158,8 @@ func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 	<-purgeStarted
 	testkit.Holds(t, 200*time.Millisecond, func() (bool, error) {
 		select {
-		case <-purgeDone:
-			return false, nil
+		case err := <-purgeDone:
+			return false, err
 		default:
 			return true, nil
 		}

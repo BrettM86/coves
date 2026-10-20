@@ -34,7 +34,7 @@ import (
 // The PDS side is not an XRPC API. It is the JSON API behind the sign-in page of
 // @atproto/oauth-provider (the ~api/sign-in and ~api/consent endpoints), which
 // is an implementation detail of the provider's UI, pinned here by the PDS image
-// in docker-compose.ci.yml (last verified against pds:0.4.5027). Its checks are
+// in docker-compose.ci.yml (last verified against pds:0.4.5037). Its checks are
 // what shape the requests below: the authorize page must be loaded as a
 // top-level navigation to bind a device, and the API calls must look
 // same-origin (Origin, Referer and Sec-Fetch-* headers) and carry the

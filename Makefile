@@ -10,7 +10,7 @@ GREEN := \033[32m
 YELLOW := \033[33m
 RED := \033[31m
 
-GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT_VERSION := v2.15.0
 GOLANGCI_LINT := GOTOOLCHAIN=go1.26.10 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 # Load test database configuration from .env.dev
