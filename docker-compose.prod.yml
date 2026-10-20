@@ -318,11 +318,12 @@ services:
     # Built locally from the official caddy image + caddy-dns/cloudflare, both
     # pinned (see docker/caddy/Dockerfile). Never a floating third-party tag:
     # this container holds the Cloudflare tokens and terminates all TLS.
-    # Upgrade = bump the Dockerfile pins, then `build caddy` + `up -d caddy`.
+    # Upgrade = bump the Dockerfile pins and the tag below, then `build caddy` +
+    # `up -d caddy`.
     build:
       context: ./docker/caddy
       dockerfile: Dockerfile
-    image: coves/caddy:${CADDY_VERSION:-2.11.4}
+    image: coves/caddy:${CADDY_VERSION:-2.11.7}
     container_name: coves-prod-caddy
     restart: unless-stopped
     ports:

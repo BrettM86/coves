@@ -101,7 +101,7 @@ cd /opt/coves
     -e AUTH_SKIP_VERIFY=false -e SKIP_DID_WEB_VERIFICATION=false \
     -e PORT=8080 -e ENV=production -e LOG_LEVEL=info \
     -e COMMUNITY_CREATORS=did:web:coves.social -e IMAGE_PROXY_CACHE_PATH=/var/cache/coves/images \
-    -v "$PWD":/src:ro -w /src golang:1.26.8-alpine3.24 \
+    -v "$PWD":/src:ro -w /src golang:1.26.10-alpine3.24 \
     sh -c 'CGO_ENABLED=0 go build -buildvcs=false -o /tmp/reconcile-handles ./cmd/reconcile-handles && exec /tmp/reconcile-handles -trusted-hosts https://tdpl.io -dry-run'
 )
 ```
