@@ -4,7 +4,7 @@
 # Baking the install into an image moves its cost into Docker's layer cache:
 # it is paid again only when PLC_REF changes. CI wipes its volumes every run,
 # so installing at container start would add minutes to every gate.
-FROM node:22.23.2-alpine3.24
+FROM node:22.23.4-alpine3.24
 
 # Pinned to a SHA rather than tracking main, for two reasons: a build is
 # reproducible, and an upstream PLC commit can never break it on its own.

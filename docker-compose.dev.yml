@@ -72,7 +72,7 @@ services:
   # Handles user repositories, DIDs, and CAR files
   # NOTE: When using --profile plc, PDS waits for PLC directory to be healthy
   pds:
-    image: ghcr.io/bluesky-social/pds:0.4.5037@sha256:3a8feb3415e319dbcc13372293b7ef1fb05a318a6ff1d55968cf99ba6633c5d4
+    image: ghcr.io/bluesky-social/pds:0.4.5044@sha256:26ac2c219014bed23e68db7fd37df10766bf6733cb2269e457f9a57d2d5b1fbc
     container_name: coves-dev-pds
     ports:
       - "3001:3001"  # PDS XRPC API (avoiding production PDS on :3000)

@@ -230,9 +230,9 @@ services:
         condition: service_healthy
 
   # Pinned to the same PDS release and digest as production.
-  # sha256:3a8feb34… is ghcr.io/bluesky-social/pds:0.4.5037.
+  # sha256:26ac2c21… is ghcr.io/bluesky-social/pds:0.4.5044.
   pds:
-    image: ghcr.io/bluesky-social/pds:0.4.5037@sha256:3a8feb3415e319dbcc13372293b7ef1fb05a318a6ff1d55968cf99ba6633c5d4
+    image: ghcr.io/bluesky-social/pds:0.4.5044@sha256:26ac2c219014bed23e68db7fd37df10766bf6733cb2269e457f9a57d2d5b1fbc
     network_mode: "service:netns"
     environment:
       PDS_HOSTNAME: localhost
@@ -287,7 +287,7 @@ services:
   #     sharing a rotation key would mean either could rewrite the other's
   #     identities, which is not the topology being modelled.
   pds2:
-    image: ghcr.io/bluesky-social/pds:0.4.5037@sha256:3a8feb3415e319dbcc13372293b7ef1fb05a318a6ff1d55968cf99ba6633c5d4
+    image: ghcr.io/bluesky-social/pds:0.4.5044@sha256:26ac2c219014bed23e68db7fd37df10766bf6733cb2269e457f9a57d2d5b1fbc
     network_mode: "service:netns"
     environment:
       PDS_HOSTNAME: localhost
