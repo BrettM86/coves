@@ -4,3 +4,6 @@ pyyaml==6.0.3
 idna>=3.7
 anthropic==1.7.0
 pydantic>=2.0,<3
+# Trust store for requests and the anthropic client. 2026.10.18 drops the
+# roots behind the compromised eMudhra intermediates (CVE-2026-111943).
+certifi>=2026.10.18

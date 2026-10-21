@@ -10,3 +10,6 @@ anthropic==1.3.0
 # by requests, but declared explicitly because we import it directly — and
 # because the AppView's Go normalizer is matched against this exact behaviour.
 idna>=3.7
+# Trust store for requests and the anthropic client. 2026.10.18 drops the
+# roots behind the compromised eMudhra intermediates (CVE-2026-111943).
+certifi>=2026.10.18
