@@ -42,6 +42,8 @@ A record field is never an identity source. When a record names a DID (a vote su
 
 Each consumer decodes a fixed set of keys. The connector caps WebSocket frames at 16 MiB, and the cursor never advances past an event whose dead-letter write failed.
 
+Every `JETSTREAM_FEEDS` entry is trusted equally. Jetstream frames carry no proofs, so a feed's operator can inject or alter any record, and rev-gating accepts the highest rev from any feed: one frame with a forged far-future rev blocks every later write to that record URI. Production consumes Bluesky's Jetstream, our own Tidepool relay and Jetstream, and microcosm's community-run Montreal Jetstream (`fire`, no SLA), so all three operators are in the trust base. Only acceptance-pinned post content is re-verified, by recomputing its CID from the author's repo ([POSTS.md](POSTS.md) §5.4).
+
 ## Firehose error classes
 
 A Jetstream consumer is a serial read loop. While one event retries, nothing behind it is indexed. The connector sorts every handler error into one of three classes (`internal/atproto/jetstream/errors.go`), and the class decides how much lane time it may spend.

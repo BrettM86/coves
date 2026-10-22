@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
@@ -115,6 +116,9 @@ type Connector struct {
 // allocation; the largest plausible Jetstream event — a commit with a full
 // record embedded — is well under this.
 const maxWebSocketFrameBytes = 16 << 20
+
+// jetstreamUserAgent identifies Coves to third-party Jetstream operators (e.g. microcosm's public instances).
+const jetstreamUserAgent = "Coves/1.0 (+https://coves.social)"
 
 // ConnectorOption configures a Connector.
 type ConnectorOption func(*Connector)
@@ -315,7 +319,7 @@ func (c *Connector) connect(ctx context.Context) error {
 		return err
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, dialURL, nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, dialURL, http.Header{"User-Agent": {jetstreamUserAgent}})
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}

@@ -87,9 +87,16 @@ services:
       #          by CONTAINER name on port 8080 — the tidepool stack's bare
       #          `jetstream` service alias is the same cross-stack trap as
       #          the `postgres` alias, and 6008 is the local dev port.
+      #   fire = microcosm's public Montreal Jetstream, which reads their
+      #          independent full-network relay (relay.fire.hose.cam), so
+      #          third-party PDS records keep flowing when Bluesky's Jetstream
+      #          is down (2026-10-22, 21:29-22:18 UTC). Community-run, no SLA.
       # Rev-gating (migration 033) makes the cross-feed overlap safe; expect
-      # "rev-gate: skipped stale" log lines for the lagging bsky copies.
-      JETSTREAM_FEEDS: "bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080"
+      # "rev-gate: skipped stale" log lines for whichever copy arrives later.
+      # bsky and fire both cover the whole network, so they duplicate each
+      # other everywhere. Every feed is equally trusted: see
+      # docs/SECURITY_MODEL.md "Firehose ownership".
+      JETSTREAM_FEEDS: "bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080;fire=wss://jetstream.fire.hose.cam"
 
       # Security - MUST be false in production
       AUTH_SKIP_VERIFY: "false"

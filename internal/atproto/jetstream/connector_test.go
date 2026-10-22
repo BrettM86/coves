@@ -269,7 +269,9 @@ type jetstreamTestServer struct {
 	holdOpen bool
 	mu       sync.Mutex
 	cursors  []string // cursor param per ACCEPTED connection ("" if absent)
-	messages [][]byte
+	// userAgents is the handshake User-Agent header per ACCEPTED connection.
+	userAgents []string
+	messages   [][]byte
 	// refuseFirst dials are answered with an HTTP error instead of a
 	// WebSocket upgrade, standing in for a Jetstream that is not up yet.
 	refuseFirst int
@@ -314,6 +316,7 @@ func newJetstreamTestServerWithHold(t *testing.T, messages [][]byte, holdOpen bo
 			return
 		}
 		ts.cursors = append(ts.cursors, r.URL.Query().Get("cursor"))
+		ts.userAgents = append(ts.userAgents, r.Header.Get("User-Agent"))
 		ts.mu.Unlock()
 
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -355,6 +358,12 @@ func (ts *jetstreamTestServer) cursorForConnection(i int) string {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.cursors[i]
+}
+
+func (ts *jetstreamTestServer) userAgentForConnection(i int) string {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.userAgents[i]
 }
 
 func (ts *jetstreamTestServer) refusedCount() int {
@@ -1034,5 +1043,23 @@ func TestConnector_ReconnectDialsWithAdvancedCursor(t *testing.T) {
 	expected := strconv.FormatInt(lastEventTimeUS-5_000_000, 10)
 	if got := server.cursorForConnection(1); got != expected {
 		t.Errorf("expected reconnect cursor %s, got %q", expected, got)
+	}
+}
+
+// Jetstream operators identify consumers by User-Agent; a connector dialing
+// with Go's default "Go-http-client/1.1" is indistinguishable from any other
+// anonymous client, so the handshake must carry the Coves bot identity.
+func TestConnector_HandshakeSendsCovesUserAgent(t *testing.T) {
+	server := newJetstreamTestServer(t, nil)
+	connector := NewConnector("test-consumer", server.wsURL(), newFakeEventHandler(),
+		fastConnectorOptions(WithCursorStore(newFakeCursorStore()))...)
+	startConnector(t, connector)
+
+	waitFor(t, 2*time.Second, "first connection", func() bool {
+		return server.connectionCount() >= 1
+	})
+
+	if got := server.userAgentForConnection(0); got != "Coves/1.0 (+https://coves.social)" {
+		t.Errorf("expected handshake User-Agent %q, got %q", "Coves/1.0 (+https://coves.social)", got)
 	}
 }

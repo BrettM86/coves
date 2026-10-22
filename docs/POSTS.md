@@ -14,7 +14,7 @@ A post is a `social.coves.community.postv2` record in the author's repo. A commu
 
 Admission state is per (community, post), so a fork can hold its own decisions about the same post URIs and the comment and vote graph stays attached. The post's `community` field is only its submission target.
 
-Records are author-attributed as vouched for by a relay that verifies repo commits, or by a direct DID-resolved fetch (§5.4). Jetstream events carry no proofs, so never describe firehose events themselves as signed.
+Records are author-attributed as vouched for by a relay that verifies repo commits, or by a direct DID-resolved fetch (§5.4). Jetstream events carry no proofs, so never describe firehose events themselves as signed; each feed's Jetstream operator is part of the trust base ([SECURITY_MODEL.md](SECURITY_MODEL.md) "Firehose ownership").
 
 ## 3. Lexicons
 
