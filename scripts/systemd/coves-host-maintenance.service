@@ -1,0 +1,9 @@
+[Unit]
+Description=Coves monthly host maintenance: package upgrades and reboot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/coves-host-maintenance
+TimeoutStartSec=30min

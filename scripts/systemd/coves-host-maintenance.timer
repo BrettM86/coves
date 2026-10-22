@@ -1,0 +1,11 @@
+[Unit]
+Description=Run coves-host-maintenance.service monthly
+
+[Timer]
+# First Sunday of each month, 03:00 Pacific (follows daylight saving time).
+OnCalendar=Sun *-*-01..07 03:00:00 America/Los_Angeles
+# A run missed while the host was down is skipped, not run at the next boot.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
