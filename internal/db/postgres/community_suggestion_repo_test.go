@@ -1030,38 +1030,27 @@ func mustSuggestionVoteCount(t *testing.T, repo communitysuggestions.Repository,
 	return got.VoteCount
 }
 
-// TestSuggestionRepo_UpsertVoteMisclassifiesTwoFailures pins two error mappings
-// UpsertVote does not make, both of which AtomicVote does make one function
-// away.
-//
-// KNOWN DEFECT (1): voting on a suggestion that does not exist fails on the
-// foreign key, and UpsertVote has no branch for SQLSTATE 23503. The caller gets
-// a wrapped driver error instead of ErrSuggestionNotFound, so a handler using
-// communitysuggestions.IsNotFound answers 500 to what is a 404.
-//
-// KNOWN DEFECT (2): valid_vote_value is mapped only on the INSERT path. An
-// out-of-range value sent by someone who has already voted takes the UPDATE
-// branch, where the constraint violation is wrapped generically — so the same
-// bad request is a 400 for a first-time voter and a 500 for a repeat one.
-func TestSuggestionRepo_UpsertVoteMisclassifiesTwoFailures(t *testing.T) {
+// TestSuggestionRepo_UpsertVoteClassifiesFailures checks that UpsertVote maps
+// its constraint violations to the same sentinel errors AtomicVote does: a vote
+// on a suggestion that does not exist (foreign key, SQLSTATE 23503) is
+// ErrSuggestionNotFound, and an out-of-range value from a voter who has already
+// voted (the UPDATE branch's valid_vote_value violation) is ErrInvalidVoteValue,
+// exactly as it is for a first-time voter.
+func TestSuggestionRepo_UpsertVoteClassifiesFailures(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	t.Run("a vote on a missing suggestion is not reported as not-found", func(t *testing.T) {
+	t.Run("a vote on a missing suggestion is reported as not-found", func(t *testing.T) {
 		t.Parallel()
 		repo, _ := suggestionRepoAndDB(t)
 
 		_, err := repo.UpsertVote(ctx, 987654321, "did:plc:voter00000000000ph", 1)
-		require.Error(t, err)
-		assert.NotErrorIs(t, err, communitysuggestions.ErrSuggestionNotFound,
-			"IF THIS FAILED (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md), UpsertVote learned to map SQLSTATE 23503 the way AtomicVote already does "+
-				"and the defect is FIXED — assert ErrSuggestionNotFound here and delete this pin")
-		assert.ErrorContains(t, err, "failed to insert vote",
-			"today the foreign key violation escapes as a generic wrapper, so IsNotFound is false and "+
-				"the handler answers 500")
+		require.ErrorIs(t, err, communitysuggestions.ErrSuggestionNotFound,
+			"a vote for a suggestion that does not exist is a 404, not a foreign key error the handler cannot classify")
+		assert.True(t, communitysuggestions.IsNotFound(err))
 	})
 
-	t.Run("an out-of-range value from a repeat voter is not reported as an invalid value", func(t *testing.T) {
+	t.Run("an out-of-range value from a repeat voter is reported as an invalid value", func(t *testing.T) {
 		t.Parallel()
 		repo, db := suggestionRepoAndDB(t)
 		suggestion := suggestionSeeded(t, repo)
@@ -1071,13 +1060,8 @@ func TestSuggestionRepo_UpsertVoteMisclassifiesTwoFailures(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = repo.UpsertVote(ctx, suggestion.ID, voter, 9)
-		require.Error(t, err)
-		assert.NotErrorIs(t, err, communitysuggestions.ErrInvalidVoteValue,
-			"IF THIS FAILED (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md), the UPDATE branch now maps valid_vote_value the way the INSERT branch "+
-				"does and the defect is FIXED — assert ErrInvalidVoteValue here and delete this pin")
-		assert.ErrorContains(t, err, "failed to update vote",
-			"the same malformed request is classified differently depending on whether the voter has "+
-				"voted before")
+		require.ErrorIs(t, err, communitysuggestions.ErrInvalidVoteValue,
+			"the same malformed request must be classified the same whether or not the voter has voted before")
 
 		suggestionAssertReconciled(t, db, suggestion.ID, 1, 1)
 	})
@@ -1178,15 +1162,82 @@ func TestSuggestionRepo_DeleteVote(t *testing.T) {
 		suggestionAssertReconciled(t, db, there.ID, 1, 1)
 	})
 
-	t.Run("a vote on a suggestion that does not exist is simply not found", func(t *testing.T) {
+	t.Run("a vote on a suggestion that does not exist reports the suggestion as not found", func(t *testing.T) {
 		t.Parallel()
 		repo, _ := suggestionRepoAndDB(t)
 
 		_, err := repo.DeleteVote(ctx, 987654321, "did:plc:voter00000000000d5")
-		require.ErrorIs(t, err, communitysuggestions.ErrVoteNotFound,
-			"the DELETE finds nothing first, so a missing suggestion and a missing vote are the same "+
-				"answer here — which is the right one for an unvote either way")
+		require.ErrorIs(t, err, communitysuggestions.ErrSuggestionNotFound,
+			"DeleteVote locks the suggestion row first, so a missing suggestion is reported as such, "+
+				"the same answer UpsertVote and AtomicVote give")
+		assert.True(t, communitysuggestions.IsNotFound(err))
 	})
+}
+
+// TestSuggestionRepo_DeleteVoteLocksTheSuggestionBeforeTheVote checks that
+// DeleteVote takes the suggestion row lock before it touches the vote row, the
+// order UpsertVote and AtomicVote use. With the opposite order, a removeVote and
+// a vote from the same voter can each hold the row the other needs, and
+// Postgres aborts one of them with a deadlock error.
+//
+// A second transaction holds the suggestion row. Once DeleteVote is waiting on a
+// lock, that transaction must still be able to lock the vote row without
+// waiting: if DeleteVote had deleted the vote first, the vote row would be held.
+func TestSuggestionRepo_DeleteVoteLocksTheSuggestionBeforeTheVote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repo, db := suggestionRepoAndDB(t)
+	suggestion := suggestionSeeded(t, repo)
+	voter := "did:plc:voter00000000000lo"
+
+	_, err := repo.UpsertVote(ctx, suggestion.ID, voter, 1)
+	require.NoError(t, err)
+
+	holder, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = holder.Rollback() }()
+	var lockedID int64
+	require.NoError(t, holder.QueryRowContext(ctx,
+		`SELECT id FROM community_suggestions WHERE id = $1 FOR UPDATE`, suggestion.ID).Scan(&lockedID))
+
+	type deleteResult struct {
+		delta int
+		err   error
+	}
+	deleteDone := make(chan deleteResult, 1)
+	go func() {
+		delta, deleteErr := repo.DeleteVote(ctx, suggestion.ID, voter)
+		deleteDone <- deleteResult{delta: delta, err: deleteErr}
+	}()
+
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		if len(deleteDone) > 0 {
+			return true, nil
+		}
+		var waiting int
+		err := db.QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND pid <> pg_backend_pid()
+			  AND wait_event_type = 'Lock' AND wait_event <> 'advisory'
+		`).Scan(&waiting)
+		return waiting > 0, err
+	}, testkit.WithDescription("DeleteVote waiting on the held suggestion row"))
+	require.Empty(t, deleteDone, "DeleteVote must wait for the suggestion row lock held by another transaction")
+
+	var lockedValue int
+	err = holder.QueryRowContext(ctx, `
+		SELECT value FROM suggestion_votes
+		WHERE suggestion_id = $1 AND voter_did = $2
+		FOR UPDATE NOWAIT
+	`, suggestion.ID, voter).Scan(&lockedValue)
+	require.NoError(t, err, "DeleteVote already holds the vote row while waiting for the suggestion row: "+
+		"it locks vote-then-suggestion, the reverse of UpsertVote and AtomicVote, and can deadlock with them")
+	require.NoError(t, holder.Rollback())
+
+	result := <-deleteDone
+	require.NoError(t, result.err)
+	assert.Equal(t, -1, result.delta)
+	suggestionAssertReconciled(t, db, suggestion.ID, 0, 0)
 }
 
 func TestSuggestionRepo_AtomicVote(t *testing.T) {
@@ -1367,15 +1418,12 @@ func TestSuggestionRepo_AtomicVote(t *testing.T) {
 	})
 }
 
-// TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsMisclassified pins the
-// third instance of the same missing mapping.
-//
-// KNOWN DEFECT: AtomicVote maps valid_vote_value on the INSERT path only. A
-// voter who has already voted and then sends an out-of-range value takes the
-// flip branch (the value differs from the existing one), where the UPDATE's
-// constraint violation is wrapped generically. Same malformed request, different
-// classification, decided by whether the person had voted before.
-func TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsMisclassified(t *testing.T) {
+// TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsInvalidVoteValue checks
+// that a voter who has already voted and then sends an out-of-range value takes
+// the flip branch (the value differs from the existing one) and still gets
+// ErrInvalidVoteValue, as a first-time voter does, with the stored vote and
+// count left unchanged.
+func TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsInvalidVoteValue(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repo, db := suggestionRepoAndDB(t)
@@ -1385,11 +1433,8 @@ func TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsMisclassified(t *testing
 	require.NoError(t, repo.AtomicVote(ctx, suggestion.ID, voter, 1))
 
 	err := repo.AtomicVote(ctx, suggestion.ID, voter, 7)
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, communitysuggestions.ErrInvalidVoteValue,
-		"IF THIS FAILED (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md), the flip branch now maps valid_vote_value and the defect is FIXED — assert "+
-			"ErrInvalidVoteValue here and delete this pin")
-	assert.ErrorContains(t, err, "failed to update vote during flip")
+	require.ErrorIs(t, err, communitysuggestions.ErrInvalidVoteValue,
+		"the same malformed request must be classified the same whether or not the voter has voted before")
 
 	suggestionAssertReconciled(t, db, suggestion.ID, 1, 1)
 }

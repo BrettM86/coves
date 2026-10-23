@@ -224,19 +224,8 @@ func (r *postgresCommunitySuggestionRepo) UpdateStatus(ctx context.Context, id i
 // UpsertVote inserts or updates a vote for a suggestion and atomically updates the vote count
 // Returns the delta applied to the suggestion's vote count
 // Uses a transaction to ensure consistency between the vote and the denormalized count
-// KNOWN DEFECT (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md), two of them:
-//
-//  1. No SQLSTATE 23503 mapping. Voting on a suggestion that does not exist escapes as a
-//     bare pq error, so IsNotFound is false and the handler answers 500 — where
-//     AtomicVote, one function away, answers 404.
-//  2. valid_vote_value is mapped on the INSERT branch only, so an out-of-range value from
-//     a repeat voter takes the UPDATE branch and is wrapped generically. The same
-//     malformed request is a 400 for a first-time voter and a 500 for a repeat one.
-//
-// Also note this method locks vote-row-then-suggestion-row while AtomicVote locks them
-// the other way round; mixing the two on one suggestion can deadlock. Not reachable
-// today (Service.Vote uses AtomicVote exclusively) — see the issue.
-// (see TestSuggestionRepo_UpsertVoteMisclassifiesTwoFailures)
+// Lock order: the suggestion row, then the vote row. The suggestion row is the contended
+// row whose vote_count is updated; UpsertVote, AtomicVote and DeleteVote all take this order.
 func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, suggestionID int64, voterDID string, value int) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -249,6 +238,17 @@ func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, sugges
 			)
 		}
 	}()
+
+	// Verify suggestion exists and lock its row before the vote row
+	var exists bool
+	existsQuery := `SELECT EXISTS(SELECT 1 FROM community_suggestions WHERE id = $1 FOR UPDATE)`
+	err = tx.QueryRowContext(ctx, existsQuery, suggestionID).Scan(&exists)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check suggestion existence: %w", err)
+	}
+	if !exists {
+		return 0, communitysuggestions.ErrSuggestionNotFound
+	}
 
 	// Check for existing vote with row lock
 	var existingValue int
@@ -274,6 +274,9 @@ func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, sugges
 		`
 		_, err = tx.ExecContext(ctx, updateQuery, value, suggestionID, voterDID)
 		if err != nil {
+			if domainErr := classifyVoteWriteError(err); domainErr != nil {
+				return 0, domainErr
+			}
 			return 0, fmt.Errorf("failed to update vote: %w", err)
 		}
 		// Delta is the difference between new and old value
@@ -286,10 +289,8 @@ func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, sugges
 		`
 		_, err = tx.ExecContext(ctx, insertQuery, suggestionID, voterDID, value)
 		if err != nil {
-			if pqErr := extractPQError(err); pqErr != nil {
-				if strings.Contains(pqErr.Constraint, "valid_vote_value") {
-					return 0, communitysuggestions.ErrInvalidVoteValue
-				}
+			if domainErr := classifyVoteWriteError(err); domainErr != nil {
+				return 0, domainErr
 			}
 			return 0, fmt.Errorf("failed to insert vote: %w", err)
 		}
@@ -317,6 +318,8 @@ func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, sugges
 // DeleteVote removes a vote from a suggestion and atomically updates the vote count
 // Returns the delta applied to the suggestion's vote count
 // Uses a transaction to ensure consistency between the vote deletion and the denormalized count
+// Lock order: the suggestion row, then the vote row. The suggestion row is the contended
+// row whose vote_count is updated; UpsertVote, AtomicVote and DeleteVote all take this order.
 func (r *postgresCommunitySuggestionRepo) DeleteVote(ctx context.Context, suggestionID int64, voterDID string) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -329,6 +332,17 @@ func (r *postgresCommunitySuggestionRepo) DeleteVote(ctx context.Context, sugges
 			)
 		}
 	}()
+
+	// Verify suggestion exists and lock its row before the vote row
+	var exists bool
+	existsQuery := `SELECT EXISTS(SELECT 1 FROM community_suggestions WHERE id = $1 FOR UPDATE)`
+	err = tx.QueryRowContext(ctx, existsQuery, suggestionID).Scan(&exists)
+	if err != nil {
+		return 0, fmt.Errorf("failed to check suggestion existence: %w", err)
+	}
+	if !exists {
+		return 0, communitysuggestions.ErrSuggestionNotFound
+	}
 
 	// Delete the vote and get the deleted value
 	deleteQuery := `
@@ -375,11 +389,8 @@ func (r *postgresCommunitySuggestionRepo) DeleteVote(ctx context.Context, sugges
 // If no existing vote: creates the vote
 // If existing vote in same direction: removes the vote (toggle off)
 // If existing vote in opposite direction: flips the vote
-// KNOWN DEFECT (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md): valid_vote_value is
-// mapped on the INSERT branch only, so an out-of-range value from a voter who has already
-// voted takes the flip branch and is wrapped generically — a 500 where a first-time
-// voter gets a 400.
-// (see TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsMisclassified)
+// Lock order: the suggestion row, then the vote row. The suggestion row is the contended
+// row whose vote_count is updated; UpsertVote, AtomicVote and DeleteVote all take this order.
 func (r *postgresCommunitySuggestionRepo) AtomicVote(ctx context.Context, suggestionID int64, voterDID string, value int) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -440,6 +451,9 @@ func (r *postgresCommunitySuggestionRepo) AtomicVote(ctx context.Context, sugges
 			`
 			_, err = tx.ExecContext(ctx, updateQuery, value, suggestionID, voterDID)
 			if err != nil {
+				if domainErr := classifyVoteWriteError(err); domainErr != nil {
+					return domainErr
+				}
 				return fmt.Errorf("failed to update vote during flip: %w", err)
 			}
 			delta = value - existingValue
@@ -452,13 +466,8 @@ func (r *postgresCommunitySuggestionRepo) AtomicVote(ctx context.Context, sugges
 		`
 		_, err = tx.ExecContext(ctx, insertQuery, suggestionID, voterDID, value)
 		if err != nil {
-			if pqErr := extractPQError(err); pqErr != nil {
-				if pqErr.Code == "23503" {
-					return communitysuggestions.ErrSuggestionNotFound
-				}
-				if strings.Contains(pqErr.Constraint, "valid_vote_value") {
-					return communitysuggestions.ErrInvalidVoteValue
-				}
+			if domainErr := classifyVoteWriteError(err); domainErr != nil {
+				return domainErr
 			}
 			return fmt.Errorf("failed to insert vote: %w", err)
 		}
@@ -487,6 +496,22 @@ func (r *postgresCommunitySuggestionRepo) AtomicVote(ctx context.Context, sugges
 		return fmt.Errorf("failed to commit atomic vote transaction: %w", err)
 	}
 
+	return nil
+}
+
+// classifyVoteWriteError translates a suggestion_votes INSERT/UPDATE failure into a domain
+// error, or returns nil when the failure has no domain meaning and should be wrapped.
+func classifyVoteWriteError(err error) error {
+	pqErr := extractPQError(err)
+	if pqErr == nil {
+		return nil
+	}
+	if pqErr.Code == "23503" {
+		return communitysuggestions.ErrSuggestionNotFound
+	}
+	if strings.Contains(pqErr.Constraint, "valid_vote_value") {
+		return communitysuggestions.ErrInvalidVoteValue
+	}
 	return nil
 }
 
