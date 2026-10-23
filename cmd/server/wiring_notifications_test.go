@@ -71,3 +71,11 @@ func TestApplication_WiresPostNotifications(t *testing.T) {
 	require.True(t, app.buildPostConsumer().NotificationsWired(),
 		"the post consumer registered for the feed must carry the notification repository")
 }
+
+func TestApplication_WiresCommentErasureGate(t *testing.T) {
+	app := &application{cfg: &config.Config{}, credentialCipher: credentialciphertest.Fixed()}
+	app.buildRepositories()
+
+	require.True(t, app.buildCommentConsumer().ErasureGated(),
+		"the comment consumer registered for the feed must drop erased accounts' comment events")
+}

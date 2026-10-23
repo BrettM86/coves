@@ -140,6 +140,12 @@ func WithCommentNotifications(repository notifications.Repository) CommentEventC
 // NotificationsWired reports whether the consumer maintains comment notifications.
 func (c *CommentEventConsumer) NotificationsWired() bool { return c.notifications != nil }
 
+// ErasureGated reports whether comment events from erased accounts are dropped.
+// The gate rides on the notifications repository's ErasureGateTx, which reads the
+// erasure marker under the shared erasure lock inside the write transaction, so it
+// is active exactly when notifications are wired.
+func (c *CommentEventConsumer) ErasureGated() bool { return c.notifications != nil }
+
 // BridgeTrustWired reports whether the consumer holds a bridge trust gate.
 func (c *CommentEventConsumer) BridgeTrustWired() bool { return c.bridgeTrust != nil }
 
@@ -495,6 +501,12 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		if err != nil {
 			return fmt.Errorf("check comment actor erasure before updating: %w", err)
 		}
+		if erased {
+			// Nil, not an error: a refused event would dead-letter, redrive and
+			// fail identically. The deferred rollback discards the rev advance.
+			log.Printf("INFO: dropping %s update for erased account %s", CommentCollection, repoDID)
+			return nil
+		}
 		err = tx.QueryRowContext(ctx,
 			`SELECT COALESCE(content_facets::text, ''), created_at, parent_uri, root_uri
 			 FROM comments WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri,
@@ -715,6 +727,14 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		erased, err = c.notifications.ErasureGateTx(ctx, tx, comment.CommenterDID)
 		if err != nil {
 			return fmt.Errorf("check comment actor erasure before indexing: %w", err)
+		}
+		if erased {
+			// Checked here, under the shared erasure lock, rather than before the
+			// transaction, so erasure cannot sweep between the check and the insert.
+			// Nil, not an error: a refused event would dead-letter, redrive and
+			// fail identically. The deferred rollback discards the rev advance.
+			log.Printf("INFO: dropping %s create for erased account %s", CommentCollection, comment.CommenterDID)
+			return nil
 		}
 	}
 

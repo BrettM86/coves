@@ -161,6 +161,18 @@ func TestCommentConsumer_DifferentParentResurrectionRepairsKeptRows(t *testing.T
 			require.NoError(t, f.consumer.HandleEvent(context.Background(), f.recreatedEventForRecord(t, record)))
 			require.Equal(t, f.otherRecordBefore, notificationRowsForRecordOrSubject(t, f.db, f.otherRecordURI),
 				"the repair touches only the resurrected record's rows")
+			if scenario.erased {
+				var deletedAt sql.NullTime
+				var storedParentURI, storedCID string
+				require.NoError(t, f.db.QueryRow(`SELECT deleted_at, parent_uri, cid FROM comments WHERE uri = $1`, f.uri).
+					Scan(&deletedAt, &storedParentURI, &storedCID))
+				require.True(t, deletedAt.Valid, "erased A's re-create must not resurrect Y")
+				require.Equal(t, f.firstParentURI, storedParentURI, "erased A's re-create must keep Y's old parent")
+				require.Equal(t, "bafyrepairoriginal", storedCID, "erased A's re-create must keep Y's old CID")
+				require.Equal(t, f.before, notificationRowsForRecordOrSubject(t, f.db, f.uri),
+					"with the event dropped no repair runs, so Y's rows stay as before")
+				return
+			}
 			if scenario.missingLegacyPost {
 				var deletedAt sql.NullTime
 				var storedParentURI, storedRootURI, storedCID string
@@ -183,7 +195,7 @@ func TestCommentConsumer_DifferentParentResurrectionRepairsKeptRows(t *testing.T
 					cRows = append(cRows, row)
 				}
 			}
-			if scenario.erased || scenario.backdated || scenario.unsupported || scenario.missingLegacyPost {
+			if scenario.backdated || scenario.unsupported || scenario.missingLegacyPost {
 				originalC := repairSnapshotForRecipient(t, f.before, f.newParentDID)
 				originalC.rootPostURI = f.secondPostURI
 				require.ElementsMatch(t, []notificationRowSnapshot{originalD, originalC}, rows,

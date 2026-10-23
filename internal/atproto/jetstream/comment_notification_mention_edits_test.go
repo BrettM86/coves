@@ -554,6 +554,12 @@ func TestCommentConsumer_MentionEdit_ErasedActor(t *testing.T) {
 	_, err := fixture.gate.db.Exec(`INSERT INTO deleted_accounts (did) VALUES ($1)`, fixture.gate.commenterDID)
 	require.NoError(t, err, "fixture: retain the comment row and mark A erased")
 	require.Equal(t, 1, countRows(t, fixture.gate.db, `SELECT count(*) FROM comments WHERE uri = $1`, fixture.uri))
+	var beforeContent string
+	require.NoError(t, fixture.gate.db.QueryRow(`SELECT content FROM comments WHERE uri = $1`, fixture.uri).Scan(&beforeContent))
 	require.NoError(t, fixture.update(t, fixture.createdAt, time.Now().Add(time.Second).UnixMicro(), added))
 	assert.Zero(t, mentionEditRows(t, fixture, added, "mention"), "erased A must not notify eligible E")
+	var afterCID, afterContent string
+	require.NoError(t, fixture.gate.db.QueryRow(`SELECT cid, content FROM comments WHERE uri = $1`, fixture.uri).Scan(&afterCID, &afterContent))
+	assert.Equal(t, "bafyreimentioneditcreate", afterCID, "erased A's update must not rewrite the comment CID")
+	assert.Equal(t, beforeContent, afterContent, "erased A's update must not rewrite the comment content")
 }

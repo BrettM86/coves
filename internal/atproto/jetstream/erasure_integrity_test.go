@@ -5,6 +5,7 @@ package jetstream
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -244,4 +245,60 @@ func TestErasure_AnUnreadableMarkerTableFailsClosed(t *testing.T) {
 		"nothing may be indexed while the gate cannot be consulted")
 	assert.NotErrorIs(t, err, ErrPermanentEvent,
 		"an unreachable table is transient: the redrive is what makes failing closed cheap rather than lossy")
+}
+
+// An erased commenter's comment events are dropped inside the consumer's
+// transaction: no error (so nothing is dead-lettered) and no comments row,
+// whether the event arrives live or from a redrive of a dead letter captured
+// before the erasure.
+func TestErasure_CommentEventsFromAnErasedCommenterAreDropped(t *testing.T) {
+	type stage func(t *testing.T, ctx context.Context, db *sql.DB, fixture commentErasureFixture, event *JetstreamEvent) error
+	handle := func(t *testing.T, ctx context.Context, _ *sql.DB, fixture commentErasureFixture, event *JetstreamEvent) error {
+		return fixture.consumer.HandleEvent(ctx, event)
+	}
+	cases := []struct {
+		name          string
+		beforeErasure stage
+		afterErasure  stage
+	}{
+		{
+			name:         "create",
+			afterErasure: handle,
+		},
+		{
+			name: "redrive after sweep",
+			beforeErasure: func(t *testing.T, ctx context.Context, db *sql.DB, _ commentErasureFixture, event *JetstreamEvent) error {
+				data, err := json.Marshal(event)
+				require.NoError(t, err)
+				return NewPostgresStateStore(db).AddDeadLetter(ctx, ConsumerComments, event.TimeUS, data, "original failure", 0)
+			},
+			afterErasure: func(t *testing.T, ctx context.Context, db *sql.DB, fixture commentErasureFixture, _ *JetstreamEvent) error {
+				store := NewPostgresStateStore(db)
+				NewDeadLetterRedriver(
+					DeadLetterRedriveStore{Source: store, Mutator: store, Pruner: store},
+					map[string]EventHandler{ConsumerComments: fixture.consumer},
+				).redriveAll(ctx)
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := testkit.DB(t)
+			ctx := context.Background()
+			fixture := newCommentErasureFixture(t, ctx, db)
+			event, commentURI := fixture.reply()
+			if tc.beforeErasure != nil {
+				require.NoError(t, tc.beforeErasure(t, ctx, db, fixture, event))
+			}
+			require.NoError(t, postgres.NewUserRepository(db).Delete(ctx, fixture.actorDID))
+
+			require.NoError(t, tc.afterErasure(t, ctx, db, fixture, event))
+			require.Equal(t, 0, countRows(t, db, `SELECT count(*) FROM comments WHERE uri = $1`, commentURI),
+				"an erased commenter's comment must not be indexed")
+			require.Equal(t, 0, countRows(t, db, `SELECT count(*) FROM jetstream_dead_letters WHERE consumer_name = $1`, ConsumerComments),
+				"a dropped event is handled, not left dead-lettered")
+		})
+	}
 }

@@ -113,24 +113,17 @@ func TestCommentConsumer_ResurrectionErasureFirstWaitsOnAdvisoryLockBeforeCommen
 			finished = true
 			require.Equal(t, 1, countRows(t, db, `SELECT count(*) FROM deleted_accounts WHERE did = $1`, fixture.actorDID))
 			require.Zero(t, countRows(t, db, `SELECT count(*) FROM notifications WHERE record_uri = $1`, commentURI),
-				"erasure hard-deleted Y, so the re-create takes the insert path; erased A must not generate notifications there")
-			// Known content-indexing gap: erasure removed the old row, but the
-			// re-create indexes a new live comment for erased A without notifying.
-			var storedCID, storedParentURI string
-			var finalDeletedAt sql.NullTime
-			require.NoError(t, db.QueryRowContext(ctx,
-				`SELECT cid, parent_uri, deleted_at FROM comments WHERE uri = $1`, commentURI).
-				Scan(&storedCID, &storedParentURI, &finalDeletedAt))
-			require.Equal(t, recreatedCID, storedCID, "the accepted indexing gap writes the new CID")
-			require.Equal(t, parentURI, storedParentURI)
-			require.False(t, finalDeletedAt.Valid, "the erased author's new row is live but has no notifications")
+				"erasure hard-deleted Y; erased A's re-create must not generate notifications")
+			// The re-create is dropped after the erasure lock: erasure hard-deleted
+			// Y and the event must not index a new row for erased A.
+			require.Zero(t, countRows(t, db, `SELECT count(*) FROM comments WHERE uri = $1`, commentURI),
+				"erased A's re-create must not write a comment row")
 		})
 	}
 }
 
-// Erasure normally hard-deletes A's comments, but the consumer still indexes an
-// erased actor's events. A soft-deleted Y that survives erasure reaches the
-// same-parent resurrection branch with the actor already erased.
+// Erasure normally hard-deletes A's comments. A soft-deleted Y that survives
+// erasure must not be resurrected: the consumer drops an erased actor's events.
 func TestCommentConsumer_SameParentResurrectionByErasedActorWritesNoNotifications(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -167,9 +160,9 @@ func TestCommentConsumer_SameParentResurrectionByErasedActorWritesNoNotification
 	var resurrectedDeletedAt sql.NullTime
 	require.NoError(t, fixture.gate.db.QueryRowContext(ctx, `SELECT id, cid, deleted_at FROM comments WHERE uri = $1`,
 		fixture.uri).Scan(&resurrectedID, &resurrectedCID, &resurrectedDeletedAt))
-	require.Equal(t, commentID, resurrectedID, "the re-create must resurrect the kept row, not insert a new one")
-	require.Equal(t, recreatedCID, resurrectedCID, "the resurrection must apply the new CID")
-	require.False(t, resurrectedDeletedAt.Valid, "the resurrection must clear the delete")
+	require.Equal(t, commentID, resurrectedID, "the dropped re-create must not insert a new row")
+	require.Equal(t, "bafyreimentioneditcreate", resurrectedCID, "erased A's re-create must keep the prior CID")
+	require.True(t, resurrectedDeletedAt.Valid, "erased A's re-create must not resurrect Y")
 	require.Equal(t, keptRows, notificationRowsForRecordOrSubject(t, fixture.gate.db, fixture.uri),
 		"erased A's same-parent resurrection must keep B's row without notifying E")
 }

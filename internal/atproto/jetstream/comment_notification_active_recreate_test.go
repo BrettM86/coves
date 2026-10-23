@@ -182,8 +182,8 @@ func TestCommentConsumer_ActiveRecreateNotificationFailureRollsBackContentFacets
 	require.Zero(t, mentionEditRows(t, fixture, added, "mention"))
 }
 
-// The consumer still indexes an erased actor's events, so an active re-create
-// can arrive after A is erased while A's comment row is still present.
+// An active re-create can arrive after A is erased while A's comment row is
+// still present; the consumer drops it and leaves the row unchanged.
 func TestCommentConsumer_ActiveRecreateByErasedActorDoesNotNotifyAddedMention(t *testing.T) {
 	t.Parallel()
 	fixture := newMentionEditFixture(t)
@@ -192,9 +192,14 @@ func TestCommentConsumer_ActiveRecreateByErasedActorDoesNotNotifyAddedMention(t 
 	_, err := fixture.gate.db.Exec(`INSERT INTO deleted_accounts (did) VALUES ($1)`, fixture.gate.commenterDID)
 	require.NoError(t, err, "fixture: retain the active comment row and mark A erased")
 	require.Equal(t, 1, countRows(t, fixture.gate.db, `SELECT count(*) FROM comments WHERE uri = $1 AND deleted_at IS NULL`, fixture.uri))
-	event, content := activeRecreateEvent(t, fixture, fixture.createdAt, added)
+	event, _ := activeRecreateEvent(t, fixture, fixture.createdAt, added)
 	require.NoError(t, fixture.consumer.HandleEvent(context.Background(), event))
-	requireActiveRecreateApplied(t, fixture, content)
+	var cid string
+	var deletedAt sql.NullTime
+	require.NoError(t, fixture.gate.db.QueryRow(`SELECT cid, deleted_at FROM comments WHERE uri = $1`, fixture.uri).
+		Scan(&cid, &deletedAt))
+	require.False(t, deletedAt.Valid, "the dropped re-create leaves the comment active")
+	require.Equal(t, "bafyreimentioneditcreate", cid, "erased A's re-create must keep the active row's CID")
 	require.Zero(t, countRows(t, fixture.gate.db, `SELECT count(*) FROM notifications
 		WHERE record_uri = $1 AND recipient_did = $2`, fixture.uri, added.did),
 		"erased A's active re-create must not notify newly mentioned E")

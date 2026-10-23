@@ -108,6 +108,17 @@ func commentErasureResult(t *testing.T, ctx context.Context, results <-chan erro
 	}
 }
 
+// The erasure gate arrives with the notification repository, so a consumer
+// built without it must say so and one built with it must report itself gated.
+func TestCommentConsumer_ErasureGatedReportsItsWiring(t *testing.T) {
+	gated := NewCommentEventConsumer(postgres.NewCommentRepository(nil), nil,
+		WithCommentNotifications(postgres.NewNotificationRepository(nil)))
+	require.True(t, gated.ErasureGated(), "a consumer built WITH WithCommentNotifications must drop erased accounts' comments")
+
+	ungated := NewCommentEventConsumer(postgres.NewCommentRepository(nil), nil)
+	require.False(t, ungated.ErasureGated(), "a consumer built WITHOUT WithCommentNotifications has no erasure gate")
+}
+
 func TestCommentConsumer_NotificationErasure_RedriveErasedActor(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
@@ -119,8 +130,8 @@ func TestCommentConsumer_NotificationErasure_RedriveErasedActor(t *testing.T) {
 
 	event, commentURI := fixture.reply()
 	require.NoError(t, fixture.consumer.HandleEvent(ctx, event))
-	require.Equal(t, 1, countRows(t, db, `SELECT count(*) FROM comments WHERE uri = $1`, commentURI),
-		"the accepted content-indexing gap still indexes an erased actor's comment")
+	require.Equal(t, 0, countRows(t, db, `SELECT count(*) FROM comments WHERE uri = $1`, commentURI),
+		"redriving an erased actor's comment must not index it")
 	require.Zero(t, countRows(t, db, `SELECT count(*) FROM notifications WHERE actor_did = $1`, fixture.actorDID),
 		"redriving an erased actor's comment must not notify the recipient")
 }
