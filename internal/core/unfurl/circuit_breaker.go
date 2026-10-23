@@ -1,9 +1,11 @@
 package unfurl
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"time"
 
@@ -19,8 +21,15 @@ const (
 	stateHalfOpen                     // Testing if provider recovered
 )
 
+// maxTrackedKeys caps how many keys the breaker remembers. OpenGraph keys are
+// per registrable domain, so anyone posting links can mint new keys; past the
+// cap the least-recently-used key is forgotten.
+const maxTrackedKeys = 10000
+
 // circuitBreaker tracks failures per provider and stops trying failing providers
 type circuitBreaker struct {
+	recency          *list.List               // tracked keys, most recently used at the front
+	recencyElements  map[string]*list.Element // key -> its element in recency
 	failures         map[string]int
 	lastFailure      map[string]time.Time
 	state            map[string]circuitState
@@ -39,16 +48,46 @@ func newCircuitBreaker() *circuitBreaker {
 		lastFailure:      make(map[string]time.Time),
 		state:            make(map[string]circuitState),
 		lastStateLog:     make(map[string]time.Time),
+		recency:          list.New(),
+		recencyElements:  make(map[string]*list.Element),
 	}
+}
+
+// touch marks provider as most recently used, tracking it if new and evicting
+// the least-recently-used key past maxTrackedKeys (must hold the write lock).
+func (cb *circuitBreaker) touch(provider string) {
+	if element, exists := cb.recencyElements[provider]; exists {
+		cb.recency.MoveToFront(element)
+		return
+	}
+	cb.recencyElements[provider] = cb.recency.PushFront(provider)
+	for cb.recency.Len() > maxTrackedKeys {
+		cb.forget(cb.recency.Back().Value.(string))
+	}
+}
+
+// forget drops every record of provider (must hold the write lock).
+func (cb *circuitBreaker) forget(provider string) {
+	if element, exists := cb.recencyElements[provider]; exists {
+		cb.recency.Remove(element)
+		delete(cb.recencyElements, provider)
+	}
+	delete(cb.failures, provider)
+	delete(cb.lastFailure, provider)
+	delete(cb.state, provider)
+	delete(cb.lastStateLog, provider)
 }
 
 // canAttempt checks if we should attempt to call this provider
 // Returns true if circuit is closed or half-open (ready to retry)
 func (cb *circuitBreaker) canAttempt(provider string) (bool, error) {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	state := cb.getState(provider)
+	if _, tracked := cb.recencyElements[provider]; tracked {
+		cb.touch(provider)
+	}
 
 	switch state {
 	case stateClosed:
@@ -58,12 +97,8 @@ func (cb *circuitBreaker) canAttempt(provider string) (bool, error) {
 		lastFail := cb.lastFailure[provider]
 		if time.Since(lastFail) > cb.openDuration {
 			// Transition to half-open (allow one retry)
-			cb.mu.RUnlock()
-			cb.mu.Lock()
 			cb.state[provider] = stateHalfOpen
 			cb.logStateChange(provider, stateHalfOpen)
-			cb.mu.Unlock()
-			cb.mu.RLock()
 			return true, nil
 		}
 		// Still in open period
@@ -89,14 +124,21 @@ func (cb *circuitBreaker) recordSuccess(provider string) {
 
 	oldState := cb.getState(provider)
 
-	// Reset failure tracking
+	// Reset failure tracking. Closed is the default, so the key is dropped
+	// rather than stored; only the log debounce timestamp may outlive it.
 	delete(cb.failures, provider)
 	delete(cb.lastFailure, provider)
-	cb.state[provider] = stateClosed
+	delete(cb.state, provider)
 
 	// Log recovery if we were in a failure state
 	if oldState != stateClosed {
 		cb.logStateChange(provider, stateClosed)
+	}
+
+	if _, logged := cb.lastStateLog[provider]; logged {
+		cb.touch(provider)
+	} else {
+		cb.forget(provider)
 	}
 }
 
@@ -109,12 +151,12 @@ func (cb *circuitBreaker) recordSuccess(provider string) {
 // the provider is up — nobody spoke to it. Counting one is wrong twice over.
 //
 // The first cost is availability, and it is an attack. The breaker's bucket for
-// the OpenGraph path is the constant string "opengraph": ONE bucket for the
-// whole instance, not one per host. Three pasted `http://127.0.0.1/` links
-// therefore disabled link previews for every user of this instance for
-// openDuration, at the cost of three posts, repeatable on expiry. The guard did
-// its job on each request and the aggregate was the outage — a denial of service
-// delivered THROUGH the security control.
+// the OpenGraph path was once the constant string "opengraph", ONE bucket for
+// the whole instance (it is now per registrable domain). Three pasted
+// `http://127.0.0.1/` links therefore disabled link previews for every user of
+// this instance for openDuration, at the cost of three posts, repeatable on
+// expiry. The guard did its job on each request and the aggregate was the
+// outage — a denial of service delivered THROUGH the security control.
 //
 // The second is diagnostic: the log line below names a healthy provider as the
 // failing party and quotes an address error as the evidence, which is exactly
@@ -127,6 +169,11 @@ func (cb *circuitBreaker) recordSuccess(provider string) {
 // path someone adds. errors.Is and not a comparison, because what arrives here
 // has been through http.Client.Do's *url.Error and one fmt.Errorf of UnfurlURL's
 // own.
+//
+// A 4xx answer or NXDOMAIN is not counted either: a bogus video ID, a missing
+// page or a made-up subdomain is chosen per URL by whoever posts it and says
+// nothing about whether the provider is up, so counting it would let three
+// posts disable previews of a whole provider or site for everyone.
 func (cb *circuitBreaker) recordFailure(provider string, err error) {
 	if errors.Is(err, covesoauth.ErrBlockedAddress) {
 		log.Printf(
@@ -136,9 +183,19 @@ func (cb *circuitBreaker) recordFailure(provider string, err error) {
 		)
 		return
 	}
+	if isPerURLFailure(err) {
+		log.Printf(
+			"[UNFURL-CIRCUIT] Not counting a per-URL failure against provider '%s': %v",
+			provider,
+			err,
+		)
+		return
+	}
 
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
+	cb.touch(provider)
 
 	// Increment failure count
 	cb.failures[provider]++
@@ -168,6 +225,17 @@ func (cb *circuitBreaker) recordFailure(provider string, err error) {
 			err,
 		)
 	}
+}
+
+// isPerURLFailure reports whether err is a 4xx status or a nonexistent host,
+// failures a poster controls per URL rather than signs that the provider is down.
+func isPerURLFailure(err error) bool {
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.statusCode >= 400 && statusErr.statusCode < 500
+	}
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
 }
 
 // getState returns the current state (must be called with lock held)

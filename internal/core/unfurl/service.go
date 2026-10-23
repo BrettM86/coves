@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	covesoauth "Coves/internal/atproto/oauth"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Service handles URL unfurling with caching
@@ -220,7 +224,7 @@ func (s *service) UnfurlURL(ctx context.Context, urlStr string) (*UnfurlResult, 
 		// Convert to UnfurlResult
 		result = mapOEmbedToResult(oembed, urlStr)
 	} else {
-		provider := "opengraph"
+		provider := openGraphBreakerKey(urlStr)
 
 		// Check circuit breaker
 		canAttempt, err := s.circuitBreaker.canAttempt(provider)
@@ -251,4 +255,19 @@ func (s *service) UnfurlURL(ctx context.Context, urlStr string) (*UnfurlResult, 
 		urlStr, result.Provider, result.Type)
 
 	return result, nil
+}
+
+// openGraphBreakerKey keys the OpenGraph circuit breaker on the target's
+// registrable domain (eTLD+1), so failures on one site cannot disable previews
+// for others. IPs and single-label hosts fall back to the bare hostname.
+func openGraphBreakerKey(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return "opengraph"
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if domain, err := publicsuffix.EffectiveTLDPlusOne(host); err == nil {
+		host = domain
+	}
+	return "opengraph:" + host
 }

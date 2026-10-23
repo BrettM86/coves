@@ -150,7 +150,7 @@ func fetchOEmbed(ctx context.Context, urlStr string, client *http.Client, userAg
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("oEmbed endpoint returned status %d", resp.StatusCode)
+		return nil, &httpStatusError{source: "oEmbed endpoint", statusCode: resp.StatusCode}
 	}
 
 	// Parse JSON response
@@ -230,7 +230,7 @@ func fetchOpenGraph(ctx context.Context, urlStr string, client *http.Client, use
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP request returned status %d", resp.StatusCode)
+		return nil, &httpStatusError{source: "HTTP request", statusCode: resp.StatusCode}
 	}
 
 	body, err := readCappedBody(resp.Body)

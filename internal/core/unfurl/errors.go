@@ -1,6 +1,9 @@
 package unfurl
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrNotFound is returned when an unfurl cache entry is not found or has expired
@@ -24,3 +27,14 @@ var (
 	// that reads as whole. A caller must be told the difference.
 	ErrPageTooLarge = errors.New("unfurl target exceeds the response size limit")
 )
+
+// httpStatusError is returned when a fetched endpoint answers with a non-200
+// status, so the circuit breaker can tell a client error from a server error.
+type httpStatusError struct {
+	source     string // what was fetched, e.g. "oEmbed endpoint"
+	statusCode int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s returned status %d", e.source, e.statusCode)
+}
