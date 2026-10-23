@@ -491,17 +491,14 @@ func TestCachingResolver_ResolveDID(t *testing.T) {
 
 		doc, err := resolver.ResolveDID(context.Background(), fixtureDID)
 		require.NoError(t, err)
-		assert.Equal(t, 1, base.resolveDIDs)
+		assert.Equal(t, 1, base.resolves+base.resolveDIDs)
 		assert.Equal(t, fixtureDID, doc.DID)
 	})
 
-	// The two paths do not agree on what "no PDS" looks like. The base resolver
-	// omits the service entry entirely (asserted in base_resolver_test.go); the
-	// cache-hit path always emits one, so a cached identity with an empty PDS
-	// URL produces a document that claims a PDS at "". A caller checking
-	// len(doc.Service) gets a different answer depending on cache state, which
-	// is the kind of difference that only shows up under load.
-	t.Run("emits an empty service entry for a cached identity with no PDS", func(t *testing.T) {
+	// A cached identity with no PDS yields no service entry, the same as the
+	// base resolver's document (asserted in base_resolver_test.go), so a
+	// caller never gets "" as a host to dial.
+	t.Run("omits the service entry for a cached identity with no PDS", func(t *testing.T) {
 		t.Parallel()
 		resolver, _, cache := newCachingFixture()
 		noPDS := freshIdentity()
@@ -510,12 +507,7 @@ func TestCachingResolver_ResolveDID(t *testing.T) {
 
 		doc, err := resolver.ResolveDID(context.Background(), fixtureDID)
 		require.NoError(t, err)
-		require.Lenf(t, doc.Service, 1,
-			"IF THIS FAILED, the cache-hit path learned to omit an empty PDS entry like the base path "+
-				"already does. That closes the asymmetry; assert the new agreement instead of "+
-				"reverting")
-		assert.Empty(t, doc.Service[0].ServiceEndpoint,
-			"pinned, not endorsed: a caller that reads Service[0] gets \"\" as a host to dial")
+		assert.Empty(t, doc.Service)
 	})
 
 	t.Run("propagates the base resolver's failure on a miss", func(t *testing.T) {
@@ -562,4 +554,75 @@ func TestCachingResolver_Purge(t *testing.T) {
 				"performing it: the caller retries, and the retry is the only thing that can fix the "+
 				"entry that is still there")
 	})
+}
+
+// TestCachingResolver_ResolveDIDMissPopulatesTheCache: a ResolveDID miss must
+// leave the identity behind, so the next lookup of the same DID (by the image
+// proxy, on every CDN miss) is answered without another PLC or did:web fetch.
+func TestCachingResolver_ResolveDIDMissPopulatesTheCache(t *testing.T) {
+	t.Parallel()
+	resolver, base, _ := newCachingFixture()
+
+	for call := 1; call <= 2; call++ {
+		doc, err := resolver.ResolveDID(context.Background(), fixtureDID)
+		require.NoErrorf(t, err, "call %d", call)
+		assert.Equalf(t, fixtureDID, doc.DID, "call %d", call)
+		require.Lenf(t, doc.Service, 1, "call %d", call)
+		assert.Equalf(t, fixturePDS, doc.Service[0].ServiceEndpoint, "call %d", call)
+	}
+
+	base.mu.Lock()
+	networkFetches := base.resolves + base.resolveDIDs
+	base.mu.Unlock()
+	assert.Equal(t, 1, networkFetches, "two ResolveDID calls for one DID must make exactly one network fetch")
+}
+
+// TestCachingResolver_ResolveDIDServesThePDSOfAnUnverifiedIdentity: the image
+// proxy needs only the PDS, which comes from the DID document and needs no DNS.
+// An identity whose handle does not verify (or has none) must still yield its
+// PDS service entry; gating ResolveDID on a verified handle would 502 every
+// image owned by such an account on a CDN miss. The repeat lookup is answered
+// from the in-process negative cache, and Postgres never learns the identity.
+func TestCachingResolver_ResolveDIDServesThePDSOfAnUnverifiedIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		handle    string
+		seedStale bool
+	}{
+		{name: "the reserved placeholder", handle: InvalidHandle},
+		{name: "an empty handle", handle: ""},
+		{name: "the reserved placeholder over a stale cached row", handle: InvalidHandle, seedStale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolver, base, cache := newCachingFixture()
+			unverified := unverifiedIdentity()
+			unverified.Handle = tc.handle
+			base.identity = unverified
+			if tc.seedStale {
+				stale := unverifiedIdentity()
+				stale.PDSURL = "https://stale-pds.example.com"
+				cache.entries[fixtureDID] = stale
+			}
+
+			for call := 1; call <= 2; call++ {
+				doc, err := resolver.ResolveDID(context.Background(), fixtureDID)
+				require.NoErrorf(t, err, "call %d: an unverifiable handle does not make the PDS unknown", call)
+				require.Lenf(t, doc.Service, 1, "call %d", call)
+				assert.Equalf(t, "AtprotoPersonalDataServer", doc.Service[0].Type, "call %d", call)
+				assert.Equalf(t, fixturePDS, doc.Service[0].ServiceEndpoint,
+					"call %d: the freshly resolved PDS must be served, not a stale cached one", call)
+			}
+
+			base.mu.Lock()
+			networkFetches := base.resolves + base.resolveDIDs
+			base.mu.Unlock()
+			assert.Equal(t, 1, networkFetches,
+				"the second call within the negative-cache TTL must not fetch again")
+			assert.Empty(t, cache.sets, "the 24h Postgres cache must never learn an unverified identity")
+		})
+	}
 }

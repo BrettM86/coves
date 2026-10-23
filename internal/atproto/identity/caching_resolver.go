@@ -110,26 +110,27 @@ func (r *cachingResolver) ResolveHandle(ctx context.Context, handle string) (did
 	return identity.DID, identity.PDSURL, nil
 }
 
-// ResolveDID retrieves a DID document and extracts the PDS endpoint
+// ResolveDID returns a minimal DID document holding only the PDS service entry
+// (none when the identity has no PDS). It goes through Resolve so a miss for a
+// verified identity writes the identity cache; without that, every image-proxy
+// CDN miss would cost a PLC or did:web fetch. Unverified or handle-less
+// identities and resolution failures are held only in the in-process negative
+// cache, so those DIDs are re-fetched after it expires.
 func (r *cachingResolver) ResolveDID(ctx context.Context, did string) (*DIDDocument, error) {
-	// Try to get from cache first
-	cached, err := r.cache.Get(ctx, did)
-	if err == nil {
-		// We have cached identity, construct a simple DID document
-		return &DIDDocument{
-			DID: cached.DID,
-			Service: []Service{
-				{
-					ID:              "#atproto_pds",
-					Type:            "AtprotoPersonalDataServer",
-					ServiceEndpoint: cached.PDSURL,
-				},
-			},
-		}, nil
+	ident, err := r.Resolve(ctx, did)
+	if err != nil {
+		return nil, err
 	}
 
-	// Cache miss - use base resolver
-	return r.base.ResolveDID(ctx, did)
+	doc := &DIDDocument{DID: ident.DID, Service: []Service{}}
+	if ident.PDSURL != "" {
+		doc.Service = append(doc.Service, Service{
+			ID:              "#atproto_pds",
+			Type:            "AtprotoPersonalDataServer",
+			ServiceEndpoint: ident.PDSURL,
+		})
+	}
+	return doc, nil
 }
 
 // Purge removes an identifier from the cache and propagates to base
