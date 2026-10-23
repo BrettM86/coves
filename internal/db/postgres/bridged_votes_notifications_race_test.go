@@ -132,7 +132,7 @@ func bridgedRaceRecipientErasure(t *testing.T, f bridgedNotificationFixture, ctx
 	state := bridgedRaceReachedWithin(t, ctx, reached)
 	deletes := make(chan error, 1)
 	go func() { deletes <- NewUserRepository(f.db).Delete(ctx, f.recipient) }()
-	notificationRaceBlockedDelete(t, f.db, ctx, state.processID, "DELETE FROM posts")
+	notificationRaceBlockedDelete(t, f.db, ctx, state.processID, "FROM posts WHERE")
 	notificationRaceRequirePending(t, deletes)
 	unblock()
 	result := bridgedRaceResultWithin(t, ctx, apply)

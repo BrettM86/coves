@@ -130,11 +130,11 @@ func voteGroupDeleteWaitsForConsumer(t *testing.T, ctx context.Context, transact
 		err := transaction.QueryRowContext(ctx, `SELECT EXISTS (
 			SELECT 1 FROM pg_stat_activity
 			WHERE datname = current_database() AND pid NOT IN ($1, $2)
-				AND wait_event_type = 'Lock' AND query ILIKE '%DELETE FROM posts%'
+				AND wait_event_type = 'Lock' AND query ILIKE '%FROM posts WHERE%'
 				AND $1 = ANY(pg_blocking_pids(pid))
 		)`, consumerProcessID, fixtureProcessID).Scan(&deleteBlockedOnPost)
 		return deleteBlockedOnPost, err
-	}, testkit.WithDescription("Delete(B) blocked behind the vote consumer while deleting B's posts"))
+	}, testkit.WithDescription("Delete(B) blocked behind the vote consumer on B's post row"))
 }
 
 func TestVoteConsumer_UpvoteGroupRecipientDeleteWaitsForConsumer(t *testing.T) {

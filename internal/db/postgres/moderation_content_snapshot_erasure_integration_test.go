@@ -104,7 +104,7 @@ func TestModerationContentSnapshotErasureWaitsForInFlightRemoval(t *testing.T) {
 			SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND pid <> pg_backend_pid()
 			  AND wait_event_type = 'Lock' AND wait_event <> 'advisory'
-			  AND query LIKE '%DELETE FROM posts WHERE author_did%'
+			  AND query LIKE '%FROM posts WHERE%author_did%'
 		`).Scan(&waiting)
 		return waiting == 1, err
 	}, testkit.WithDescription("the erasure waiting on the in-flight removal's lock on the post row"))

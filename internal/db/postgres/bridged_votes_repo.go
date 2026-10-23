@@ -277,6 +277,11 @@ func (r *BridgedVotesRepository) MarkPolled(ctx context.Context, uris []string) 
 	// affect zero rows without turning the sweep into an error. Both tables move
 	// in one transaction so a batch is never left half-advanced, with its posts
 	// out of the oldest slot and its comments still in it.
+	//
+	// Lock order matches account erasure (postgresUserRepo.Delete): comments
+	// before posts, each in URI order. Erasure locks every subject the account
+	// voted or commented on, which includes the recent bridged subjects this
+	// sweep marks, so the opposite order would deadlock and abort one side.
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin bridged vote mark transaction: %w", err)
@@ -288,19 +293,23 @@ func (r *BridgedVotesRepository) MarkPolled(ctx context.Context, uris []string) 
 	}()
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE posts
+		UPDATE comments
 		SET bridged_polled_at = NOW()
-		WHERE uri = ANY($1)
+		WHERE uri IN (
+			SELECT uri FROM comments WHERE uri = ANY($1) ORDER BY uri FOR NO KEY UPDATE
+		)
 	`, pq.Array(uris)); err != nil {
-		return fmt.Errorf("failed to mark bridged vote posts polled: %w", err)
+		return fmt.Errorf("failed to mark bridged vote comments polled: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE comments
+		UPDATE posts
 		SET bridged_polled_at = NOW()
-		WHERE uri = ANY($1)
+		WHERE uri IN (
+			SELECT uri FROM posts WHERE uri = ANY($1) ORDER BY uri FOR NO KEY UPDATE
+		)
 	`, pq.Array(uris)); err != nil {
-		return fmt.Errorf("failed to mark bridged vote comments polled: %w", err)
+		return fmt.Errorf("failed to mark bridged vote posts polled: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

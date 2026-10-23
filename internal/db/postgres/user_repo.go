@@ -459,6 +459,51 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete user_blocks for did=%s: %w", did, err)
 	}
 
+	// 7a. Capture what this account's comments and live votes counted into, so
+	// those counts can be rebuilt after the hard deletes below.
+	commentRootURIs, err := queryStringColumn(ctx, tx,
+		`SELECT DISTINCT root_uri FROM comments WHERE commenter_did = $1`, did)
+	if err != nil {
+		return fmt.Errorf("failed to collect comment root URIs for did=%s: %w", did, err)
+	}
+	commentParentURIs, err := queryStringColumn(ctx, tx,
+		`SELECT DISTINCT parent_uri FROM comments WHERE commenter_did = $1`, did)
+	if err != nil {
+		return fmt.Errorf("failed to collect comment parent URIs for did=%s: %w", did, err)
+	}
+	voteSubjectURIs, err := queryStringColumn(ctx, tx,
+		`SELECT DISTINCT subject_uri FROM votes WHERE voter_did = $1 AND deleted_at IS NULL`, did)
+	if err != nil {
+		return fmt.Errorf("failed to collect vote subject URIs for did=%s: %w", did, err)
+	}
+
+	// 7b. Lock every post and comment row this erasure will write: the
+	// recount subjects and the account's own posts and comments, which steps 7
+	// and 10 delete. Comments are locked before posts and each in URI order.
+	// The comment consumer also locks comments before posts (parent comment,
+	// then root post), BridgedVotesRepository.MarkPolled takes the same order,
+	// and no earlier step here locks a post or comment row. Two erasures of accounts that voted on or replied to each
+	// other's content therefore acquire their shared rows in one order and
+	// cannot deadlock with each other.
+	//
+	// The lock is also what keeps the recounts in 8a correct. A vote or
+	// comment writer that has updated a subject's counts holds that row until
+	// it commits. Each recount is a separate READ COMMITTED statement after
+	// this wait, so its snapshot includes that writer's row; an UPDATE that
+	// waited instead would re-apply a tally from its earlier snapshot and drop
+	// the writer's vote or comment.
+	affectedURIs := append(append(append([]string{}, voteSubjectURIs...), commentRootURIs...), commentParentURIs...)
+	if _, err := tx.ExecContext(ctx, `
+		SELECT 1 FROM comments WHERE uri = ANY($1) OR commenter_did = $2 ORDER BY uri FOR NO KEY UPDATE`,
+		pq.Array(affectedURIs), did); err != nil {
+		return fmt.Errorf("failed to lock erasure comments for did=%s: %w", did, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		SELECT 1 FROM posts WHERE uri = ANY($1) OR author_did = $2 ORDER BY uri FOR NO KEY UPDATE`,
+		pq.Array(affectedURIs), did); err != nil {
+		return fmt.Errorf("failed to lock erasure posts for did=%s: %w", did, err)
+	}
+
 	// 7. Delete comments (explicit DELETE)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM comments WHERE commenter_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete comments for did=%s: %w", did, err)
@@ -467,6 +512,50 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	// 8. Delete votes (explicit DELETE - FK constraint removed in migration 014)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM votes WHERE voter_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
+	}
+
+	// 8a. Recount the subjects of the deleted comments and votes. Their rows
+	// were locked in 7b, so each recount takes its snapshot after any vote or
+	// comment writer that held them has committed.
+	if len(voteSubjectURIs) > 0 {
+		// Same shape as migration 040: live votes only, bridged terms kept.
+		for _, table := range []string{"posts", "comments"} {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE `+table+` AS s
+				SET upvote_count = tally.upvotes,
+				    downvote_count = tally.downvotes,
+				    score = tally.upvotes - tally.downvotes + s.bridged_upvote_count - s.bridged_downvote_count
+				FROM (
+					SELECT t.uri,
+					       COUNT(v.uri) FILTER (WHERE v.direction = 'up')   AS upvotes,
+					       COUNT(v.uri) FILTER (WHERE v.direction = 'down') AS downvotes
+					FROM `+table+` t
+					LEFT JOIN votes v ON v.subject_uri = t.uri AND v.deleted_at IS NULL
+					WHERE t.uri = ANY($1)
+					GROUP BY t.uri
+				) AS tally
+				WHERE s.uri = tally.uri`, pq.Array(voteSubjectURIs)); err != nil {
+				return fmt.Errorf("failed to recount %s votes for did=%s: %w", table, did, err)
+			}
+		}
+	}
+	// comment_count and reply_count include soft-deleted comments, matching the
+	// post and comment consumers' reconcile.
+	if len(commentRootURIs) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE posts AS p
+			SET comment_count = (SELECT COUNT(*) FROM comments c WHERE c.root_uri = p.uri)
+			WHERE p.uri = ANY($1)`, pq.Array(commentRootURIs)); err != nil {
+			return fmt.Errorf("failed to recount post comment counts for did=%s: %w", did, err)
+		}
+	}
+	if len(commentParentURIs) > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE comments AS p
+			SET reply_count = (SELECT COUNT(*) FROM comments c WHERE c.parent_uri = p.uri)
+			WHERE p.uri = ANY($1)`, pq.Array(commentParentURIs)); err != nil {
+			return fmt.Errorf("failed to recount comment reply counts for did=%s: %w", did, err)
+		}
 	}
 
 	// 9. Delete the admission rows for this author's posts.
@@ -542,6 +631,25 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	}
 
 	return nil
+}
+
+// queryStringColumn runs a single-column query with did as $1 and returns
+// the values.
+func queryStringColumn(ctx context.Context, tx *sql.Tx, query, did string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, did)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var values []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
 }
 
 // UpdateProfile updates a user's profile fields (display name, description, avatar, banner, origin).

@@ -214,7 +214,7 @@ func TestUserRepo_Delete_NotificationGroupUpsertAfterContentLock(t *testing.T) {
 	require.NoError(t, err)
 	results := make(chan error, 1)
 	go func() { results <- NewUserRepository(db).Delete(ctx, recipientDID) }()
-	notificationRaceBlockedDelete(t, db, ctx, transactionProcessID, "DELETE FROM posts")
+	notificationRaceBlockedDelete(t, db, ctx, transactionProcessID, "FROM posts WHERE")
 	notificationRaceRequirePending(t, results)
 
 	_, upsertError := transaction.ExecContext(ctx, `
