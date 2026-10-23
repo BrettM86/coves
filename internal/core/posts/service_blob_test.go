@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"Coves/internal/api/middleware"
@@ -66,6 +67,9 @@ type blobFixture struct {
 
 	// origin serves the images the "remote page" offers as its thumbnail.
 	origin *imageOrigin
+
+	// unfurl is what the "remote page" unfurls to; tests may adjust it.
+	unfurl *scriptedUnfurl
 }
 
 // imageOrigin is the remote host a thumbnail is fetched from — the untrusted
@@ -101,15 +105,22 @@ func (o *imageOrigin) thumbnailURL() string { return o.server.URL + "/thumb.png"
 // is only that a thumbnail URL reaches the blob service.
 type scriptedUnfurl struct {
 	thumbnailURL string
+
+	// description overrides the unfurled description when non-empty.
+	description string
 }
 
 func (s *scriptedUnfurl) IsSupported(string) bool { return true }
 
 func (s *scriptedUnfurl) UnfurlURL(context.Context, string) (*unfurl.UnfurlResult, error) {
+	description := "unfurled"
+	if s.description != "" {
+		description = s.description
+	}
 	return &unfurl.UnfurlResult{
 		Type:         "article",
 		Title:        "An article with a picture",
-		Description:  "unfurled",
+		Description:  description,
 		ThumbnailURL: s.thumbnailURL,
 		Provider:     "example",
 		Domain:       "example.com",
@@ -121,17 +132,19 @@ func newBlobFixture(t *testing.T) *blobFixture {
 
 	base := newPostFixture(t)
 	origin := newImageOrigin(t)
+	scripted := &scriptedUnfurl{thumbnailURL: origin.thumbnailURL()}
 
 	return &blobFixture{
 		base:   base,
 		origin: origin,
+		unfurl: scripted,
 		service: posts.NewPostService(
 			postgres.NewPostRepository(base.db), base.communityService,
 			nil, // aggregators
 			// The origin is an httptest server on loopback, which is exactly what
 			// the remote-fetch SSRF guard refuses. Production never passes this.
 			blobs.NewBlobService(base.pds.URL(), blobs.WithPrivateHostsAllowed()),
-			&scriptedUnfurl{thumbnailURL: origin.thumbnailURL()},
+			scripted,
 			nil, // bluesky
 			base.pds.URL(),
 			append(base.writePathOptions(),
@@ -321,6 +334,27 @@ func TestService_ThePostSurvivesAThumbnailOriginThatIsDown(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "An article with a picture", external["title"],
 		"the thumbnail failed, not the unfurl — the metadata that needed no fetch must survive")
+}
+
+func TestService_AnUnfurledDescriptionIsTruncatedToTheLexiconLimit(t *testing.T) {
+	t.Parallel()
+
+	// The unfurled description comes from an arbitrary third-party page. A
+	// 50,000-character og:description must reach the signed record cut to the
+	// lexicon's 1000 graphemes, not verbatim.
+	f := newBlobFixture(t)
+	f.unfurl.description = strings.Repeat("a", 50000)
+
+	resp, err := f.postWithExternalEmbed(t, "a link whose page has an enormous description")
+	require.NoError(t, err)
+
+	record := f.base.author.GetRecord(t, posts.PostV2Collection, rkeyOf(t, resp.URI))
+	embed, ok := record.Value["embed"].(map[string]any)
+	require.True(t, ok)
+	external, ok := embed["external"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, strings.Repeat("a", 1000), external["description"],
+		"the unfurled description was signed without truncation to the lexicon limit")
 }
 
 // blobOwnerReadPath is the read-side half of the same question, and the half a

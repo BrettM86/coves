@@ -77,6 +77,9 @@ func validateEmbed(embed map[string]interface{}) error {
 			return NewValidationError("embed",
 				fmt.Sprintf("%s requires a non-empty 'external.uri' string", embedTypeExternal))
 		}
+		if err := validateExternalTextLimits(external); err != nil {
+			return err
+		}
 
 	case embedTypeImages:
 		images, ok := embed["images"].([]interface{})

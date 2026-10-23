@@ -800,16 +800,7 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 										// Enhance embed with fetched metadata (only if client didn't provide)
 										// Note: We respect client-provided values, even empty strings
 										// If client sends title="", we assume they want no title
-										if external["title"] == nil {
-											external["title"] = result.Title
-										}
-										if external["description"] == nil {
-											external["description"] = result.Description
-										}
-										// Always set metadata fields (provider, domain, type)
-										external["embedType"] = result.Type
-										external["provider"] = result.Provider
-										external["domain"] = result.Domain
+										mergeUnfurlMetadata(external, result)
 									}
 
 									// Upload thumbnail from unfurl if client didn't provide one
