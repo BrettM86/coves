@@ -100,29 +100,46 @@ func requireRejectedBeforeProvisioning(
 func TestCreateCommunity_RejectsADescriptionNoRecordShouldCarry(t *testing.T) {
 	t.Parallel()
 
-	t.Run("over three thousand characters", func(t *testing.T) {
-		t.Parallel()
-		req := aValidCreateRequest()
-		req.Description = strings.Repeat("a", 3001)
+	// The lexicon (social.coves.community.profile, create and update) caps the
+	// description at 1000 graphemes and 10000 bytes; both limits apply.
+	rejected := map[string]string{
+		"one grapheme over the 1000-grapheme limit": strings.Repeat("a", 1001),
+		// 401 family emoji: 401 graphemes but 10025 bytes.
+		"under 1000 graphemes but over 10000 bytes": strings.Repeat("\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466", 401),
+	}
+	for name, description := range rejected {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := aValidCreateRequest()
+			req.Description = description
 
-		err := requireRejectedBeforeProvisioning(t, req)
-		var validation *communities.ValidationError
-		require.ErrorAs(t, err, &validation,
-			"the description is written into an atProto record and echoed on every community page; "+
-				"the cap has to be refused here rather than discovered by the PDS")
-		assert.Equal(t, "description", validation.Field)
-	})
+			err := requireRejectedBeforeProvisioning(t, req)
+			var validation *communities.ValidationError
+			require.ErrorAs(t, err, &validation,
+				"the description is written into an atProto record and echoed on every community page; "+
+					"the cap has to be refused here rather than discovered by the PDS")
+			assert.Equal(t, "description", validation.Field)
+		})
+	}
 
-	t.Run("exactly three thousand characters is allowed through", func(t *testing.T) {
-		t.Parallel()
-		req := aValidCreateRequest()
-		req.Description = strings.Repeat("a", 3000)
-
+	accepted := map[string]string{
 		// An off-by-one in the cap would reject a description a client is
 		// entitled to send, and the client has no way to tell that from a real
 		// rule.
-		requireAcceptedBy(t, req, "description")
-	})
+		"exactly 1000 graphemes": strings.Repeat("a", 1000),
+		// 1000 four-byte graphemes: 4000 bytes, over the old 3000-byte cap
+		// but within both lexicon limits.
+		"1000 four-byte graphemes (4000 bytes)": strings.Repeat("\U0001F600", 1000),
+	}
+	for name, description := range accepted {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := aValidCreateRequest()
+			req.Description = description
+
+			requireAcceptedBy(t, req, "description")
+		})
+	}
 
 	t.Run("an empty description is allowed", func(t *testing.T) {
 		t.Parallel()

@@ -424,3 +424,40 @@ func TestCreateHandler_MalformedBody(t *testing.T) {
 		t.Fatalf("expected 400 for a malformed body, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// A visibility the lexicon does not define is the client's mistake, so it must
+// answer 400. The handler is driven with the REAL service, so this fails for
+// the real reason if the service's error is one the mapper does not recognise.
+// The service's PDS and provisioner are aimed at "://", which net/url refuses
+// before any socket is opened: a request that got past validation fails there,
+// and validation is never what answers. The repository is nil because
+// validation runs before any lookup.
+func TestCreateHandler_InvalidVisibilityIsABadRequest(t *testing.T) {
+	t.Parallel()
+
+	const unparseablePDSURL = "://"
+	service := communities.NewCommunityServiceWithPDSFactory(
+		nil, unparseablePDSURL, "did:web:coves.example", "coves.example",
+		communities.NewPDSAccountProvisioner("coves.example", unparseablePDSURL, communities.PrivateHostOptions(true)...),
+		nil, nil, communities.PrivateHostOptions(true)...)
+	handler := NewCreateHandler(service, nil)
+
+	encoded, err := json.Marshal(map[string]any{
+		"name":        "gardening",
+		"displayName": "Gardening",
+		"visibility":  "secret",
+	})
+	if err != nil {
+		t.Fatalf("encoding the request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create", bytes.NewReader(encoded))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:author"))
+
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for visibility \"secret\", got %d: %s", w.Code, w.Body.String())
+	}
+}

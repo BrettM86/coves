@@ -94,5 +94,7 @@ func IsConflict(err error) bool {
 
 // IsValidationError checks if error is a validation error
 func IsValidationError(err error) bool {
-	return coreerrors.IsValidationError(err) || errors.Is(err, ErrInvalidInput)
+	return coreerrors.IsValidationError(err) ||
+		errors.Is(err, ErrInvalidInput) ||
+		errors.Is(err, ErrInvalidVisibility)
 }

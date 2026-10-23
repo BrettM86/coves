@@ -22,6 +22,7 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/rivo/uniseg"
 )
 
 // Community handle validation regex (DNS-valid handle: name.community.instance.com)
@@ -475,6 +476,10 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 
 	if req.UpdatedByDID == "" {
 		return nil, NewValidationError("updatedByDid", "required")
+	}
+
+	if err := validateUpdateRequest(req); err != nil {
+		return nil, err
 	}
 
 	// Get existing community
@@ -1394,13 +1399,13 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 		return NewValidationError("name", `must not start with "c-" (reserved prefix for community handles)`)
 	}
 
-	if req.Description != "" && len(req.Description) > 3000 {
-		return NewValidationError("description", "must be 3000 characters or less")
+	if err := validateDescription(req.Description); err != nil {
+		return err
 	}
 
 	// Visibility should already be set with default in CreateCommunity
-	if req.Visibility != "public" && req.Visibility != "unlisted" && req.Visibility != "private" {
-		return ErrInvalidVisibility
+	if err := validateVisibility(req.Visibility); err != nil {
+		return err
 	}
 
 	if req.CreatedByDID == "" {
@@ -1410,6 +1415,60 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 	// hostedByDID is auto-populated by the service layer, no validation needed
 	// The handler ensures clients cannot provide this field
 
+	return nil
+}
+
+// Description limits from the social.coves.community.profile, create and update lexicons.
+const (
+	maxDescriptionGraphemes = 1000
+	maxDescriptionBytes     = 10000
+)
+
+// validateDescription enforces the lexicon's description limits, shared by create and update.
+func validateDescription(description string) error {
+	if len(description) > maxDescriptionBytes || uniseg.GraphemeClusterCount(description) > maxDescriptionGraphemes {
+		return NewValidationError("description", "must be 1000 characters (10000 bytes) or less")
+	}
+	return nil
+}
+
+// validateVisibility accepts only the values the communities table's CHECK constraint allows.
+func validateVisibility(visibility string) error {
+	switch visibility {
+	case "public", "unlisted", "private":
+		return nil
+	}
+	return ErrInvalidVisibility
+}
+
+// validateModerationType accepts only the values the communities table's CHECK constraint allows.
+func validateModerationType(moderationType string) error {
+	switch moderationType {
+	case "moderator", "sortition":
+		return nil
+	}
+	return NewValidationError("moderationType", "must be one of: moderator, sortition")
+}
+
+// validateUpdateRequest checks the client-supplied fields of an update before
+// anything is written to the PDS; a value the consumer cannot store would
+// otherwise reach the record and dead-letter on the database constraints.
+func validateUpdateRequest(req UpdateCommunityRequest) error {
+	if req.Description != nil {
+		if err := validateDescription(*req.Description); err != nil {
+			return err
+		}
+	}
+	if req.Visibility != nil {
+		if err := validateVisibility(*req.Visibility); err != nil {
+			return err
+		}
+	}
+	if req.ModerationType != nil {
+		if err := validateModerationType(*req.ModerationType); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
