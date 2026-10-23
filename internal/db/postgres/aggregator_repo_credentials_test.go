@@ -847,13 +847,9 @@ func TestAggregatorRepo_GetAggregatorCredentials(t *testing.T) {
 }
 
 // TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh covers the query the
-// hourly background job runs, and pins the reason that job currently does far
-// more work than it was written to do.
-//
-// Three of the four WHERE predicates work: an aggregator with no key, with a
-// revoked key, or with no recorded expiry is correctly left out. The fourth,
-// `oauth_token_expires_at <= NOW() + $1`, does not — see the buffer subtest and
-// the KNOWN DEFECT note on the function.
+// hourly background job runs: an aggregator with no key, with a revoked key,
+// or with no recorded expiry is left out, and of the rest only those whose
+// token lapses within expiryBuffer of now are listed.
 func TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -917,9 +913,9 @@ func TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh(t *testing.T) {
 			"no recorded expiry means no evidence the token is near lapsing")
 	})
 
-	// The window at its one working setting. With a zero buffer the query means
-	// "already expired", and that is the boundary from the exclusive side: a
-	// token good for another half hour must not appear.
+	// With a zero buffer the query means "already expired", and that is the
+	// boundary from the exclusive side: a token good for another half hour must
+	// not appear.
 	t.Run("a zero buffer selects only tokens that have already lapsed", func(t *testing.T) {
 		t.Parallel()
 		cohort := seed(t)
@@ -934,45 +930,23 @@ func TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh(t *testing.T) {
 		assert.NotContains(t, listed, cohort.distant)
 	})
 
-	// KNOWN DEFECT (issue 2026-07-31-token-refresh-window-nanoseconds-as-seconds.md),
-	// pinned. expiryBuffer is a time.Duration, which database/sql
-	// hands to the driver as its int64 NANOSECOND count, which Postgres then
-	// coerces to an interval measured in SECONDS. The window is therefore a
-	// billion times wider than the caller asked for: cmd/server passes
-	// tokenRefreshExpiryBuffer = time.Hour, which arrives as 3.6e12 seconds —
-	// roughly 114,000 years. Every aggregator with an active key and any
-	// recorded expiry is selected, so the hourly job decrypts every stored
-	// access token, refresh token and DPoP private key in the table on every
-	// cycle before discarding almost all of them in RefreshTokensIfNeeded's own
-	// Go-side expiry check.
-	t.Run("the buffer is read as seconds, so a one-hour window spans millennia", func(t *testing.T) {
+	// The production setting: cmd/server passes a one-hour buffer.
+	t.Run("a one-hour buffer selects tokens lapsing within the hour and no later", func(t *testing.T) {
 		t.Parallel()
 		cohort := seed(t)
+		twoHours, _ := aggregatorWithAPIKey(t, cohort.repo, "twohours", time.Now().Add(2*time.Hour))
 
-		// The value the production job actually passes.
 		due, err := cohort.repo.ListAggregatorsNeedingTokenRefresh(ctx, time.Hour)
 		require.NoError(t, err)
 		listed := didsOf(due)
 
 		assert.Contains(t, listed, cohort.expired)
-		assert.Contains(t, listed, cohort.soon)
-		assert.Contains(t, listed, cohort.distant,
-			"IF THIS FAILED (issue 2026-07-31-token-refresh-window-nanoseconds-as-seconds.md) the defect is FIXED — delete this pin. A token that does not lapse for "+
-				"three days is outside a one-hour refresh window and must not be listed. It is listed "+
-				"because `NOW() + $1` binds the Duration as a nanosecond COUNT and Postgres reads that "+
-				"count as seconds; binding make_interval(secs => $1.Seconds()) would fix it")
-
-		// The scale error stated so it cannot be mistaken for an off-by-one:
-		// the window the caller MEANT by time.Hour is the one produced by a
-		// Duration of 3600 NANOseconds — one billionth of it.
-		asIntended, err := cohort.repo.ListAggregatorsNeedingTokenRefresh(ctx, 3600*time.Nanosecond)
-		require.NoError(t, err)
-		intended := didsOf(asIntended)
-		assert.Contains(t, intended, cohort.expired)
-		assert.Contains(t, intended, cohort.soon,
-			"IF THIS FAILED (issue 2026-07-31-token-refresh-window-nanoseconds-as-seconds.md) the defect is FIXED — delete this pin. 3600 nanoseconds is not an hour, "+
-				"and only the seconds misreading makes it behave like one")
-		assert.NotContains(t, intended, cohort.distant)
+		assert.Contains(t, listed, cohort.soon,
+			"a token with thirty minutes left is inside a one-hour window")
+		assert.NotContains(t, listed, cohort.distant,
+			"a token that does not lapse for three days is outside a one-hour refresh window")
+		assert.NotContains(t, listed, twoHours,
+			"a token that does not lapse for two hours is outside a one-hour refresh window")
 	})
 
 	t.Run("carries the decrypted session the refresh needs", func(t *testing.T) {

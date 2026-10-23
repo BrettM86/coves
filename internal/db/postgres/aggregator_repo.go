@@ -1236,17 +1236,6 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 // ListAggregatorsNeedingTokenRefresh returns aggregators with active API keys
 // whose OAuth tokens expire within the given buffer period.
 // Used by background job to proactively refresh tokens before they expire.
-//
-// KNOWN DEFECT (issue 2026-07-31-token-refresh-window-nanoseconds-as-seconds.md): the expiry window is a billion times wider than the caller asks for, so
-// this returns every aggregator with an active key and any recorded expiry. expiryBuffer
-// is a time.Duration, which database/sql passes to the driver as its int64 NANOSECOND
-// count; `NOW() + $1` then makes Postgres coerce that bare integer to an interval measured
-// in SECONDS. cmd/server passes time.Hour, which arrives as 3.6e12 seconds (~114,000
-// years). The hourly job therefore decrypts every stored access token, refresh token and
-// DPoP private key in the table on every cycle before RefreshTokensIfNeeded discards
-// almost all of them in its own Go-side expiry check. Binding
-// make_interval(secs => $1) with the buffer in seconds would fix it.
-// (see TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh)
 func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*aggregators.AggregatorCredentials, error) {
 	query := `
 		SELECT
@@ -1261,9 +1250,9 @@ func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.
 		WHERE api_key_hash IS NOT NULL
 			AND api_key_revoked_at IS NULL
 			AND oauth_token_expires_at IS NOT NULL
-			AND oauth_token_expires_at <= NOW() + $1`
+			AND oauth_token_expires_at <= NOW() + make_interval(secs => $1)`
 
-	rows, err := r.db.QueryContext(ctx, query, expiryBuffer)
+	rows, err := r.db.QueryContext(ctx, query, expiryBuffer.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list aggregators needing token refresh: %w", err)
 	}
