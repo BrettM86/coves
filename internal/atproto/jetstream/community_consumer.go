@@ -1873,7 +1873,7 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		UserDID:           userDID,
 		CommunityDID:      communityDID,
 		ContentVisibility: contentVisibility,
-		SubscribedAt:      utils.ParseCreatedAt(commit.Record),
+		SubscribedAt:      utils.ParseCreatedAt(commit.Record, uri),
 		RecordURI:         uri,
 		RecordCID:         commit.CID,
 	}
@@ -1993,7 +1993,7 @@ func (c *CommunityEventConsumer) createBlock(ctx context.Context, userDID string
 	block := &communities.CommunityBlock{
 		UserDID:      userDID,
 		CommunityDID: communityDID,
-		BlockedAt:    utils.ParseCreatedAt(commit.Record),
+		BlockedAt:    utils.ParseCreatedAt(commit.Record, uri),
 		RecordURI:    uri,
 		RecordCID:    commit.CID,
 	}

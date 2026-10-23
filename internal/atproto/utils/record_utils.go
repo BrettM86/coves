@@ -2,6 +2,7 @@ package utils
 
 import (
 	"database/sql"
+	"log"
 	"strings"
 	"time"
 )
@@ -47,7 +48,9 @@ func StringFromNull(ns sql.NullString) string {
 // ParseCreatedAt extracts and parses the createdAt timestamp from an atProto record
 // Falls back to time.Now() if the field is missing or invalid
 // This preserves chronological ordering during Jetstream replays and backfills
-func ParseCreatedAt(record map[string]interface{}) time.Time {
+// A present createdAt goes through ParseRecordCreatedAt, so future timestamps
+// are clamped to now. uri names the record in any warning.
+func ParseCreatedAt(record map[string]interface{}, uri string) time.Time {
 	if record == nil {
 		return time.Now()
 	}
@@ -57,12 +60,26 @@ func ParseCreatedAt(record map[string]interface{}) time.Time {
 		return time.Now()
 	}
 
-	// atProto uses RFC3339 format for datetime fields
-	createdAt, err := time.Parse(time.RFC3339, createdAtStr)
+	return ParseRecordCreatedAt(createdAtStr, uri)
+}
+
+// ParseRecordCreatedAt reads an indexed record's author-supplied createdAt,
+// falling back to now when it does not parse.
+//
+// SECURITY: future timestamps are clamped to now. created_at-class fields drive
+// orderings such as the "new" sort, the hot-rank age, and subscribed_at/blocked_at
+// DESC lists, so a record asserting a future date (hostile or clock-skewed
+// federated repo) could otherwise pin itself to the top of those orderings
+// until wall-clock catches up.
+func ParseRecordCreatedAt(raw, uri string) time.Time {
+	createdAt, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		// Fallback to now if parsing fails
+		log.Printf("Warning: Failed to parse createdAt timestamp for %s, using current time: %v", uri, err)
 		return time.Now()
 	}
-
+	if now := time.Now(); createdAt.After(now) {
+		log.Printf("Warning: record %s has future createdAt %s, clamping to now", uri, raw)
+		return now
+	}
 	return createdAt
 }

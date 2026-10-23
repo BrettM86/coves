@@ -18,6 +18,7 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 
@@ -997,7 +998,7 @@ type authorPostInsert struct {
 // insertAuthorPost indexes a post the AppView has never held. It reports
 // whether the write applied — false means the rev gate refused the event.
 func (c *PostEventConsumer) insertAuthorPost(ctx context.Context, in authorPostInsert) (bool, error) {
-	createdAt := parseRecordCreatedAt(in.record.CreatedAt, in.uri)
+	createdAt := utils.ParseRecordCreatedAt(in.record.CreatedAt, in.uri)
 
 	post := &posts.Post{
 		URI:  in.uri,

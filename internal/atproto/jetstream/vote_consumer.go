@@ -163,7 +163,7 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 
 	// A future createdAt is clamped to now, as the post and comment consumers
 	// do, so neither the stored vote nor the notification gates see it.
-	createdAt := parseRecordCreatedAt(voteRecord.CreatedAt, uri)
+	createdAt := utils.ParseRecordCreatedAt(voteRecord.CreatedAt, uri)
 
 	// Build vote entity
 	vote := &votes.Vote{

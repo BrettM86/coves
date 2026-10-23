@@ -236,7 +236,7 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	// Format: at://commenter_did/social.coves.community.comment/rkey
 	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
-	createdAt := parseRecordCreatedAt(commentRecord.CreatedAt, uri)
+	createdAt := utils.ParseRecordCreatedAt(commentRecord.CreatedAt, uri)
 
 	// Serialize optional JSON fields
 	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord, uri)

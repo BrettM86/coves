@@ -772,26 +772,6 @@ func serializePostContent(facets []interface{}, embed map[string]interface{}, la
 	return facetsJSON, embedJSON, labelsJSON, nil
 }
 
-// parseRecordCreatedAt reads an indexed record's author-supplied createdAt,
-// falling back to now when it does not parse.
-//
-// SECURITY: future timestamps are clamped to now. created_at drives the "new"
-// sort and the hot-rank age, so a record asserting a future date (hostile or
-// clock-skewed federated repo) could otherwise pin itself to the top of feeds
-// until wall-clock catches up.
-func parseRecordCreatedAt(raw, uri string) time.Time {
-	createdAt, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		log.Printf("Warning: Failed to parse createdAt timestamp for %s, using current time: %v", uri, err)
-		return time.Now()
-	}
-	if now := time.Now(); createdAt.After(now) {
-		log.Printf("Warning: record %s has future createdAt %s, clamping to now", uri, raw)
-		return now
-	}
-	return createdAt
-}
-
 // WithPostMediaReconciler reconciles media blocks when a removed post is created or edited.
 func WithPostMediaReconciler(reconciler MediaReconciler) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.mediaReconciler = reconciler }

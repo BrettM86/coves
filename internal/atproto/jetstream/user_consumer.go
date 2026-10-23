@@ -722,7 +722,7 @@ func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string,
 	block := &userblocks.UserBlock{
 		BlockerDID: userDID,
 		BlockedDID: blockedDID,
-		BlockedAt:  utils.ParseCreatedAt(commit.Record),
+		BlockedAt:  utils.ParseCreatedAt(commit.Record, uri),
 		RecordURI:  uri,
 		RecordCID:  commit.CID,
 	}

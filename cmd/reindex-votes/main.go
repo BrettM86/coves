@@ -12,8 +12,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/posts"
 
 	_ "github.com/lib/pq"
@@ -232,11 +232,9 @@ func indexVote(ctx context.Context, db *sql.DB, voterDID string, record Record) 
 		return fmt.Errorf("invalid vote record: missing required fields")
 	}
 
-	// Parse created_at
-	createdAt, err := time.Parse(time.RFC3339, createdAtStr)
-	if err != nil {
-		createdAt = time.Now()
-	}
+	// Same parser as the Jetstream vote consumer: future timestamps clamp to now,
+	// and an unparseable value falls back to now with a warning naming the record.
+	createdAt := utils.ParseRecordCreatedAt(createdAtStr, record.URI)
 
 	// Extract rkey from URI (at://did/collection/rkey)
 	parts := strings.Split(record.URI, "/")

@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/aggregators"
 )
 
@@ -142,11 +143,7 @@ func (c *AggregatorEventConsumer) upsertAggregator(ctx context.Context, did stri
 	// Parse createdAt from service record
 	var createdAt time.Time
 	if service.CreatedAt != "" {
-		createdAt, err = time.Parse(time.RFC3339, service.CreatedAt)
-		if err != nil {
-			createdAt = time.Now() // Fallback
-			log.Printf("Warning: invalid createdAt format for aggregator %s: %v", did, err)
-		}
+		createdAt = utils.ParseRecordCreatedAt(service.CreatedAt, uri)
 	} else {
 		createdAt = time.Now()
 	}
@@ -232,11 +229,7 @@ func (c *AggregatorEventConsumer) upsertAuthorization(ctx context.Context, commu
 	// Parse createdAt from authorization record
 	var createdAt time.Time
 	if authRecord.CreatedAt != "" {
-		createdAt, err = time.Parse(time.RFC3339, authRecord.CreatedAt)
-		if err != nil {
-			createdAt = time.Now() // Fallback
-			log.Printf("Warning: invalid createdAt format for authorization %s: %v", uri, err)
-		}
+		createdAt = utils.ParseRecordCreatedAt(authRecord.CreatedAt, uri)
 	} else {
 		createdAt = time.Now()
 	}
