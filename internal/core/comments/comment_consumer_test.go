@@ -570,6 +570,51 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 			t.Errorf("Expected score preserved at 3, got %d", comment.Score)
 		}
 	})
+
+	t.Run("Lexicon-size multi-byte content is indexed on create and update", func(t *testing.T) {
+		rkey := testkit.TID()
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
+
+		// 9,999 graphemes of 7 bytes each ("e"/"o" plus three combining marks):
+		// within the lexicon's 10,000 graphemes and 100,000 bytes, but far over
+		// the 30,000-byte cap the consumer used to enforce.
+		createdContent := strings.Repeat("é̂̃", 9999)
+		updatedContent := strings.Repeat("ó̂̃", 9999)
+		require.Len(t, createdContent, 69993)
+		require.Len(t, updatedContent, 69993)
+
+		commentEvent := func(operation, cid, content string) *jetstream.JetstreamEvent {
+			return &jetstream.JetstreamEvent{
+				Did:  testUser.DID,
+				Kind: "commit",
+				Commit: &jetstream.CommitEvent{
+					Operation:  operation,
+					Collection: "social.coves.community.comment",
+					RKey:       rkey,
+					CID:        cid,
+					Record: map[string]interface{}{
+						"content": content,
+						"reply": map[string]interface{}{
+							"root":   map[string]interface{}{"uri": testPostURI, "cid": "bafypost"},
+							"parent": map[string]interface{}{"uri": testPostURI, "cid": "bafypost"},
+						},
+						"createdAt": time.Now().Format(time.RFC3339),
+					},
+				},
+			}
+		}
+
+		require.NoError(t, consumer.HandleEvent(ctx, commentEvent("create", "bafylongcreate", createdContent)))
+		comment, err := commentRepo.GetByURI(ctx, uri)
+		require.NoError(t, err)
+		assert.True(t, comment.Content == createdContent, "created comment content must be stored in full (got %d bytes)", len(comment.Content))
+
+		require.NoError(t, consumer.HandleEvent(ctx, commentEvent("update", "bafylongupdate", updatedContent)))
+		comment, err = commentRepo.GetByURI(ctx, uri)
+		require.NoError(t, err)
+		assert.True(t, comment.Content == updatedContent, "updated comment content must be stored in full (got %d bytes)", len(comment.Content))
+		assert.Equal(t, "bafylongupdate", comment.CID)
+	})
 }
 
 func TestCommentConsumer_DeleteComment(t *testing.T) {
@@ -899,7 +944,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 				RKey:       testkit.TID(),
 				CID:        "bafytoobig",
 				Record: map[string]interface{}{
-					"content": string(make([]byte, 30001)), // Exceeds 30000 byte limit
+					"content": string(make([]byte, 30001)), // Exceeds 10000 grapheme limit
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
 							"uri": testPostURI,

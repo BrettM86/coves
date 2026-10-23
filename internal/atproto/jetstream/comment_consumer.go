@@ -19,6 +19,7 @@ import (
 	"Coves/internal/core/richtext"
 
 	"github.com/lib/pq"
+	"github.com/rivo/uniseg"
 )
 
 // Constants for comment validation and processing
@@ -29,9 +30,11 @@ const (
 	// ATProtoScheme is the URI scheme for atProto AT-URIs
 	ATProtoScheme = "at://"
 
-	// MaxCommentContentBytes is the maximum allowed size for comment content
-	// Per lexicon: max 3000 graphemes, ~30000 bytes
-	MaxCommentContentBytes = 30000
+	// MaxCommentContentBytes is the comment content byte limit (lexicon maxLength)
+	MaxCommentContentBytes = 100000
+
+	// MaxCommentContentGraphemes is the comment content grapheme limit (lexicon maxGraphemes)
+	MaxCommentContentGraphemes = 10000
 )
 
 // CommentEventConsumer consumes comment-related events from Jetstream
@@ -1243,11 +1246,13 @@ func (c *CommentEventConsumer) validateCommentEvent(ctx context.Context, repoDID
 		return fmt.Errorf("%w: comment content is required", ErrPermanentEvent)
 	}
 
-	// Validate content length (defensive check - PDS should enforce this)
-	// Per lexicon: max 3000 graphemes, ~30000 bytes
-	// We check bytes as a simple defensive measure
+	// Validate content length against the lexicon (defensive check - PDS should enforce this).
+	// The byte check runs first so oversized content is rejected before grapheme counting.
 	if len(comment.Content) > MaxCommentContentBytes {
 		return fmt.Errorf("%w: comment content exceeds maximum length (%d bytes): got %d bytes", ErrPermanentEvent, MaxCommentContentBytes, len(comment.Content))
+	}
+	if graphemes := uniseg.GraphemeClusterCount(comment.Content); graphemes > MaxCommentContentGraphemes {
+		return fmt.Errorf("%w: comment content exceeds maximum length (%d graphemes): got %d graphemes", ErrPermanentEvent, MaxCommentContentGraphemes, graphemes)
 	}
 
 	// Validate reply references exist
