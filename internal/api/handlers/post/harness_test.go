@@ -76,6 +76,7 @@ func newCreateStack(t *testing.T, db *sql.DB) createStack {
 		nil, // no provisioner: no test here creates a community account
 		nil, // no PDS client factory
 		nil, // no blob service
+		nil, // no media pipeline
 		communities.PrivateHostOptions(true)...,
 	)
 

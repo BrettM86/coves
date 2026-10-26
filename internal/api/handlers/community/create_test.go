@@ -439,7 +439,7 @@ func TestCreateHandler_InvalidVisibilityIsABadRequest(t *testing.T) {
 	service := communities.NewCommunityServiceWithPDSFactory(
 		nil, unparseablePDSURL, "did:web:coves.example", "coves.example",
 		communities.NewPDSAccountProvisioner("coves.example", unparseablePDSURL, communities.PrivateHostOptions(true)...),
-		nil, nil, communities.PrivateHostOptions(true)...)
+		nil, nil, nil, communities.PrivateHostOptions(true)...)
 	handler := NewCreateHandler(service, nil)
 
 	encoded, err := json.Marshal(map[string]any{

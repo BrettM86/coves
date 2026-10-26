@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"
+
+	lexiconschemas "Coves/internal/atproto/lexicon"
 )
 
 const syntheticObjectRecordID = "social.coves.validation.syntheticObject"
@@ -35,6 +38,22 @@ func NewLexiconValidator(schemaPath string, strict bool) (*LexiconValidator, err
 		return nil, fmt.Errorf("failed to load lexicon schemas: %w", err)
 	}
 
+	return newLexiconValidator(catalog, strict), nil
+}
+
+// NewEmbeddedLexiconValidator creates a validator from the schemas compiled
+// into the binary, so it works whatever the process's working directory is.
+func NewEmbeddedLexiconValidator(strict bool) (*LexiconValidator, error) {
+	catalog := lexicon.NewBaseCatalog()
+
+	if err := catalog.LoadEmbedFS(lexiconschemas.Schemas); err != nil {
+		return nil, fmt.Errorf("failed to load embedded lexicon schemas: %w", err)
+	}
+
+	return newLexiconValidator(catalog, strict), nil
+}
+
+func newLexiconValidator(catalog *lexicon.BaseCatalog, strict bool) *LexiconValidator {
 	flags := lexicon.ValidateFlags(0)
 	if strict {
 		flags |= lexicon.StrictRecursiveValidation
@@ -45,34 +64,14 @@ func NewLexiconValidator(schemaPath string, strict bool) (*LexiconValidator, err
 	return &LexiconValidator{
 		catalog: catalog,
 		flags:   flags,
-	}, nil
+	}
 }
 
 // ValidateRecord validates a record against its schema
 func (v *LexiconValidator) ValidateRecord(recordData interface{}, recordType string) error {
-	// Convert to map if needed
-	var data map[string]interface{}
-
-	switch rd := recordData.(type) {
-	case map[string]interface{}:
-		data = rd
-	case []byte:
-		if err := json.Unmarshal(rd, &data); err != nil {
-			return fmt.Errorf("failed to parse JSON: %w", err)
-		}
-	case string:
-		if err := json.Unmarshal([]byte(rd), &data); err != nil {
-			return fmt.Errorf("failed to parse JSON: %w", err)
-		}
-	default:
-		// Try to marshal and unmarshal to convert struct to map
-		jsonBytes, err := json.Marshal(recordData)
-		if err != nil {
-			return fmt.Errorf("failed to convert record to JSON: %w", err)
-		}
-		if err := json.Unmarshal(jsonBytes, &data); err != nil {
-			return fmt.Errorf("failed to parse JSON: %w", err)
-		}
+	data, err := toAtprotoData(recordData)
+	if err != nil {
+		return err
 	}
 
 	// Ensure $type field matches recordType
@@ -81,6 +80,43 @@ func (v *LexiconValidator) ValidateRecord(recordData interface{}, recordType str
 	}
 
 	return lexicon.ValidateRecord(v.catalog, data, recordType, v.flags)
+}
+
+// ValidateObject validates an object (for example one member of a union, such
+// as an embed) against the schema definition ref names.
+func (v *LexiconValidator) ValidateObject(objectData interface{}, ref string) error {
+	data, err := toAtprotoData(objectData)
+	if err != nil {
+		return err
+	}
+	return ValidateData(v.catalog, data, ref, v.flags)
+}
+
+// toAtprotoData converts record data (a JSON document, a decoded JSON map or a
+// struct that marshals to one) into the atproto data model the lexicon
+// validator expects. A blob reference held as a plain JSON map
+// ({"$type":"blob","ref":{"$link":...},...}) only validates as a blob once it
+// has been parsed into atdata.Blob; the same goes for CID links and bytes.
+func toAtprotoData(recordData interface{}) (map[string]any, error) {
+	var encoded []byte
+	switch rd := recordData.(type) {
+	case []byte:
+		encoded = rd
+	case string:
+		encoded = []byte(rd)
+	default:
+		var err error
+		encoded, err = json.Marshal(recordData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert record to JSON: %w", err)
+		}
+	}
+
+	data, err := atdata.UnmarshalJSON(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse record data: %w", err)
+	}
+	return data, nil
 }
 
 // ValidateActorProfile validates an actor profile record

@@ -23,6 +23,16 @@ func allowAllBlockChecker() BlockChecker {
 	return blockCheckFunc(func(context.Context, string, string) (bool, error) { return false, nil })
 }
 
+type referenceCheckFunc func(context.Context, string, string) (bool, error)
+
+func (f referenceCheckFunc) HasActiveReference(ctx context.Context, did, cid string) (bool, error) {
+	return f(ctx, did, cid)
+}
+
+func allowAllReferences() ReferenceChecker {
+	return referenceCheckFunc(func(context.Context, string, string) (bool, error) { return true, nil })
+}
+
 // MockCache implements Cache for testing
 type MockCache struct {
 	mu       sync.Mutex
@@ -158,6 +168,7 @@ func (m *MockProcessor) Calls() int {
 // MockFetcher implements Fetcher for testing
 type MockFetcher struct {
 	returnData []byte
+	dataByCID  map[string][]byte
 	returnErr  error
 	calls      int
 	mu         sync.Mutex
@@ -177,6 +188,9 @@ func (m *MockFetcher) Fetch(ctx context.Context, pdsURL, did, cid string) ([]byt
 	if m.returnErr != nil {
 		return nil, m.returnErr
 	}
+	if m.dataByCID != nil {
+		return m.dataByCID[cid], nil
+	}
 	return m.returnData, nil
 }
 
@@ -189,7 +203,7 @@ func (m *MockFetcher) Calls() int {
 // mustNewService is a test helper that creates a service or fails the test
 func mustNewService(t *testing.T, cache Cache, processor Processor, fetcher Fetcher, config Config) *ImageProxyService {
 	t.Helper()
-	service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), config)
+	service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), allowAllReferences(), config)
 	if err != nil {
 		t.Fatalf("NewService failed: %v", err)
 	}
@@ -239,6 +253,7 @@ func TestImageProxyService_GetImage_CacheHit(t *testing.T) {
 func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 	cache := NewMockCache()
 	rawImageData := []byte("raw image from PDS")
+	cid := rawCIDForTest(t, rawImageData)
 	processedData := []byte("processed image")
 	processor := NewMockProcessor(processedData, nil)
 	fetcher := NewMockFetcher(rawImageData, nil)
@@ -247,7 +262,7 @@ func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
+	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -268,7 +283,7 @@ func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 	require.Equal(t, 1, cache.SetCalls(), "cache publication must finish before GetImage returns")
 
 	// Verify the correct data was cached
-	setData, found := cache.GetSetData("avatar", "did:plc:test123", "bafyreicid123")
+	setData, found := cache.GetSetData("avatar", "did:plc:test123", cid)
 	if !found {
 		t.Error("expected data to be set in cache")
 	}
@@ -316,7 +331,7 @@ func TestImageProxyService_GetImage_ProcessingError(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	_, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
+	_, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", rawCIDForTest(t, []byte("raw data")), resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrProcessingFailed) {
 		t.Errorf("expected ErrProcessingFailed, got: %v", err)
 	}
@@ -333,7 +348,7 @@ func TestImageProxyService_GetImage_CacheWriteCompletesBeforeReturn(t *testing.T
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
+	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", rawCIDForTest(t, rawImageData), resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -374,7 +389,7 @@ func TestImageProxyService_GetImage_AllPresets(t *testing.T) {
 			service := mustNewService(t, cache, processor, fetcher, config)
 			ctx := context.Background()
 
-			data, err := service.GetImageResolvingPDS(ctx, presetName, "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
+			data, err := service.GetImageResolvingPDS(ctx, presetName, "did:plc:test123", rawCIDForTest(t, []byte("raw data")), resolvedPDS("https://pds.example.com"))
 			if err != nil {
 				t.Errorf("expected no error for preset %s, got: %v", presetName, err)
 			}
@@ -392,28 +407,28 @@ func TestNewService_NilDependencies(t *testing.T) {
 	fetcher := NewMockFetcher(nil, nil)
 
 	t.Run("nil cache", func(t *testing.T) {
-		_, err := NewService(nil, processor, fetcher, allowAllBlockChecker(), config)
+		_, err := NewService(nil, processor, fetcher, allowAllBlockChecker(), allowAllReferences(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("nil processor", func(t *testing.T) {
-		_, err := NewService(cache, nil, fetcher, allowAllBlockChecker(), config)
+		_, err := NewService(cache, nil, fetcher, allowAllBlockChecker(), allowAllReferences(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("nil fetcher", func(t *testing.T) {
-		_, err := NewService(cache, processor, nil, allowAllBlockChecker(), config)
+		_, err := NewService(cache, processor, nil, allowAllBlockChecker(), allowAllReferences(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("all valid", func(t *testing.T) {
-		service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), config)
+		service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), allowAllReferences(), config)
 		if err != nil {
 			t.Errorf("expected no error with valid dependencies, got: %v", err)
 		}
@@ -423,7 +438,7 @@ func TestNewService_NilDependencies(t *testing.T) {
 	})
 
 	t.Run("nil block checker", func(t *testing.T) {
-		service, err := NewService(cache, processor, fetcher, nil, config)
+		service, err := NewService(cache, processor, fetcher, nil, allowAllReferences(), config)
 		assert.ErrorIs(t, err, ErrNilDependency)
 		assert.Nil(t, service)
 	})
@@ -591,7 +606,7 @@ func TestNewService_RejectsInvalidProcessingBudgets(t *testing.T) {
 			cfg := DefaultConfig()
 			tt.mutate(&cfg)
 
-			service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), cfg)
+			service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), allowAllReferences(), cfg)
 
 			if err == nil {
 				t.Fatalf("expected NewService to refuse the config with %v, got a service", tt.wantErr)
@@ -617,12 +632,18 @@ func TestImageProxyService_GetImage_ShedsLoadWhenProcessorSlotsAreFull(t *testin
 	processed := []byte("processed image")
 	processor := newBlockingProcessor(processed)
 	t.Cleanup(processor.Release)
-	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(2))
+	first := []byte("raw 1")
+	second := []byte("raw 2")
+	third := []byte("raw 3")
+	cids := []string{rawCIDForTest(t, first), rawCIDForTest(t, second), rawCIDForTest(t, third)}
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{cids[0]: first, cids[1]: second, cids[2]: third}
+	service := mustNewService(t, NewMockCache(), processor, fetcher, semaphoreTestConfig(2))
 
 	// Fill both slots. Distinct CIDs keep the calls from sharing a cache key.
 	held := []<-chan getImageResult{
-		callGetImageAsync(context.Background(), service, "bafyreicid001"),
-		callGetImageAsync(context.Background(), service, "bafyreicid002"),
+		callGetImageAsync(context.Background(), service, cids[0]),
+		callGetImageAsync(context.Background(), service, cids[1]),
 	}
 	processor.waitForEntries(t, 2, 5*time.Second)
 
@@ -633,11 +654,11 @@ func TestImageProxyService_GetImage_ShedsLoadWhenProcessorSlotsAreFull(t *testin
 	// it cannot flake on a slow machine.
 	refusalsBefore := ProcessorBusyRefusalCount()
 	startedAt := time.Now()
-	third := callGetImageAsync(context.Background(), service, "bafyreicid003")
+	thirdRequest := callGetImageAsync(context.Background(), service, cids[2])
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
-	case result := <-third:
+	case result := <-thirdRequest:
 		elapsed := time.Since(startedAt)
 		if result.err == nil {
 			t.Fatalf("expected the third GetImage to be refused, got %d bytes and no error", len(result.data))
@@ -701,16 +722,22 @@ func TestImageProxyService_GetImage_ShedsLoadWhenProcessorSlotsAreFull(t *testin
 func TestImageProxyService_GetImage_CancelledContextDoesNotWaitForSlot(t *testing.T) {
 	processor := newBlockingProcessor([]byte("processed image"))
 	t.Cleanup(processor.Release)
-	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(1))
+	heldPayload := []byte("raw")
+	cancelledPayload := []byte("raw cancelled")
+	heldCID := rawCIDForTest(t, heldPayload)
+	cancelledCID := rawCIDForTest(t, cancelledPayload)
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{heldCID: heldPayload, cancelledCID: cancelledPayload}
+	service := mustNewService(t, NewMockCache(), processor, fetcher, semaphoreTestConfig(1))
 
-	held := callGetImageAsync(context.Background(), service, "bafyreicid001")
+	held := callGetImageAsync(context.Background(), service, heldCID)
 	processor.waitForEntries(t, 1, 5*time.Second)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	refusalsBefore := ProcessorBusyRefusalCount()
-	second := callGetImageAsync(cancelled, service, "bafyreicid002")
+	second := callGetImageAsync(cancelled, service, cancelledCID)
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
@@ -754,14 +781,18 @@ func TestImageProxyService_GetImage_ReleasesSlotWhenProcessingFails(t *testing.T
 		{err: processingErr},
 		{data: processed},
 	}}
-	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(1))
+	first := []byte("raw failing")
+	second := []byte("raw succeeding")
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{rawCIDForTest(t, first): first, rawCIDForTest(t, second): second}
+	service := mustNewService(t, NewMockCache(), processor, fetcher, semaphoreTestConfig(1))
 
-	_, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", "bafyreicid001", resolvedPDS("https://pds.example.com"))
+	_, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", rawCIDForTest(t, first), resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrProcessingFailed) {
 		t.Fatalf("first GetImage: expected the scripted processing error, got: %v", err)
 	}
 
-	data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", "bafyreicid002", resolvedPDS("https://pds.example.com"))
+	data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", rawCIDForTest(t, second), resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("second GetImage: expected success once the failed call released its slot, got: %v", err)
 	}
@@ -800,16 +831,22 @@ func TestImageProxyService_GetImage_CallerDeadlineWhileWaitingIsNotBusy(t *testi
 	cfg := DefaultConfig()
 	cfg.MaxConcurrentProcesses = 1
 	cfg.ProcessQueueWait = 5 * time.Second
-	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), cfg)
+	heldPayload := []byte("raw")
+	deadlinePayload := []byte("raw deadline")
+	heldCID := rawCIDForTest(t, heldPayload)
+	deadlineCID := rawCIDForTest(t, deadlinePayload)
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{heldCID: heldPayload, deadlineCID: deadlinePayload}
+	service := mustNewService(t, NewMockCache(), processor, fetcher, cfg)
 
-	held := callGetImageAsync(context.Background(), service, "bafyreicid001")
+	held := callGetImageAsync(context.Background(), service, heldCID)
 	processor.waitForEntries(t, 1, 5*time.Second)
 
 	shortLived, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	refusalsBefore := ProcessorBusyRefusalCount()
-	second := callGetImageAsync(shortLived, service, "bafyreicid002")
+	second := callGetImageAsync(shortLived, service, deadlineCID)
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
@@ -885,9 +922,13 @@ func TestImageProxyService_GetImage_CancelledContextWithFreeSlotDoesNotProcess(t
 func TestImageProxyService_GetImage_ReleasesSlotAfterSuccess(t *testing.T) {
 	processed := []byte("processed image")
 	processor := NewMockProcessor(processed, nil)
-	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(1))
+	first := []byte("raw 1")
+	second := []byte("raw 2")
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{rawCIDForTest(t, first): first, rawCIDForTest(t, second): second}
+	service := mustNewService(t, NewMockCache(), processor, fetcher, semaphoreTestConfig(1))
 
-	for i, cid := range []string{"bafyreicid001", "bafyreicid002"} {
+	for i, cid := range []string{rawCIDForTest(t, first), rawCIDForTest(t, second)} {
 		data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 		if err != nil {
 			t.Fatalf("GetImage %d: expected success, got: %v", i+1, err)
@@ -910,6 +951,7 @@ type blockingFetcher struct {
 	release     chan struct{}
 	releaseOnce sync.Once
 	returnData  []byte
+	dataByCID   map[string][]byte
 
 	mu    sync.Mutex
 	calls int
@@ -923,13 +965,16 @@ func newBlockingFetcher(returnData []byte) *blockingFetcher {
 	}
 }
 
-func (b *blockingFetcher) Fetch(_ context.Context, _, _, _ string) ([]byte, error) {
+func (b *blockingFetcher) Fetch(_ context.Context, _, _, cid string) ([]byte, error) {
 	b.mu.Lock()
 	b.calls++
 	b.mu.Unlock()
 
 	b.entered <- struct{}{}
 	<-b.release
+	if b.dataByCID != nil {
+		return b.dataByCID[cid], nil
+	}
 	return b.returnData, nil
 }
 
@@ -975,19 +1020,23 @@ func admissionTestConfig(maxInFlight int) Config {
 // first (a slot may free up), and counts as a busy refusal.
 func TestImageProxyService_GetImage_ShedsLoadWhenInFlightCapIsFull(t *testing.T) {
 	processed := []byte("processed image")
-	fetcher := newBlockingFetcher([]byte("raw"))
+	first := []byte("raw 1")
+	second := []byte("raw 2")
+	thirdPayload := []byte("refused raw")
+	fetcher := newBlockingFetcher(nil)
+	fetcher.dataByCID = map[string][]byte{rawCIDForTest(t, first): first, rawCIDForTest(t, second): second, rawCIDForTest(t, thirdPayload): thirdPayload}
 	t.Cleanup(fetcher.Release)
 	service := mustNewService(t, NewMockCache(), NewMockProcessor(processed, nil), fetcher, admissionTestConfig(2))
 
 	held := []<-chan getImageResult{
-		callGetImageAsync(context.Background(), service, "bafyreicid001"),
-		callGetImageAsync(context.Background(), service, "bafyreicid002"),
+		callGetImageAsync(context.Background(), service, rawCIDForTest(t, first)),
+		callGetImageAsync(context.Background(), service, rawCIDForTest(t, second)),
 	}
 	fetcher.waitForEntries(t, 2, 5*time.Second)
 
 	refusalsBefore := ProcessorBusyRefusalCount()
 	startedAt := time.Now()
-	third := callGetImageAsync(context.Background(), service, "bafyreicid003")
+	third := callGetImageAsync(context.Background(), service, rawCIDForTest(t, thirdPayload))
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
@@ -1046,10 +1095,11 @@ func TestImageProxyService_GetImage_CacheHitBypassesAdmission(t *testing.T) {
 	cache.SetCacheData("avatar", "did:plc:test123", "bafyreicid002", cachedData)
 
 	fetcher := newBlockingFetcher([]byte("raw"))
+	heldCID := rawCIDForTest(t, []byte("raw"))
 	t.Cleanup(fetcher.Release)
 	service := mustNewService(t, cache, NewMockProcessor([]byte("processed"), nil), fetcher, admissionTestConfig(1))
 
-	held := callGetImageAsync(context.Background(), service, "bafyreicid001")
+	held := callGetImageAsync(context.Background(), service, heldCID)
 	fetcher.waitForEntries(t, 1, 5*time.Second)
 
 	warm := callGetImageAsync(context.Background(), service, "bafyreicid002")
@@ -1089,10 +1139,13 @@ func TestImageProxyService_GetImage_CacheHitBypassesAdmission(t *testing.T) {
 // handed its slot back when it finished.
 func TestImageProxyService_GetImage_ReleasesAdmissionAfterSuccess(t *testing.T) {
 	processed := []byte("processed image")
-	fetcher := NewMockFetcher([]byte("raw"), nil)
+	first := []byte("raw 1")
+	second := []byte("raw 2")
+	fetcher := NewMockFetcher(nil, nil)
+	fetcher.dataByCID = map[string][]byte{rawCIDForTest(t, first): first, rawCIDForTest(t, second): second}
 	service := mustNewService(t, NewMockCache(), NewMockProcessor(processed, nil), fetcher, admissionTestConfig(1))
 
-	for i, cid := range []string{"bafyreicid001", "bafyreicid002"} {
+	for i, cid := range []string{rawCIDForTest(t, first), rawCIDForTest(t, second)} {
 		data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 		if err != nil {
 			t.Fatalf("GetImage %d: expected success, got: %v", i+1, err)
@@ -1128,7 +1181,7 @@ func TestImageProxyService_GetImageResolvingPDS_ResolvesOnlyOnMiss(t *testing.T)
 		t.Fatalf("a cache hit resolved the DID %d times", resolutions)
 	}
 
-	if _, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreimissed", resolve); err != nil {
+	if _, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", rawCIDForTest(t, []byte("raw image from PDS")), resolve); err != nil {
 		t.Fatalf("cache miss: expected no error, got: %v", err)
 	}
 	if resolutions != 1 || fetcher.Calls() != 1 {

@@ -37,7 +37,7 @@ func hiddenReasonContentServer(t *testing.T, f *modlogFixture) *httptest.Server 
 	communityRepo := postgres.NewCommunityRepository(f.db, credentialciphertest.Fixed())
 	pdsURL := testkit.Endpoints().PDS.BaseURL
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, pdsURL, fixtures.InstanceDID(), "", nil, nil, nil,
+		communityRepo, pdsURL, fixtures.InstanceDID(), "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,

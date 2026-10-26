@@ -12,6 +12,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/media"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
@@ -86,6 +87,8 @@ func newCommunityServiceWithDatabase(t *testing.T) (
 	db := testkit.DB(t)
 	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	pdsServer := testkit.NewPDS(t)
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 2, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsServer.URL(),
@@ -93,7 +96,7 @@ func newCommunityServiceWithDatabase(t *testing.T) (
 		instanceDomain,
 		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
-		blobs.NewBlobService(pdsServer.URL(), blobs.PrivateHostOptions(true)...),
+		blobs.NewBlobService(pdsServer.URL(), blobs.PrivateHostOptions(true)...), pipeline,
 		communities.PrivateHostOptions(true)...,
 	)
 	return service, repo, pdsServer, db

@@ -443,3 +443,24 @@ func (s *APIKeyService) RefreshExpiringTokens(ctx context.Context, expiryBuffer 
 
 	return refreshed, errors
 }
+
+// StoredSession returns the aggregator's stored OAuth session (DefaultSessionID)
+// for a caller that authenticated with an API key or service JWT. It only
+// reads the store: tokens are refreshed by whoever later uses the session. A
+// missing row is reported as ErrOAuthSessionDead; any other store failure is
+// returned wrapped, without matching ErrOAuthSessionDead.
+func (s *APIKeyService) StoredSession(ctx context.Context, aggregatorDID string) (*oauth.ClientSessionData, error) {
+	did, err := syntax.ParseDID(aggregatorDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse aggregator DID: %w", err)
+	}
+
+	session, err := s.oauthApp.Store.GetSession(ctx, did, DefaultSessionID)
+	if errors.Is(err, covesoauth.ErrSessionNotFound) || (err == nil && session == nil) {
+		return nil, fmt.Errorf("loading stored session: %w", ErrOAuthSessionDead)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading stored session: %w", err)
+	}
+	return session, nil
+}

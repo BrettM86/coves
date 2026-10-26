@@ -3,10 +3,15 @@
 package jetstream
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,12 +40,35 @@ import (
 
 const editMediaIllegalReason = "social.coves.moderation.defs#reasonIllegalContent"
 
+var editMediaImageBlobs sync.Map // canonical CID -> PNG bytes served by the fake PDS
+
+type allowEditMediaReferences struct{}
+
+func (allowEditMediaReferences) HasActiveReference(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func editMediaImageBytes(label string) []byte {
+	image := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	for index, value := range sha256.Sum256([]byte(label)) {
+		image.SetRGBA(index, 0, color.RGBA{R: value, A: 255})
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
+
 func editMediaCID(label string) string {
-	digest, err := multihash.Sum([]byte(label), multihash.SHA2_256, -1)
+	data := editMediaImageBytes(label)
+	digest, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	if err != nil {
 		panic(err)
 	}
-	return cid.NewCidV1(cid.Raw, digest).String()
+	imageCID := cid.NewCidV1(cid.Raw, digest).String()
+	editMediaImageBlobs.Store(imageCID, data)
+	return imageCID
 }
 
 type editMediaPDS struct {
@@ -76,8 +104,13 @@ func (p *editMediaPDS) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	data, found := editMediaImageBlobs.Load(parsed.String())
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "image/png")
-	_, _ = w.Write(testkit.TestPNG(32, 32))
+	_, _ = w.Write(data.([]byte))
 }
 
 type editMediaResolver struct{ pdsURL string }
@@ -107,7 +140,12 @@ type editMediaHarness struct {
 	otherOwner string
 }
 
-func newEditMediaHarness(t *testing.T) *editMediaHarness {
+func newEditMediaHarness(t *testing.T, withBlobReferences ...bool) *editMediaHarness {
+	t.Helper()
+	return newEditMediaHarnessWithTargets(t, len(withBlobReferences) > 0 && withBlobReferences[0], nil)
+}
+
+func newEditMediaHarnessWithTargets(t *testing.T, withBlobReferences bool, targets func(*sql.DB) moderation.CDNPurgeTargets) *editMediaHarness {
 	t.Helper()
 	db := testkit.DB(t)
 	fixture := newPV2Fixture(t, db)
@@ -122,27 +160,43 @@ func newEditMediaHarness(t *testing.T) *editMediaHarness {
 	store := postgres.NewModerationRepository(db)
 	proxyService, err := imageproxy.NewService(cache, processor,
 		imageproxy.NewPDSFetcher(30*time.Second, 10, imageproxy.WithPrivateHostsAllowed()),
-		store, imageproxy.DefaultConfig())
+		store, allowEditMediaReferences{}, imageproxy.DefaultConfig())
 	require.NoError(t, err)
 	router := chi.NewRouter()
 	routes.RegisterImageProxyRoutes(router, imagehandler.NewHandler(proxyService, editMediaResolver{pdsURL: pdsServer.URL}))
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
-	reconciler := moderation.NewMediaReconciler(store, fixtures.InstanceDID(), proxyService)
+	var cdnTargets moderation.CDNPurgeTargets
+	var reconcilerOptions []moderation.MediaReconcilerOption
+	if targets != nil {
+		cdnTargets = targets(db)
+		reconcilerOptions = append(reconcilerOptions, moderation.WithCDNPurgeTargets(cdnTargets))
+	}
+	reconciler := moderation.NewMediaReconciler(store, fixtures.InstanceDID(), proxyService, reconcilerOptions...)
 	moderator := moderation.NewService(
 		moderation.NewRepositorySubjectReader(postgres.NewPostRepository(db), postgres.NewCommentRepository(db)),
 		store, moderation.Config{
 			InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour,
-			MaxLiveIdempotencyKeys: 1000, Purger: proxyService,
+			MaxLiveIdempotencyKeys: 1000, Purger: proxyService, CDNPurgeTargets: cdnTargets,
 		},
 	)
+	postOptions := []PostEventConsumerOption{
+		WithAdmissions(fixture.admissions), WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithPostMediaReconciler(reconciler),
+	}
+	if withBlobReferences {
+		postOptions = append(postOptions, WithPostBlobReferences(postgres.NewBlobReferenceRepository(db)))
+	}
+	commentOptions := []CommentEventConsumerOption{WithCommentMediaReconciler(reconciler)}
+	if withBlobReferences {
+		commentOptions = append(commentOptions, WithCommentBlobReferences(postgres.NewBlobReferenceRepository(db)))
+	}
 	return &editMediaHarness{
 		db: db, proxy: proxy, pds: pds, moderator: moderator, otherOwner: otherOwner,
 		posts: NewPostEventConsumer(postgres.NewPostRepository(db),
 			postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), fixture.users, db,
-			WithAdmissions(fixture.admissions), WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
-			WithPostMediaReconciler(reconciler)),
-		comments: NewCommentEventConsumer(postgres.NewCommentRepository(db), db, WithCommentMediaReconciler(reconciler)),
+			postOptions...),
+		comments: NewCommentEventConsumer(postgres.NewCommentRepository(db), db, commentOptions...),
 	}
 }
 
@@ -158,7 +212,7 @@ func (h *editMediaHarness) imageStatus(t *testing.T, owner, blobCID string) int 
 	require.NoError(t, err)
 	if response.StatusCode == http.StatusOK {
 		require.NotEmpty(t, body, "the image proxy must serve image bytes")
-		require.Equal(t, "image/jpeg", response.Header.Get("Content-Type"))
+		require.Equal(t, "image/png", response.Header.Get("Content-Type"))
 	}
 	return response.StatusCode
 }

@@ -9,7 +9,9 @@ import (
 	"log"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/identity"
+	"Coves/internal/core/blobreferences"
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
@@ -38,6 +40,9 @@ type PostEventConsumer struct {
 	// notifications writes mention notifications for newly indexed posts in
 	// the same transaction as the post. nil disables post notifications.
 	notifications notifications.Repository
+	// blobReferences tracks the blobs served from each indexed post embed.
+	// nil disables reference writes.
+	blobReferences blobreferences.Repository
 	// identityResolver is used only when relay scheduling delivers a post
 	// before its author's profile. The identity is admitted only when its PDS
 	// passes bridgeTrust.
@@ -85,6 +90,15 @@ func WithPostNotifications(repository notifications.Repository) PostEventConsume
 
 // NotificationsWired reports whether the consumer writes post mentions.
 func (c *PostEventConsumer) NotificationsWired() bool { return c.notifications != nil }
+
+// WithPostBlobReferences installs the blob reference index the consumer writes
+// inside its indexing transaction.
+func WithPostBlobReferences(repository blobreferences.Repository) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.blobReferences = repository }
+}
+
+// BlobReferencesWired reports whether the consumer writes blob references.
+func (c *PostEventConsumer) BlobReferencesWired() bool { return c.blobReferences != nil }
 
 // NewPostEventConsumer creates a new Jetstream consumer for post events
 func NewPostEventConsumer(
@@ -228,6 +242,11 @@ func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, r
 		`UPDATE posts SET deleted_at = NOW() WHERE uri = $1 AND deleted_at IS NULL`, uri,
 	); err != nil {
 		return false, fmt.Errorf("failed to soft delete post: %w", err)
+	}
+	if c.blobReferences != nil {
+		if err := c.blobReferences.DeactivateSubjectTx(ctx, tx, uri); err != nil {
+			return false, fmt.Errorf("deactivate post blob references: %w", err)
+		}
 	}
 
 	if c.notifications != nil {
@@ -471,6 +490,11 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", in.uri)
 		return false, nil
 	}
+	if c.blobReferences != nil {
+		if err := c.replacePostBlobReferences(ctx, tx, in.authorDID, in.uri, in.embed); err != nil {
+			return false, err
+		}
+	}
 
 	if c.notifications != nil && !erased {
 		if err := c.writePostEditNotifications(ctx, tx, in, storedFacets, storedCreatedAt); err != nil {
@@ -619,6 +643,11 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 	if insertErr != nil {
 		return false, fmt.Errorf("failed to insert post: %w", insertErr)
 	}
+	if c.blobReferences != nil {
+		if err := c.replacePostBlobReferences(ctx, tx, post.AuthorDID, post.URI, embedJSON); err != nil {
+			return false, err
+		}
+	}
 
 	// 2. Reconcile comment_count for this newly inserted post
 	// In case any comments arrived out-of-order before this post was indexed
@@ -661,6 +690,21 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 	}
 
 	return true, nil
+}
+
+// replacePostBlobReferences extracts only the proxy-served references from the
+// serialized embed that was written to the post row in this transaction.
+func (c *PostEventConsumer) replacePostBlobReferences(ctx context.Context, tx *sql.Tx, ownerDID, subjectURI string, storedEmbed sql.NullString) error {
+	var embed map[string]interface{}
+	if storedEmbed.Valid {
+		if err := json.Unmarshal([]byte(storedEmbed.String), &embed); err != nil {
+			return fmt.Errorf("decode stored post embed: %w", err)
+		}
+	}
+	if err := c.blobReferences.ReplaceSubjectTx(ctx, tx, ownerDID, subjectURI, embedblobs.PostReferences(embed)); err != nil {
+		return fmt.Errorf("replace post blob references: %w", err)
+	}
+	return nil
 }
 
 // writePostCreateNotifications writes eligible mentions in the post insert transaction.

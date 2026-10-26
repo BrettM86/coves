@@ -239,6 +239,7 @@ services:
       PDS_PORT: 3001
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_BLOB_UPLOAD_LIMIT: 104857600  # 100 MB
       # Loopback, not the dev stack's http://plc-directory:3000 — see header.
       PDS_DID_PLC_URL: http://localhost:3002
       PDS_JWT_SECRET: local-dev-jwt-secret-change-in-production
@@ -294,6 +295,7 @@ services:
       PDS_PORT: 3011
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_BLOB_UPLOAD_LIMIT: 104857600  # 100 MB
       PDS_DID_PLC_URL: http://localhost:3002
       PDS_JWT_SECRET: local-dev-jwt-secret-pds2-change-in-production
       PDS_ADMIN_PASSWORD: admin

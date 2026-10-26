@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
@@ -201,6 +202,54 @@ func TestService_DeleteWithdrawsTheAcceptanceWithoutWaitingForTheFirehose(t *tes
 		assert.NotNilf(t, result.NotFound,
 			"post.get must answer #notFoundPost for a post its author deleted; got %#v", result)
 	})
+}
+
+// The same missing firehose event must not leave the deleted post's blob
+// references active: the delete path is the only thing that deactivates them.
+func TestService_DeleteDeactivatesBlobReferencesWithoutWaitingForTheFirehose(t *testing.T) {
+	t.Parallel()
+
+	f := newPostFixture(t)
+	ctx := context.Background()
+
+	created := f.createPost(t, f.author.DID, "a post with images", "its author will delete it")
+	f.indexTheCreate(t, created, "a post with images", "its author will delete it")
+
+	// The references the consumer wrote when it indexed the create's two images.
+	tx, err := f.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	require.NoError(t, postgres.NewBlobReferenceRepository(f.db).ReplaceSubjectTx(ctx, tx, f.author.DID, created.URI,
+		[]embedblobs.Reference{
+			{CID: "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", Kind: embedblobs.KindPostImage},
+			{CID: "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", Kind: embedblobs.KindPostImage},
+		}))
+	require.NoError(t, tx.Commit())
+
+	require.NoError(t, f.service.DeletePost(ctx, sessionFor(t, f.author, f.pds.URL()),
+		posts.DeletePostRequest{URI: created.URI}))
+
+	rows, err := f.db.QueryContext(ctx, `SELECT blob_cid, kind, active FROM blob_references
+		WHERE subject_uri = $1 ORDER BY blob_cid`, created.URI)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	type reference struct {
+		CID    string
+		Kind   string
+		Active bool
+	}
+	var got []reference
+	for rows.Next() {
+		var row reference
+		require.NoError(t, rows.Scan(&row.CID, &row.Kind, &row.Active))
+		got = append(got, row)
+	}
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []reference{
+		{CID: "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", Kind: "post_image", Active: false},
+		{CID: "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", Kind: "post_image", Active: false},
+	}, got, "a delete with no firehose event must deactivate the post's blob references")
+	assert.NotNil(t, f.rawIndexedRow(t, created.URI).DeletedAt, "the indexed row must be soft-deleted")
 }
 
 // ---------------------------------------------------------------------------

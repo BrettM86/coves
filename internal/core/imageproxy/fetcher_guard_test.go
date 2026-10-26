@@ -2,6 +2,7 @@ package imageproxy
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -71,6 +72,115 @@ func newCountingPDS(t *testing.T) *countingPDS {
 	}))
 	t.Cleanup(pds.server.Close)
 	return pds
+}
+
+type recordingPDSResolver struct {
+	host  string
+	ip    net.IP
+	asked []string
+}
+
+func (r *recordingPDSResolver) lookup(_ context.Context, host string) ([]net.IP, error) {
+	r.asked = append(r.asked, host)
+	if host != r.host {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	return []net.IP{r.ip}, nil
+}
+
+// TestPDSFetcher_Fetch_RefusesAHostnameResolvingToAPrivateAddress pins hostname
+// classification through the fetcher's own guarded client and blocked-error mapping.
+func TestPDSFetcher_Fetch_RefusesAHostnameResolvingToAPrivateAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ip   string
+	}{
+		{"loopback", "127.0.0.1"},
+		{"link-local IPv4", "169.254.169.254"},
+		{"link-local IPv6", "fe80::1"},
+		{"RFC1918 10", "10.0.0.1"},
+		{"RFC1918 172", "172.16.0.1"},
+		{"RFC1918 192", "192.168.1.1"},
+		{"ULA fc", "fc00::1"},
+		{"ULA fd", "fd00::1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pds := newCountingPDS(t)
+			ip := net.ParseIP(tt.ip)
+			require.NotNil(t, ip, "the resolver answer must be a valid IP")
+			resolver := &recordingPDSResolver{host: "pds.private.test", ip: ip}
+			fetcher := NewPDSFetcher(5*time.Second, 10,
+				withTransportOptions(covesoauth.WithHostResolver(resolver.lookup)))
+			pdsURL := "http://pds.private.test:" + strconv.Itoa(pds.server.Listener.Addr().(*net.TCPAddr).Port)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err := fetcher.Fetch(ctx, pdsURL, "did:plc:test123", "bafyreicid123")
+
+			require.Equal(t, []string{"pds.private.test"}, resolver.asked, "the fetcher's client must use the injected resolver")
+			assert.ErrorIs(t, err, ErrPDSBlocked)
+			assert.NotErrorIs(t, err, ErrPDSNotFound)
+			assert.NotErrorIs(t, err, ErrPDSTimeout)
+			assert.NotErrorIs(t, err, ErrPDSFetchFailed)
+			assert.Zero(t, pds.requests.Load(), "the refused hostname must not reach the listener")
+		})
+	}
+}
+
+type redirectingPDSRoundTripper struct {
+	original       http.RoundTripper
+	location       string
+	hopOneAnswers  int
+	delegatedHosts []string
+}
+
+func (r *redirectingPDSRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() == "pds.public.test" {
+		r.hopOneAnswers++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": {r.location}},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	}
+	r.delegatedHosts = append(r.delegatedHosts, req.URL.Hostname())
+	return r.original.RoundTrip(req)
+}
+
+// TestPDSFetcher_Fetch_DoesNotFollowARedirectToAPrivateAddress pins the fetcher's
+// client wiring and blocked-error mapping across a redirected hostname hop.
+func TestPDSFetcher_Fetch_DoesNotFollowARedirectToAPrivateAddress(t *testing.T) {
+	t.Parallel()
+
+	pds := newCountingPDS(t)
+	ip := net.ParseIP("127.0.0.1")
+	require.NotNil(t, ip, "the resolver answer must be a valid IP")
+	resolver := &recordingPDSResolver{host: "internal.test", ip: ip}
+	fetcher := NewPDSFetcher(5*time.Second, 10,
+		withTransportOptions(covesoauth.WithHostResolver(resolver.lookup)))
+	redirect := &redirectingPDSRoundTripper{
+		original: fetcher.client.Transport,
+		location: "http://internal.test:" + strconv.Itoa(pds.server.Listener.Addr().(*net.TCPAddr).Port) +
+			"/xrpc/com.atproto.sync.getBlob?did=did:plc:test123&cid=bafyreicid123",
+	}
+	fetcher.client.Transport = redirect
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := fetcher.Fetch(ctx, "https://pds.public.test", "did:plc:test123", "bafyreicid123")
+
+	require.Equal(t, []string{"internal.test"}, resolver.asked, "the redirected host must use the injected resolver")
+	assert.Equal(t, 1, redirect.hopOneAnswers)
+	assert.Equal(t, []string{"internal.test"}, redirect.delegatedHosts)
+	assert.ErrorIs(t, err, ErrPDSBlocked)
+	assert.Zero(t, pds.requests.Load(), "the redirect must be refused before reaching the listener")
 }
 
 // TestPDSFetcher_Fetch_RefusesAPrivateAddressWithoutReachingIt is the binding
@@ -540,7 +650,7 @@ func TestImageProxyService_GetImage_RefusesAPrivateAddressOnAColdCache(t *testin
 			"ever calling the fetcher and this whole case would pass without exercising the guard",
 		preset, did, cid)
 
-	service, err := NewService(cache, newTestProcessor(t), NewPDSFetcher(5*time.Second, 10), allowAllBlockChecker(), Config{
+	service, err := NewService(cache, newTestProcessor(t), NewPDSFetcher(5*time.Second, 10), allowAllBlockChecker(), allowAllReferences(), Config{
 		Enabled:                true,
 		CachePath:              t.TempDir(),
 		CacheMaxGB:             1,

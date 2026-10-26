@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/db/migrations"
 
 	"github.com/lib/pq"
@@ -429,15 +431,16 @@ func lockName(shared bool) string {
 // ---------------------------------------------------------------------------
 
 var migrationsHashOnce = sync.OnceValues(func() (string, error) {
-	return HashMigrations(migrations.FS)
+	return HashTemplateInputs(migrations.FS, migrations.GoSourceFS, embedblobs.SourceFS)
 })
 
-// MigrationsHash fingerprints the AppView's embedded migration set.
+// MigrationsHash fingerprints the embedded SQL migrations, Go migration sources,
+// and blob extractor sources that determine the test template's contents.
 //
 // The template is stamped with this value, and a mismatch means the template
-// predates a migration and must be rebuilt. Hashing the embedded FS rather than
-// a directory on disk means the answer is identical from the host, from the CI
-// runner, and from any working directory.
+// predates a migration or extractor change and must be rebuilt. Hashing the
+// embedded filesystems rather than directories on disk means the answer is
+// identical from the host, from the CI runner, and from any working directory.
 func MigrationsHash() (string, error) {
 	return migrationsHashOnce()
 }
@@ -461,19 +464,60 @@ func HashMigrations(fsys fs.FS) (string, error) {
 		if readErr != nil {
 			return readErr
 		}
-		// Length-prefixed so that moving a byte across the boundary between two
-		// files cannot produce the same digest.
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(content)))
-		_, _ = io.WriteString(sum, path)
-		_, _ = sum.Write(length[:])
-		_, _ = sum.Write(content)
+		hashFingerprintFile(sum, path, content)
 		return nil
 	})
 	if err != nil {
 		return "", fmt.Errorf("hashing migrations: %w", err)
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// HashTemplateInputs fingerprints embedded SQL migrations and non-test Go
+// sources for migrations and blob extraction. Source labels distinguish files
+// with the same path and content in different filesystems.
+func HashTemplateInputs(migrationSQL, migrationGo, extractorGo fs.FS) (string, error) {
+	sum := sha256.New()
+	sources := []struct {
+		label  string
+		fsys   fs.FS
+		suffix string
+	}{
+		{"migration SQL", migrationSQL, ".sql"},
+		{"migration Go", migrationGo, ".go"},
+		{"extractor Go", extractorGo, ".go"},
+	}
+	for _, source := range sources {
+		// WalkDir visits each source lexically; source order is fixed above.
+		err := fs.WalkDir(source.fsys, ".", func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, source.suffix) ||
+				(source.suffix == ".go" && strings.HasSuffix(path, "_test.go")) {
+				return nil
+			}
+			content, err := fs.ReadFile(source.fsys, path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			hashFingerprintFile(sum, source.label+"/"+path, content)
+			return nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("hashing %s: %w", source.label, err)
+		}
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+func hashFingerprintFile(sum hash.Hash, path string, content []byte) {
+	// Length-prefixed so moving bytes across file boundaries changes the digest.
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(content)))
+	_, _ = io.WriteString(sum, path)
+	_, _ = sum.Write(length[:])
+	_, _ = sum.Write(content)
 }
 
 // ---------------------------------------------------------------------------

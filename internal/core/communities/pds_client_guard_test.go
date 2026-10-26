@@ -391,7 +391,7 @@ func TestNewCommunityService_BuildsAGuardedPDSClientByDefault(t *testing.T) {
 	t.Parallel()
 
 	svc, ok := NewCommunityService(nil, "https://pds.example", "did:web:coves.example",
-		"coves.example", nil, nil, nil).(*communityService)
+		"coves.example", nil, nil, nil, nil).(*communityService)
 	require.True(t, ok, "NewCommunityService must return the concrete service these tests drive")
 	require.NotNil(t, svc.pdsHTTPClient, "the service must hold a PDS client, not nil")
 

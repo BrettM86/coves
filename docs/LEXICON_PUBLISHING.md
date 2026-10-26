@@ -131,7 +131,7 @@ below. Once the moderation release runs, also the reviewed moderation package:
 `moderation/getSubjectState.json`, plus `actor/getViewerAuthority.json`, which
 tells clients whether the viewer is an instance admin and ships with them; and,
 once the notifications release below runs, `notification/defs.json` and its
-five endpoint files.
+five endpoint files; and, once the media release below runs, `media/uploadImage.json`.
 
 Held back, because the governance and tribunal design has not landed. Paths
 are relative to `internal/atproto/lexicon/social/coves/`, and the test fails if
@@ -177,19 +177,20 @@ DNS delegation is one TXT record per unique NSID authority, each with content
 | `_lexicon.richtext.coves.social` | live |
 | `_lexicon.moderation.coves.social` | created in the moderation release, step 3a |
 | `_lexicon.notification.coves.social` | created in the notifications release, step 4a |
+| `_lexicon.media.coves.social` | created in the media release, step 5a |
 
 `scripts/publish-lexicon-dns.sh` creates or updates them through the
 Cloudflare API and is idempotent. It needs `CF_API_TOKEN` (Zone:DNS:Edit on
 `coves.social`) and `LEXICON_DID`, read from the environment or from the
 gitignored `scripts/.env.lexicon`. Never put the token in the script.
 `--include-moderation` adds `_lexicon.moderation`, and `--include-notification`
-adds `_lexicon.notification`.
+adds `_lexicon.notification`. `--include-media` adds `_lexicon.media`.
 
 ## Publish and update workflow
 
 Step 0 runs on every publish. Steps 1 and 2 republish the live namespaces.
-Step 3 is the moderation release and step 4 the notifications release, each
-run once in the order given; neither has run yet. Step 5 verifies. Every
+Step 3 is the moderation release, step 4 the notifications release and step 5 the media release, each
+run once in the order given. Step 6 verifies. Every
 operand is an explicit file.
 
 ```sh
@@ -218,6 +219,7 @@ goat lex publish --update \
   internal/atproto/lexicon/social/coves/embed/external.json \
   internal/atproto/lexicon/social/coves/embed/images.json \
   internal/atproto/lexicon/social/coves/embed/post.json \
+  internal/atproto/lexicon/social/coves/embed/imagesWithAttachment.json \
   internal/atproto/lexicon/social/coves/embed/video.json \
   internal/atproto/lexicon/social/coves/actor/block.json \
   internal/atproto/lexicon/social/coves/actor/defs.json \
@@ -329,7 +331,17 @@ goat lex publish \
   internal/atproto/lexicon/social/coves/notification/getPreferences.json \
   internal/atproto/lexicon/social/coves/notification/putPreferences.json
 
-# 5. Verify resolution end to end.
+# 5. Media release (once). media.uploadImage references embed.images, which
+#    step 2 publishes.
+#    5a. DNS delegation for the new authority, then confirm resolution:
+CF_API_TOKEN=... LEXICON_DID=did:web:coves.social ./scripts/publish-lexicon-dns.sh --include-media
+goat lex check-dns internal/atproto/lexicon/social/coves/media/uploadImage.json
+#    5b. The endpoint:
+goat lex publish \
+  internal/atproto/lexicon/social/coves/media/uploadImage.json
+goat lex resolve social.coves.media.uploadImage
+
+# 6. Verify resolution end-to-end, and unpublish anything retired.
 goat lex check-dns internal/atproto/lexicon/social/coves
 goat lex status internal/atproto/lexicon/social/coves
 goat lex resolve social.coves.community.post

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/media"
 	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -44,6 +46,8 @@ type communityService struct {
 	repo        Repository
 	provisioner *PDSAccountProvisioner
 	blobService blobs.Service
+	// mediaPipeline sanitizes avatar and banner bytes before upload.
+	mediaPipeline *media.Pipeline
 
 	// OAuth client for user PDS authentication (DPoP-based)
 	oauthClient      *oauthclient.OAuthClient
@@ -95,6 +99,7 @@ func NewCommunityService(
 	provisioner *PDSAccountProvisioner,
 	oauthClient *oauthclient.OAuthClient,
 	blobService blobs.Service,
+	pipeline *media.Pipeline,
 	opts ...PDSClientOption,
 ) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
@@ -119,6 +124,7 @@ func NewCommunityService(
 		provisioner:    provisioner,
 		oauthClient:    oauthClient,
 		blobService:    blobService,
+		mediaPipeline:  pipeline,
 		pdsHTTPClient:  newPDSHTTPClient(opts...),
 		refreshMutexes: make(map[string]*sync.Mutex),
 	}
@@ -132,6 +138,7 @@ func NewCommunityServiceWithPDSFactory(
 	provisioner *PDSAccountProvisioner,
 	factory PDSClientFactory,
 	blobService blobs.Service,
+	pipeline *media.Pipeline,
 	opts ...PDSClientOption,
 ) Service {
 	return &communityService{
@@ -142,6 +149,7 @@ func NewCommunityServiceWithPDSFactory(
 		provisioner:      provisioner,
 		pdsClientFactory: factory,
 		blobService:      blobService,
+		mediaPipeline:    pipeline,
 		pdsHTTPClient:    newPDSHTTPClient(opts...),
 		refreshMutexes:   make(map[string]*sync.Mutex),
 	}
@@ -202,6 +210,13 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// Validate request
 	if err := s.validateCreateRequest(req); err != nil {
 		return nil, err
+	}
+	avatar, banner, err := s.ingestCommunityImages(ctx, req.AvatarBlob, req.AvatarMimeType, req.BannerBlob, req.BannerMimeType)
+	if err != nil {
+		return nil, err
+	}
+	if (len(req.AvatarBlob) > 0 || len(req.BannerBlob) > 0) && s.blobService == nil {
+		return nil, fmt.Errorf("blob service not configured, cannot upload community images")
 	}
 
 	// V2: Provision a real PDS account for this community
@@ -275,16 +290,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 
 	// Upload avatar if provided
 	if len(req.AvatarBlob) > 0 {
-		if req.AvatarMimeType == "" {
-			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
-		}
-		if len(req.AvatarBlob) > MaxAvatarBlobSize {
-			return nil, NewValidationError("avatarBlob", "avatar exceeds 1MB limit")
-		}
-		if s.blobService == nil {
-			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
-		}
-		avatarRef, err := s.blobService.UploadBlob(ctx, pdsAccount, req.AvatarBlob, req.AvatarMimeType)
+		avatarRef, err := s.blobService.UploadBlob(ctx, pdsAccount, avatar.Data, string(avatar.Format))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload avatar: %w", err)
 		}
@@ -300,16 +306,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 
 	// Upload banner if provided
 	if len(req.BannerBlob) > 0 {
-		if req.BannerMimeType == "" {
-			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
-		}
-		if len(req.BannerBlob) > MaxBannerBlobSize {
-			return nil, NewValidationError("bannerBlob", "banner exceeds 2MB limit")
-		}
-		if s.blobService == nil {
-			return nil, fmt.Errorf("blob service not configured, cannot upload banner")
-		}
-		bannerRef, err := s.blobService.UploadBlob(ctx, pdsAccount, req.BannerBlob, req.BannerMimeType)
+		bannerRef, err := s.blobService.UploadBlob(ctx, pdsAccount, banner.Data, string(banner.Format))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload banner: %w", err)
 		}
@@ -501,20 +498,22 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure fresh credentials: %w", err)
 	}
+	currentProfile, err := s.getRecordOnPDSAs(ctx, existing.DID, "social.coves.community.profile", "self", existing.PDSAccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update community on PDS: %w", err)
+	}
+	avatar, banner, err := s.ingestCommunityImages(ctx, req.AvatarBlob, req.AvatarMimeType, req.BannerBlob, req.BannerMimeType)
+	if err != nil {
+		return nil, err
+	}
+	if (len(req.AvatarBlob) > 0 || len(req.BannerBlob) > 0) && s.blobService == nil {
+		return nil, fmt.Errorf("blob service not configured, cannot upload community images")
+	}
 
 	// Upload avatar if provided
 	var avatarRef *blobs.BlobRef
 	if len(req.AvatarBlob) > 0 {
-		if req.AvatarMimeType == "" {
-			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
-		}
-		if len(req.AvatarBlob) > MaxAvatarBlobSize {
-			return nil, NewValidationError("avatarBlob", "avatar exceeds 1MB limit")
-		}
-		if s.blobService == nil {
-			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
-		}
-		ref, err := s.blobService.UploadBlob(ctx, existing, req.AvatarBlob, req.AvatarMimeType)
+		ref, err := s.blobService.UploadBlob(ctx, existing, avatar.Data, string(avatar.Format))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload avatar: %w", err)
 		}
@@ -524,16 +523,7 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	// Upload banner if provided
 	var bannerRef *blobs.BlobRef
 	if len(req.BannerBlob) > 0 {
-		if req.BannerMimeType == "" {
-			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
-		}
-		if len(req.BannerBlob) > MaxBannerBlobSize {
-			return nil, NewValidationError("bannerBlob", "banner exceeds 2MB limit")
-		}
-		if s.blobService == nil {
-			return nil, fmt.Errorf("blob service not configured, cannot upload banner")
-		}
-		ref, err := s.blobService.UploadBlob(ctx, existing, req.BannerBlob, req.BannerMimeType)
+		ref, err := s.blobService.UploadBlob(ctx, existing, banner.Data, string(banner.Format))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload banner: %w", err)
 		}
@@ -602,6 +592,8 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 			"mimeType": avatarRef.MimeType,
 			"size":     avatarRef.Size,
 		}
+	} else if avatar, present := currentProfile["avatar"]; present {
+		profile["avatar"] = avatar
 	}
 
 	if bannerRef != nil {
@@ -611,6 +603,8 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 			"mimeType": bannerRef.MimeType,
 			"size":     bannerRef.Size,
 		}
+	} else if banner, present := currentProfile["banner"]; present {
+		profile["banner"] = banner
 	}
 
 	// V2: Community profiles always use "self" as rkey
@@ -662,6 +656,73 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 
 	return &updated, nil
 }
+
+// ingestCommunityImages checks both inputs and their processed sizes before
+// either image can be uploaded or included in a community record.
+func (s *communityService) ingestCommunityImages(ctx context.Context, avatarData []byte, avatarMimeType string, bannerData []byte, bannerMimeType string) (media.Result, media.Result, error) {
+	if len(avatarData) > 0 {
+		if avatarMimeType == "" {
+			return media.Result{}, media.Result{}, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
+		}
+		if len(avatarData) > MaxAvatarBlobSize {
+			return media.Result{}, media.Result{}, NewValidationError("avatarBlob", "avatar exceeds 1MB limit")
+		}
+	}
+	if len(bannerData) > 0 {
+		if bannerMimeType == "" {
+			return media.Result{}, media.Result{}, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
+		}
+		if len(bannerData) > MaxBannerBlobSize {
+			return media.Result{}, media.Result{}, NewValidationError("bannerBlob", "banner exceeds 2MB limit")
+		}
+	}
+	if len(avatarData) == 0 && len(bannerData) == 0 {
+		return media.Result{}, media.Result{}, nil
+	}
+	if s.mediaPipeline == nil {
+		return media.Result{}, media.Result{}, fmt.Errorf("media pipeline not configured, cannot upload community images")
+	}
+
+	var avatar, banner media.Result
+	var err error
+	if len(avatarData) > 0 {
+		avatar, err = s.ingestCommunityImage(ctx, avatarData, avatarMimeType, "avatarBlob", MaxAvatarBlobSize)
+		if err != nil {
+			return media.Result{}, media.Result{}, err
+		}
+	}
+	if len(bannerData) > 0 {
+		banner, err = s.ingestCommunityImage(ctx, bannerData, bannerMimeType, "bannerBlob", MaxBannerBlobSize)
+		if err != nil {
+			return media.Result{}, media.Result{}, err
+		}
+	}
+	return avatar, banner, nil
+}
+
+func (s *communityService) ingestCommunityImage(ctx context.Context, data []byte, declaredMimeType, field string, limit int) (media.Result, error) {
+	result, err := s.mediaPipeline.Ingest(ctx, media.Input{
+		Data: data, DeclaredContentType: declaredMimeType,
+		Accept: []media.Format{media.FormatJPEG, media.FormatPNG, media.FormatWebP},
+	})
+	if err != nil {
+		var mediaError *media.Error
+		if errors.As(err, &mediaError) {
+			return media.Result{}, NewValidationError(field, "invalid image")
+		}
+		return media.Result{}, fmt.Errorf("processing %s: %w", field, err)
+	}
+	if len(result.Data) > limit {
+		if field == "avatarBlob" {
+			return media.Result{}, NewValidationError(field, "avatar exceeds 1MB limit")
+		}
+		return media.Result{}, NewValidationError(field, "banner exceeds 2MB limit")
+	}
+	return result, nil
+}
+
+// MediaPipeline returns the pipeline that sanitizes avatar and banner bytes.
+func (s *communityService) MediaPipeline() *media.Pipeline { return s.mediaPipeline }
 
 // getOrCreateRefreshMutex returns a mutex for the given community DID
 // Thread-safe with read-lock fast path for existing entries
@@ -1489,6 +1550,46 @@ func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, col
 	}
 
 	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
+}
+
+// getRecordOnPDSAs reads a record with the community's access token.
+func (s *communityService) getRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey, accessToken string) (map[string]interface{}, error) {
+	parameters := url.Values{"repo": {repoDID}, "collection": {collection}, "rkey": {rkey}}
+	endpoint := strings.TrimSuffix(s.pdsURL, "/") + "/xrpc/com.atproto.repo.getRecord?" + parameters.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	client := &http.Client{Timeout: 10 * time.Second} // coves:allow-bare-client: builds from s.pdsURL, the AppView's own configured PDS, not a caller-supplied endpoint
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call PDS: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body: %v", closeErr)
+		}
+	}()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("PDS returned status %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		Value map[string]interface{} `json:"value"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse PDS response: %w", err)
+	}
+	if result.Value == nil {
+		return nil, fmt.Errorf("PDS response missing record value")
+	}
+	return result.Value, nil
 }
 
 // putRecordOnPDSAs updates a record with a specific access token (for V2 community auth)

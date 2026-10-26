@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/crypto/credentialcipher"
 
@@ -36,6 +37,10 @@ var (
 type postgresCommunityRepo struct {
 	db     *sql.DB
 	cipher *credentialcipher.Cipher
+}
+
+func communityProfileSubjectURI(did string) string {
+	return "at://" + did + "/social.coves.community.profile/self"
 }
 
 // NewCommunityRepository creates a new PostgreSQL community repository
@@ -71,6 +76,14 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt community PDS refresh token: %w", err)
 	}
+	avatarCID, _ := embedblobs.CanonicalBlobCID(community.AvatarCID)
+	bannerCID, _ := embedblobs.CanonicalBlobCID(community.BannerCID)
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start community create transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	query := `
 		INSERT INTO communities (
@@ -99,15 +112,15 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		descFacets = nil
 	}
 
-	err = r.db.QueryRowContext(ctx, query,
+	err = tx.QueryRowContext(ctx, query,
 		community.DID,
 		community.Handle, // Always non-empty - constructed by AppView consumer
 		community.Name,
 		nullString(community.DisplayName),
 		nullString(community.Description),
 		descFacets,
-		nullString(community.AvatarCID),
-		nullString(community.BannerCID),
+		nullString(avatarCID),
+		nullString(bannerCID),
 		community.OwnerDID,
 		community.CreatedByDID,
 		community.HostedByDID,
@@ -147,6 +160,15 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		}
 		return nil, fmt.Errorf("failed to create community: %w", err)
 	}
+	if err := NewBlobReferenceRepository(r.db).ReplaceSubjectTx(ctx, tx, community.DID,
+		communityProfileSubjectURI(community.DID), embedblobs.ProfileReferences(avatarCID, bannerCID)); err != nil {
+		return nil, fmt.Errorf("failed to replace community profile blob references: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit community create transaction: %w", err)
+	}
+	community.AvatarCID = avatarCID
+	community.BannerCID = bannerCID
 
 	return community, nil
 }
@@ -460,6 +482,14 @@ func (r *postgresCommunityRepo) UpdateHandle(ctx context.Context, did, handle st
 
 // Update modifies an existing community's metadata
 func (r *postgresCommunityRepo) Update(ctx context.Context, community *communities.Community) (*communities.Community, error) {
+	avatarCID, _ := embedblobs.CanonicalBlobCID(community.AvatarCID)
+	bannerCID, _ := embedblobs.CanonicalBlobCID(community.BannerCID)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start community update transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	query := `
 		UPDATE communities
 		SET display_name = $2, description = $3, description_facets = $4,
@@ -482,13 +512,13 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 		descFacets = nil
 	}
 
-	err := r.db.QueryRowContext(ctx, query,
+	err = tx.QueryRowContext(ctx, query,
 		community.DID,
 		nullString(community.DisplayName),
 		nullString(community.Description),
 		descFacets,
-		nullString(community.AvatarCID),
-		nullString(community.BannerCID),
+		nullString(avatarCID),
+		nullString(bannerCID),
 		community.Visibility,
 		community.AllowExternalDiscovery,
 		nullString(community.ModerationType),
@@ -515,6 +545,15 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 	if err != nil {
 		return nil, fmt.Errorf("failed to update community: %w", err)
 	}
+	if err := NewBlobReferenceRepository(r.db).ReplaceSubjectTx(ctx, tx, community.DID,
+		communityProfileSubjectURI(community.DID), embedblobs.ProfileReferences(avatarCID, bannerCID)); err != nil {
+		return nil, fmt.Errorf("failed to replace community profile blob references: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit community update transaction: %w", err)
+	}
+	community.AvatarCID = avatarCID
+	community.BannerCID = bannerCID
 
 	return community, nil
 }
@@ -556,9 +595,84 @@ func (r *postgresCommunityRepo) UpdateCredentials(ctx context.Context, did, acce
 
 // Delete removes a community from the database
 func (r *postgresCommunityRepo) Delete(ctx context.Context, did string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start community delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock_shared("+ErasureLockKeySQL+")", did); err != nil {
+		return fmt.Errorf("failed to take shared erasure lock for community delete: %w", err)
+	}
+	var lockedDID string
+	if err := tx.QueryRowContext(ctx, `SELECT did FROM communities WHERE did = $1 FOR UPDATE`, did).Scan(&lockedDID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return communities.ErrCommunityNotFound
+		}
+		return fmt.Errorf("failed to lock community for delete: %w", err)
+	}
+
+	// The community row prevents new post inserts through its foreign key.
+	// Coordinate every current root before taking any comment or post row lock.
+	rootRows, err := tx.QueryContext(ctx, `SELECT uri FROM posts WHERE community_did = $1`, did)
+	if err != nil {
+		return fmt.Errorf("read community roots for delete: %w", err)
+	}
+	var rootURIs []string
+	for rootRows.Next() {
+		var rootURI string
+		if err := rootRows.Scan(&rootURI); err != nil {
+			rootRows.Close()
+			return fmt.Errorf("scan community root for delete: %w", err)
+		}
+		rootURIs = append(rootURIs, rootURI)
+	}
+	if err := rootRows.Err(); err != nil {
+		rootRows.Close()
+		return fmt.Errorf("iterate community roots for delete: %w", err)
+	}
+	if err := rootRows.Close(); err != nil {
+		return fmt.Errorf("close community roots for delete: %w", err)
+	}
+	if err := LockPostRootLifecyclesTx(ctx, tx, rootURIs, false); err != nil {
+		return err
+	}
+
+	// Lock content before its references, with comments before posts as in
+	// account erasure and comment indexing's parent-count updates.
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM comments
+		WHERE root_uri IN (SELECT uri FROM posts WHERE community_did = $1)
+		ORDER BY uri FOR UPDATE`, did); err != nil {
+		return fmt.Errorf("failed to lock community comments for delete: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM posts
+		WHERE community_did = $1 ORDER BY uri FOR UPDATE`, did); err != nil {
+		return fmt.Errorf("failed to lock community posts for delete: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO deleted_community_post_roots (root_uri)
+		SELECT uri FROM posts WHERE community_did = $1
+		ON CONFLICT (root_uri) DO NOTHING`, did); err != nil {
+		return fmt.Errorf("record deleted community roots: %w", err)
+	}
+
+	// The cascade removes posts, so collect both post and comment subjects
+	// while their community association is still present.
+	if _, err := tx.ExecContext(ctx, `UPDATE blob_references
+		SET active = false, updated_at = NOW()
+		WHERE active AND subject_uri IN (
+			SELECT uri FROM posts WHERE community_did = $1
+			UNION
+			SELECT comments.uri FROM comments
+			JOIN posts ON posts.uri = comments.root_uri
+			WHERE posts.community_did = $1
+		)`, did); err != nil {
+		return fmt.Errorf("failed to deactivate community content blob references: %w", err)
+	}
+
 	query := `DELETE FROM communities WHERE did = $1`
 
-	result, err := r.db.ExecContext(ctx, query, did)
+	result, err := tx.ExecContext(ctx, query, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete community: %w", err)
 	}
@@ -571,7 +685,40 @@ func (r *postgresCommunityRepo) Delete(ctx context.Context, did string) error {
 	if rowsAffected == 0 {
 		return communities.ErrCommunityNotFound
 	}
+	if err := NewBlobReferenceRepository(r.db).DeactivateSubjectTx(ctx, tx, communityProfileSubjectURI(did)); err != nil {
+		return fmt.Errorf("failed to deactivate community profile blob references: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit community delete transaction: %w", err)
+	}
 
+	return nil
+}
+
+// RebuildProfileBlobReferences restores references from the stored community profile.
+func (r *postgresCommunityRepo) RebuildProfileBlobReferences(ctx context.Context, did string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start community profile rebuild transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var avatarCID, bannerCID sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT avatar_cid, banner_cid FROM communities WHERE did = $1 FOR UPDATE`, did).
+		Scan(&avatarCID, &bannerCID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return communities.ErrCommunityNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read community profile for rebuild: %w", err)
+	}
+	if err := NewBlobReferenceRepository(r.db).ReplaceSubjectTx(ctx, tx, did,
+		communityProfileSubjectURI(did), embedblobs.ProfileReferences(avatarCID.String, bannerCID.String)); err != nil {
+		return fmt.Errorf("failed to rebuild community profile blob references: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit community profile rebuild transaction: %w", err)
+	}
 	return nil
 }
 

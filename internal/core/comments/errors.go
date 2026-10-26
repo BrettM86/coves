@@ -1,6 +1,10 @@
 package comments
 
-import "errors"
+import (
+	"errors"
+
+	"Coves/internal/core/richtext"
+)
 
 var (
 	// ErrCommentNotFound indicates the requested comment doesn't exist
@@ -39,6 +43,23 @@ var (
 
 	// ErrInvalidCursor indicates a malformed or sort-mismatched pagination cursor
 	ErrInvalidCursor = errors.New("invalid pagination cursor")
+
+	// ErrInvalidEmbed indicates the comment embed fails the lexicon or carries an
+	// image that is not a well-formed image blob ref
+	ErrInvalidEmbed = errors.New("invalid embed")
+
+	// ErrTooManyImages marks a comment refused because its images embed carries more than eight images (XRPC TooManyImages, 400)
+	ErrTooManyImages = errors.New("too many images")
+
+	// ErrInvalidRecord indicates the comment record about to be written fails
+	// the social.coves.community.comment lexicon somewhere other than its embed
+	ErrInvalidRecord = errors.New("comment record does not satisfy the lexicon")
+
+	// ErrInvalidImageFacet marks a comment refused because an #image facet
+	// breaks a write rule (XRPC InvalidImageFacet, 400). It is richtext's
+	// sentinel, so the rule check's own error matches it without re-wrapping.
+	// It does not match ErrInvalidFacets or ErrInvalidEmbed.
+	ErrInvalidImageFacet = richtext.ErrInvalidImageFacet
 )
 
 // IsNotFound checks if an error is a "not found" error
@@ -60,5 +81,6 @@ func IsValidationError(err error) bool {
 		errors.Is(err, ErrContentTooLong) ||
 		errors.Is(err, ErrContentEmpty) ||
 		errors.Is(err, ErrInvalidFacets) ||
-		errors.Is(err, ErrInvalidCursor)
+		errors.Is(err, ErrInvalidCursor) ||
+		errors.Is(err, ErrInvalidRecord)
 }

@@ -321,7 +321,7 @@ func newPostFixture(t *testing.T) *postFixture {
 		instanceDomain,
 		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
-		nil,
+		nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 

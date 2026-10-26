@@ -277,7 +277,8 @@ func (a *application) buildCommentConsumer() *jetstream.CommentEventConsumer {
 	return jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
 		jetstream.WithCommentBridgeTrust(a.bridgeTrust),
 		jetstream.WithCommentMediaReconciler(a.mediaReconciler),
-		jetstream.WithCommentNotifications(a.notificationRepo))
+		jetstream.WithCommentNotifications(a.notificationRepo),
+		jetstream.WithCommentBlobReferences(a.blobReferenceRepo))
 }
 
 // buildPostConsumer builds the post consumer registered on the feed.
@@ -306,5 +307,6 @@ func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
 		// itself for every community this AppView does not host, which on
 		// most instances is all of them.
 		jetstream.WithAcceptanceCleanup(a.communityWriter),
-		jetstream.WithPostNotifications(a.notificationRepo))
+		jetstream.WithPostNotifications(a.notificationRepo),
+		jetstream.WithPostBlobReferences(a.blobReferenceRepo))
 }

@@ -16,11 +16,14 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/media"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/unfurl"
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/rivo/uniseg"
 )
 
 type postService struct {
@@ -51,6 +54,14 @@ type postService struct {
 	// builds from a community's own credentials. Empty — the zero value — means
 	// GUARDED, so a wiring that forgets it is strict rather than open.
 	pdsClientOptions []pds.ClientOption
+
+	// mediaPipeline sanitizes a fetched thumbnail before it is uploaded. Nil
+	// with a blob service wired means no thumbnail is uploaded (fail closed).
+	mediaPipeline *media.Pipeline
+
+	// lexiconValidator checks the final postv2 record before it is written.
+	// Nil means no lexicon validation runs.
+	lexiconValidator *validation.LexiconValidator
 }
 
 // PostServiceOption configures optional postService dependencies. Options keep the
@@ -77,6 +88,15 @@ func WithBlockChecker(checker BlockChecker) PostServiceOption {
 func WithPDSClientOptions(opts ...pds.ClientOption) PostServiceOption {
 	return func(s *postService) { s.pdsClientOptions = opts }
 }
+
+// WithMediaPipeline supplies the pipeline that sniffs, decodes and strips
+// metadata from an unfurled thumbnail before it is uploaded.
+func WithMediaPipeline(pipeline *media.Pipeline) PostServiceOption {
+	return func(s *postService) { s.mediaPipeline = pipeline }
+}
+
+// MediaPipeline returns the pipeline this service sanitizes thumbnails with.
+func (s *postService) MediaPipeline() *media.Pipeline { return s.mediaPipeline }
 
 // NewPostService creates a new post service
 // aggregatorService, blobService, unfurlService, and blueskyService can be nil if not needed (e.g., in tests or minimal setups)
@@ -128,7 +148,8 @@ func NewPostService(
 
 // CreatePost writes a new post into the AUTHOR's repository (§4.2).
 // Flow:
-//  1. Validate input (and normalize embed/facet URIs)
+//  1. Validate input (and normalize embed/facet URIs), including the
+//     client's record against the postv2 lexicon
 //  2. Verify the authenticated DID matches the request's author DID
 //  3. Classify the actor: trusted aggregator, registered aggregator, or user
 //  4. Admission: one decision over community existence, visibility, ban,
@@ -137,10 +158,11 @@ func NewPostService(
 //  6. Build the postv2 record
 //  7. Enhance external embeds (unfurl, and the thumbnail blob into the
 //     author's own storage)
-//  8. Create-only write at the deterministic rkey
-//  9. If aggregator: record post for rate limiting
-//  10. Seed the admission row and, for a community we host, settle it
-//  11. Return URI/CID/status (AppView indexes asynchronously via Jetstream)
+//  8. Check the enhanced record against the postv2 lexicon (backstop)
+//  9. Create-only write at the deterministic rkey
+//  10. If aggregator: record post for rate limiting
+//  11. Seed the admission row and, for a community we host, settle it
+//  12. Return URI/CID/status (AppView indexes asynchronously via Jetstream)
 
 // THE COMMUNITY'S OWN CREDENTIALS ARE NOT ON THIS PATH AT ALL, and that is the
 // point of the flip rather than an oversight. Both writes that used them — the
@@ -152,7 +174,7 @@ func NewPostService(
 // Admission runs BEFORE the credentials, the blob uploads and the PDS write,
 // so a refused submission costs a few lookups rather than an upload — and,
 // more to the point, leaves no record in a community that refused it. Every
-// failure AFTER admission (steps 5-8) must release the ledger reservation the
+// failure AFTER admission (steps 5-9) must release the ledger reservation the
 // admission took, or the failure costs the author a quota slot and refuses
 // their retry as a duplicate.
 //
@@ -272,10 +294,25 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	// It cannot fail, so there is nothing to release here — see its doc comment.
 	// A future step added inside it that CAN fail must return an error, and this
 	// call must then release the reservation before returning it, exactly as
-	// steps 5 and 8 do.
+	// steps 5, 8 and 9 do.
 	s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator)
 
-	// 8. Write to the author's PDS repository.
+	// 8. Check the final record's images and the record against the postv2
+	// lexicon. The client's part already passed in step 1, so this is the
+	// backstop for enhancement output:
+	// a rejection here is a server bug, logged as one. It happens after
+	// admission, so it gives the reservation back like every other failure
+	// before the record exists.
+	record := postV2From(postRecord)
+	if err := s.validatePostV2Record(record); err != nil {
+		embedType, _ := record.Embed["$type"].(string)
+		log.Printf("[POST-CREATE] ERROR: enhanced record failed validation: collection=%s, embedType=%q: %v",
+			PostV2Collection, embedType, err)
+		releaseOnFailure()
+		return nil, err
+	}
+
+	// 9. Write to the author's PDS repository.
 	//
 	// A failure here is the case the reservation was designed around: the row
 	// went in before the write precisely so two concurrent identical submissions
@@ -284,13 +321,13 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	// PDS hiccup would consume a quota slot AND refuse the retry as a duplicate,
 	// turning a transient outage into a per-author lockout that outlives it.
 	rkey := SubmissionRkey(communityDID, fingerprint, decision.DedupeBucket, s.admission.Limits.DedupeWindow)
-	uri, cid, converged, err := createAuthorRecord(ctx, authorRepo, rkey, postV2From(postRecord))
+	uri, cid, converged, err := createAuthorRecord(ctx, authorRepo, rkey, record)
 	if err != nil {
 		releaseOnFailure()
 		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
 	}
 
-	// 9. Record aggregator post for rate limiting (non-Kagi aggregators only)
+	// 10. Record aggregator post for rate limiting (non-Kagi aggregators only)
 	// Kagi is exempted from rate limiting via env var (temporary)
 	//
 	// A CONVERGED RETRY IS NOT A NEW POST AND MUST NOT BE BILLED AS ONE. The
@@ -306,11 +343,11 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 		}
 	}
 
-	// 10. Seed the admission row and, for a community this AppView hosts,
+	// 11. Seed the admission row and, for a community this AppView hosts,
 	// settle it before answering.
 	status := s.settleSubmission(ctx, communityDID, uri, cid)
 
-	// 11. Return response (AppView will index via Jetstream consumer)
+	// 12. Return response (AppView will index via Jetstream consumer)
 	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s, Status: %s",
 		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri, status)
 
@@ -577,6 +614,13 @@ func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessi
 		return nil, err
 	}
 
+	// The final record — the merge, normalized — is what the image checks and
+	// the lexicon judge, so a title-only edit of a record whose standing embed
+	// breaks either is refused rather than re-signed.
+	if err := s.validatePostV2Record(record); err != nil {
+		return nil, err
+	}
+
 	// The swap guard is the CID that was just read. An edit landing between the
 	// two is ErrConcurrentModification: the edit was composed against content
 	// that no longer stands, and re-applying it would erase a change its author
@@ -729,10 +773,13 @@ func postV2From(record PostRecord) PostV2Record {
 // four thumb-validation exits it owned; those moved into the shared content gate
 // (validateExternalThumb), which runs before admission — a client mistake is
 // answerable with a 400 without costing a ledger reservation to discover. What
-// is left is pure enhancement, and enhancement has never been able to fail a
-// post: an unfurl that times out, a thumbnail that will not fetch and a Bluesky
-// URL that will not resolve are all logged and stepped over, because the author
-// asked to publish a post, not to publish a preview.
+// is left is pure enhancement, and enhancement must not fail a post: an unfurl
+// that times out, a thumbnail that will not fetch and a Bluesky URL that will
+// not resolve are all logged and stepped over, because the author asked to
+// publish a post, not to publish a preview. Unfurled text is fitted to the
+// external lexicon here for the same reason; the lexicon check that follows
+// (CreatePost step 8) is a backstop, and output it refuses is a bug in this
+// function, logged at error level.
 //
 // It kept the error return for a while afterwards, with the caller holding a
 // `releaseOnFailure()` branch for it, and both were dead. They are gone rather
@@ -748,12 +795,17 @@ func postV2From(record PostRecord) PostV2Record {
 // trusted marks a trusted aggregator, which supplies its own metadata and is
 // unfurled only for a thumbnail it did not provide.
 func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, authorRepo AuthorRepo, trusted bool) {
-	if postRecord.Embed != nil {
-		embedType, typeOk := postRecord.Embed["$type"].(string)
+	embed := postRecord.Embed
+	isAttachment := embed["$type"] == embedTypeImagesWithAttachment
+	if isAttachment {
+		embed, _ = embed["attachment"].(map[string]interface{})
+	}
+	if embed != nil {
+		embedType, typeOk := embed["$type"].(string)
 		if typeOk && embedType == "social.coves.embed.external" {
-			if external, extOk := postRecord.Embed["external"].(map[string]interface{}); extOk {
-				// Check if this is a Bluesky post URL and convert to post embed
-				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, postRecord) {
+			if external, extOk := embed["external"].(map[string]interface{}); extOk {
+				// Standalone Bluesky conversion replaces the entire embed; nested links retain their galleries.
+				if isAttachment || !s.tryConvertBlueskyURLToPostEmbed(ctx, external, postRecord) {
 					// Not a Bluesky URL or conversion failed - continue with normal external embed processing.
 					// The thumb's shape was already checked in validateCreateRequest,
 					// which needs no network and so must not wait for one.
@@ -831,37 +883,53 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 	}
 }
 
-// uploadThumbnail fetches a remote thumbnail through the blob service's guard
-// and puts it into the AUTHOR's own repository.
+// externalThumbMaxSize is the social.coves.embed.external thumb blob maxSize.
+const externalThumbMaxSize = 6_000_000
+
+// thumbnailFormats are the formats an external embed thumbnail may be stored as.
+var thumbnailFormats = []media.Format{media.FormatJPEG, media.FormatPNG, media.FormatWebP}
+
+// uploadThumbnail fetches a remote thumbnail, sanitizes it through the media
+// pipeline and puts the sanitized bytes into the AUTHOR's own repository.
 //
-// THE GUARD RUNS FIRST AND THE UPLOAD ONLY HAPPENS IF IT PASSES. FetchImageForURL
-// bounds the fetch with a timeout, refuses a Content-Type outside the image
-// allowlist and caps the body at 6MB; a refusal returns before the author's PDS
-// has been touched at all. Discarding a bad blob after uploading it would be the
-// easy mistake and the wrong one — it pays the whole cost of not having a cap
-// (the fetch, the transfer, the storage write, the author's quota) and only
-// declines to show the result.
+// FetchImageForURL applies the SSRF guard, the timeout and the 6MB read cap.
+// The pipeline then decides the format from the bytes (the origin's
+// Content-Type is ignored), refuses anything outside JPEG/PNG/WebP or over the
+// pixel budget, and strips metadata. It does not downscale. Output over the
+// lexicon's thumb maxSize is refused. Every refusal returns before the
+// author's PDS is touched. Without a pipeline nothing is uploaded: unsanitized
+// bytes never reach the author's repo.
 //
 // A nil blob with a nil error means there was nothing to do: no blob service is
-// wired, or no author repo is available. Both are wiring states a post survives
-// — a thumbnail is an enhancement, and it has never been able to fail a post.
+// wired, or no author repo is available. A thumbnail is an enhancement and
+// never fails a post.
 func (s *postService) uploadThumbnail(ctx context.Context, authorRepo AuthorRepo, imageURL string) (*blobs.BlobRef, error) {
 	if s.blobService == nil || authorRepo == nil || imageURL == "" {
 		return nil, nil
 	}
+	if s.mediaPipeline == nil {
+		return nil, errors.New("thumbnail not uploaded: no media pipeline configured")
+	}
 
-	// One budget for the fetch and the upload together, as the single
-	// UploadBlobFromURL call used to have: the pair is one enhancement, and
-	// letting each half have its own would double the worst case a post waits.
+	// One budget for the fetch, the sanitize and the upload together: the
+	// whole chain is one enhancement a post waits on.
 	blobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	data, mimeType, err := s.blobService.FetchImageForURL(blobCtx, imageURL)
+	data, err := s.blobService.FetchImageForURL(blobCtx, imageURL)
 	if err != nil {
 		return nil, err
 	}
 
-	return authorRepo.UploadBlob(blobCtx, data, mimeType)
+	result, err := s.mediaPipeline.Ingest(blobCtx, media.Input{Data: data, Accept: thumbnailFormats})
+	if err != nil {
+		return nil, fmt.Errorf("thumbnail rejected by media pipeline: %w", err)
+	}
+	if len(result.Data) > externalThumbMaxSize {
+		return nil, fmt.Errorf("sanitized thumbnail is %d bytes, over the %d byte maximum", len(result.Data), externalThumbMaxSize)
+	}
+
+	return authorRepo.UploadBlob(blobCtx, result.Data, string(result.Format))
 }
 
 // validateCreateRequest validates basic input requirements, and normalizes the
@@ -881,7 +949,7 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// Normalizes req.Embed and req.Facets IN PLACE as well as checking them —
 	// the record built later reads these same values, and the unfurl step then
 	// works from the encoded URI, which dereferences identically.
-	return normalizeAndValidatePostContent(postContent{
+	if err := normalizeAndValidatePostContent(postContent{
 		Title:   req.Title,
 		Content: req.Content,
 		Facets:  req.Facets,
@@ -889,7 +957,14 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 		Embed:   req.Embed,
 		Langs:   req.Langs,
 		Tags:    req.Tags,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// The record as the client described it, against the postv2 lexicon —
+	// here, before admission, so a client mistake costs no reservation, no
+	// unfurl fetch and no thumbnail upload.
+	return s.validateSubmissionLexicon(*req)
 }
 
 // postContent is the mutable surface of a post — everything an edit may change
@@ -917,13 +992,9 @@ const (
 	// maxTags is the postv2 `tags` array maxLength.
 	maxTags = 8
 	// maxTagLength is the postv2 per-tag maxLength, in BYTES.
-	//
-	// The lexicon also declares maxGraphemes 64, which is NOT checked here —
-	// the same known gap the title check carries and names, and it is left as
-	// one gap rather than two half-solutions. The byte cap is the one that
-	// bounds what gets written; a grapheme cap needs a unicode segmentation
-	// library and belongs with the title's when that lands.
 	maxTagLength = 640
+	// maxTagGraphemes is the postv2 per-tag maxGraphemes.
+	maxTagGraphemes = 64
 )
 
 // MaxContentLength is the post body cap, in BYTES — it matches the postv2
@@ -985,7 +1056,8 @@ const MaxContentLength = 500000
 func normalizeAndValidatePostContent(post postContent) error {
 	// Global content limits (from lexicon)
 	const (
-		maxTitleLength = 3000 // 3k bytes
+		maxTitleLength    = 3000 // 3k bytes
+		maxTitleGraphemes = 300
 	)
 
 	if post.Content != nil && len(*post.Content) > MaxContentLength {
@@ -993,11 +1065,15 @@ func normalizeAndValidatePostContent(post postContent) error {
 			fmt.Sprintf("content too long (max %d characters)", MaxContentLength))
 	}
 
-	if post.Title != nil && len(*post.Title) > maxTitleLength {
-		return NewValidationError("title",
-			fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
-		// Simplified grapheme check (actual implementation would need unicode library)
-		// For Alpha, byte length check is sufficient
+	if post.Title != nil {
+		if len(*post.Title) > maxTitleLength {
+			return NewValidationError("title",
+				fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
+		}
+		if graphemes := uniseg.GraphemeClusterCount(*post.Title); graphemes > maxTitleGraphemes {
+			return NewValidationError("title",
+				fmt.Sprintf("title too long: %d graphemes (max %d)", graphemes, maxTitleGraphemes))
+		}
 	}
 
 	// Validate facets structurally against the content they annotate.
@@ -1006,6 +1082,21 @@ func normalizeAndValidatePostContent(post postContent) error {
 	contentByteLen := 0
 	if post.Content != nil {
 		contentByteLen = len(*post.Content)
+	}
+	// The embed shape is checked before the #image rules, so a broken images
+	// embed (or a ninth image) reports InvalidEmbed or TooManyImages rather than
+	// an #image facet failure, and the rules below see at most MaxImages images.
+	// Catches malformed embeds at the API boundary instead of silently
+	// persisting an unrenderable record to the PDS.
+	if err := validateEmbed(post.Embed); err != nil {
+		return err
+	}
+	// The #image placement rules run before the generic facet check, so any
+	// facet carrying #image — including one whose range the generic check
+	// would refuse — reports InvalidImageFacet. On an edit, post holds the
+	// merged embed and facets.
+	if err := richtext.CheckImageFacets(post.Facets, post.Embed, contentByteLen); err != nil {
+		return NewValidationErrorFrom("facets", err)
 	}
 	if err := richtext.ValidateFacets(post.Facets, contentByteLen); err != nil {
 		return NewValidationError("facets", err.Error())
@@ -1034,14 +1125,7 @@ func normalizeAndValidatePostContent(post postContent) error {
 		return err
 	}
 
-	// Validate the embed (if provided) matches a known lexicon union member.
-	// Catches malformed embeds at the API boundary instead of silently
-	// persisting an unrenderable record to the PDS.
-	if err := validateEmbed(post.Embed); err != nil {
-		return err
-	}
-
-	// And the external embed's thumbnail, which validateEmbed deliberately does
+	// The external embed's thumbnail, which validateEmbed deliberately does
 	// not look at: it checks the union's SHAPE, and the thumb is a blob whose
 	// parts a client gets wrong in four distinct ways worth naming separately.
 	if err := validateExternalThumb(post.Embed); err != nil {
@@ -1083,7 +1167,7 @@ func validatePostLangs(langs []string) error {
 }
 
 // validatePostTags enforces the postv2 lexicon's `tags`: at most maxTags
-// entries, each at most maxTagLength bytes.
+// entries, each at most maxTagLength bytes and maxTagGraphemes graphemes.
 //
 // The empty-string refusal is deliberately STRICTER than the lexicon, which
 // declares no minLength: a tag with no characters is an unusable entry that
@@ -1102,6 +1186,10 @@ func validatePostTags(tags []string) error {
 		if len(tag) > maxTagLength {
 			return NewValidationError("tags",
 				fmt.Sprintf("tags[%d] too long: %d bytes (max %d)", i, len(tag), maxTagLength))
+		}
+		if graphemes := uniseg.GraphemeClusterCount(tag); graphemes > maxTagGraphemes {
+			return NewValidationError("tags",
+				fmt.Sprintf("tags[%d] too long: %d graphemes (max %d)", i, graphemes, maxTagGraphemes))
 		}
 	}
 	return nil
@@ -1124,6 +1212,10 @@ func validateExternalThumb(embed map[string]interface{}) error {
 	if embed == nil {
 		return nil
 	}
+	if embed["$type"] == embedTypeImagesWithAttachment {
+		attachment, _ := embed["attachment"].(map[string]interface{})
+		return validateExternalThumb(attachment)
+	}
 	if embedType, ok := embed["$type"].(string); !ok || embedType != embedTypeExternal {
 		return nil
 	}
@@ -1138,24 +1230,24 @@ func validateExternalThumb(embed map[string]interface{}) error {
 	}
 
 	if thumbStr, isString := thumb.(string); isString {
-		return NewValidationError("thumb",
+		return newInvalidEmbedError("thumb",
 			fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
 	}
 
 	thumbMap, isMap := thumb.(map[string]interface{})
 	if !isMap {
-		return NewValidationError("thumb",
+		return newInvalidEmbedError("thumb",
 			fmt.Sprintf("thumb must be a blob object, got: %T", thumb))
 	}
 	if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
-		return NewValidationError("thumb",
+		return newInvalidEmbedError("thumb",
 			fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
 	}
 	if _, hasRef := thumbMap["ref"]; !hasRef {
-		return NewValidationError("thumb", "thumb blob missing required 'ref' field")
+		return newInvalidEmbedError("thumb", "thumb blob missing required 'ref' field")
 	}
 	if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
-		return NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
+		return newInvalidEmbedError("thumb", "thumb blob missing required 'mimeType' field")
 	}
 	return nil
 }

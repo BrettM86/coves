@@ -33,10 +33,10 @@ import (
 // inside the perimeter.
 //
 // The image never comes back to them directly — the response has to survive the
-// Content-Type allowlist to become a blob — but the ORACLE does: response
-// timing and the distinction between "connection refused", "unsupported MIME
-// type" and "HTTP 403" map the internal network one URL at a time. And a
-// metadata endpoint that answers `text/plain` still had the request made to it.
+// caller's media pipeline to become a blob — but the ORACLE does: response
+// timing and the distinction between "connection refused", "not an image" and
+// "HTTP 403" map the internal network one URL at a time. And a metadata
+// endpoint that answers `text/plain` still had the request made to it.
 //
 // The tree already solved this. internal/atproto/oauth's NewSSRFSafeHTTPClient
 // resolves the host, refuses private/loopback/link-local addresses, and dials
@@ -65,7 +65,7 @@ type countingOrigin struct {
 	written  atomic.Int64
 }
 
-// newEndlessOrigin serves a Content-Type the allowlist accepts and then writes
+// newEndlessOrigin serves an image Content-Type and then writes
 // until the client goes away — the shape of an origin that lies about, or simply
 // omits, its Content-Length.
 func newEndlessOrigin(t *testing.T, total int) *countingOrigin {
@@ -105,7 +105,7 @@ func TestFetchImageForURL_RefusesAPrivateAddressBeforeDialling(t *testing.T) {
 
 	service := NewBlobService(origin.server.URL)
 
-	_, _, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/thumb.png")
+	_, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/thumb.png")
 	require.Errorf(t, err, "a thumbnail URL pointing at a private address must be refused: the AppView "+
 		"shares a network with its database, its PDS and a cloud metadata endpoint, and the URL is "+
 		"chosen by whoever controls the page being unfurled")
@@ -127,9 +127,8 @@ func TestFetchImageForURL_AllowsAPrivateAddressWhenExplicitlyPermitted(t *testin
 
 	service := NewBlobService(origin.server.URL, WithPrivateHostsAllowed())
 
-	data, mimeType, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/thumb.png")
+	data, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/thumb.png")
 	require.NoError(t, err)
-	assert.Equal(t, "image/png", mimeType)
 	assert.NotEmpty(t, data)
 	assert.Equal(t, int64(1), origin.requests.Load())
 }
@@ -154,7 +153,7 @@ func TestFetchImageForURL_StopsReadingAtTheCapInsteadOfBufferingEverything(t *te
 
 	service := NewBlobService(origin.server.URL, WithPrivateHostsAllowed())
 
-	_, _, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/enormous.png")
+	_, err := service.FetchImageForURL(context.Background(), origin.server.URL+"/enormous.png")
 	require.Error(t, err, "a body past the cap must be refused")
 
 	// The origin got nowhere near sending it all. The threshold is deliberately
@@ -168,46 +167,60 @@ func TestFetchImageForURL_StopsReadingAtTheCapInsteadOfBufferingEverything(t *te
 			"prevents the allocation it exists to prevent not at all", written, total)
 }
 
+func TestFetchImageForURL_CapIsExactlySixMebibytes(t *testing.T) {
+	t.Parallel()
+
+	// The cap's VALUE is the per-unfurl memory bound against a hostile origin,
+	// and it also bounds what reaches the image decoder. The 64MB test above only
+	// proves the cap is a read bound; any value up to ~28MB passes it. This pins
+	// the boundary itself, with a test-local literal so raising the production
+	// constant fails here.
+	const sixMebibytes = 6291456
+
+	tests := []struct {
+		name      string
+		bodySize  int
+		wantError bool
+	}{
+		{name: "at the cap", bodySize: sixMebibytes, wantError: false},
+		{name: "one byte over", bodySize: sixMebibytes + 1, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := make([]byte, tt.bodySize)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "image/png")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(body)
+			}))
+			t.Cleanup(server.Close)
+
+			service := NewBlobService(server.URL, WithPrivateHostsAllowed())
+
+			data, err := service.FetchImageForURL(context.Background(), server.URL+"/thumb.png")
+			if tt.wantError {
+				require.Errorf(t, err, "a %d-byte body is past the 6MiB cap and must be refused", tt.bodySize)
+				return
+			}
+			require.NoErrorf(t, err, "a %d-byte body is exactly at the 6MiB cap and must be accepted", tt.bodySize)
+			assert.Len(t, data, sixMebibytes)
+		})
+	}
+}
+
 func TestFetchImageForURL_StillRefusesTheThingsItAlreadyRefused(t *testing.T) {
 	t.Parallel()
 
 	// The guard's existing behaviour, re-pinned here because both fixes rewrite
-	// this function and neither may cost it. A rewrite that routed through the
-	// SSRF client and dropped the MIME allowlist would pass every assertion
-	// above.
-	t.Run("a Content-Type outside the image allowlist", func(t *testing.T) {
-		t.Parallel()
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/html")
-			_, _ = w.Write([]byte("<html>not an image</html>"))
-		}))
-		t.Cleanup(server.Close)
-
-		_, _, err := NewBlobService(server.URL, WithPrivateHostsAllowed()).
-			FetchImageForURL(context.Background(), server.URL+"/page.html")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unsupported MIME type")
-	})
-
-	t.Run("a response with no Content-Type at all", func(t *testing.T) {
-		t.Parallel()
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header()["Content-Type"] = nil
-			w.WriteHeader(http.StatusOK)
-		}))
-		t.Cleanup(server.Close)
-
-		_, _, err := NewBlobService(server.URL, WithPrivateHostsAllowed()).
-			FetchImageForURL(context.Background(), server.URL+"/mystery")
-		require.Error(t, err)
-	})
-
+	// this function and neither may cost it. The Content-Type is no longer
+	// checked here: the caller's media pipeline sniffs the bytes instead.
 	t.Run("an empty URL", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := NewBlobService("http://example.invalid").
+		_, err := NewBlobService("http://example.invalid").
 			FetchImageForURL(context.Background(), "")
 		require.Error(t, err)
 	})

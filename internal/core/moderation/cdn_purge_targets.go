@@ -61,6 +61,10 @@ type CDNPurgeTargetStore interface {
 	// target already pending keeps its backoff and claim; it returns only the
 	// targets it inserted or moved back to pending.
 	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error)
+	// RecordMissingCDNPurgeTargets commits, in its own transaction, only the
+	// targets not yet recorded, leaving every recorded target, pending or
+	// completed, untouched. It returns the targets it inserted.
+	RecordMissingCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error)
 }
 
 const (
@@ -357,6 +361,40 @@ func (q *CDNPurgeQueue) RecordCDNPurgeTargets(ctx context.Context, blobs []image
 	if len(blobs) == 0 {
 		return nil
 	}
+	if err := validateCDNPurgeTargets(blobs); err != nil {
+		return err
+	}
+	pended, err := q.store.RecordCDNPurgeTargets(ctx, blobs)
+	if err != nil {
+		return fmt.Errorf("record CDN purge targets: %w", err)
+	}
+	q.PurgeAfterCommit(ctx, pended)
+	return nil
+}
+
+// RecordMissingCDNPurgeTargets durably records only the targets not yet
+// recorded, leaving a pending or completed target untouched, before scheduling
+// an immediate purge attempt for the targets it inserted. It validates like
+// RecordCDNPurgeTargets, and a failed recording likewise leaves the caller's
+// cached bytes untouched.
+func (q *CDNPurgeQueue) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error {
+	if len(blobs) == 0 {
+		return nil
+	}
+	if err := validateCDNPurgeTargets(blobs); err != nil {
+		return err
+	}
+	inserted, err := q.store.RecordMissingCDNPurgeTargets(ctx, blobs)
+	if err != nil {
+		return fmt.Errorf("record missing CDN purge targets: %w", err)
+	}
+	q.PurgeAfterCommit(ctx, inserted)
+	return nil
+}
+
+// validateCDNPurgeTargets requires a valid owner DID and a canonical CID for
+// every target, rejecting the whole batch on the first failure.
+func validateCDNPurgeTargets(blobs []imageproxy.BlockedBlob) error {
 	for _, blob := range blobs {
 		if blob.OwnerDID == "" || blob.CID == "" {
 			return fmt.Errorf("record CDN purge target: %w", imageproxy.ErrEmptyParameter)
@@ -372,10 +410,5 @@ func (q *CDNPurgeQueue) RecordCDNPurgeTargets(ctx context.Context, blobs []image
 			return fmt.Errorf("record CDN purge target: non-canonical CID: %w", imageproxy.ErrInvalidCID)
 		}
 	}
-	pended, err := q.store.RecordCDNPurgeTargets(ctx, blobs)
-	if err != nil {
-		return fmt.Errorf("record CDN purge targets: %w", err)
-	}
-	q.PurgeAfterCommit(ctx, pended)
 	return nil
 }

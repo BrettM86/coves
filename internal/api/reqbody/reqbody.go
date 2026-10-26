@@ -1,6 +1,6 @@
 // Package reqbody is the single place request-body size limits and JSON
 // decoding live. Every handler that reads a JSON request body goes through
-// DecodeJSON so the cap, the 413 semantics, and the trailing-data rejection
+// DecodeJSON, and every raw-bytes body goes through ReadBytes, so the cap, the 413 semantics, and the trailing-data rejection
 // are uniform across the API surface — scripts/test-audit.sh (run inside
 // `make ci`) counts any raw request-body decode outside this package as a
 // violation.
@@ -49,10 +49,11 @@ const (
 	// image bytes.
 	LimitLarge Limit = 1 << 20 // 1 MiB
 
-	// LimitImage fits base64-encoded image payloads: the profile AND
-	// community endpoints accept inline avatar/banner bytes, up to 1 MB +
-	// 2 MB raw per their lexicons, which is ~4 MB as base64 plus the
-	// record's text fields. 10 MB leaves comfortable slack.
+	// LimitImage fits image payloads: the profile AND community endpoints
+	// accept inline base64 avatar/banner bytes, up to 1 MB + 2 MB raw per
+	// their lexicons, which is ~4 MB as base64 plus the record's text fields;
+	// raw image uploads (ReadBytes) are capped at exactly this many bytes,
+	// the largest image the media pipeline stores.
 	LimitImage Limit = 10_000_000
 
 	// LimitGlobal is the router-wide backstop applied to every request
@@ -200,4 +201,28 @@ func classifyDecodeError(err error, dst any) error {
 		return &TooLargeError{Limit: maxBytesErr.Limit, err: maxBytesErr}
 	}
 	return &MalformedError{err: err}
+}
+
+// ReadBytes caps r.Body at limit bytes and returns the whole body, for
+// endpoints whose body is raw bytes rather than JSON (image uploads). A body
+// over the cap returns *TooLargeError whether or not the client declared a
+// Content-Length; any other read failure is returned wrapped.
+//
+// Like DecodeJSON, it replaces r.Body with the capped reader.
+func ReadBytes(w http.ResponseWriter, r *http.Request, limit Limit) ([]byte, error) {
+	if limit <= 0 {
+		panic(fmt.Sprintf("reqbody.ReadBytes: limit must be positive, got %d", int64(limit)))
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, int64(limit))
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, &TooLargeError{Limit: maxBytesErr.Limit, err: maxBytesErr}
+		}
+		return nil, fmt.Errorf("reading request body: %w", err)
+	}
+	return data, nil
 }

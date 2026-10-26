@@ -28,10 +28,10 @@ package embeds
 import (
 	"log/slog"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/core/blobs"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/ipfs/go-cid"
 )
 
 // Embed union member $type discriminators, and the "#view" projections of the
@@ -39,10 +39,11 @@ import (
 // social.coves.community.post.defs#postView and
 // social.coves.community.comment.defs#commentView.
 const (
-	TypeImages   = "social.coves.embed.images"
-	TypeVideo    = "social.coves.embed.video"
-	TypeExternal = "social.coves.embed.external"
-	TypePost     = "social.coves.embed.post"
+	TypeImages               = embedblobs.TypeImages
+	TypeImagesWithAttachment = embedblobs.TypeImagesWithAttachment
+	TypeVideo                = embedblobs.TypeVideo
+	TypeExternal             = embedblobs.TypeExternal
+	TypePost                 = "social.coves.embed.post"
 
 	// viewSuffix marks the served projection of a record type. A view carries
 	// URL strings where the record carries blobs, so it must not claim to be
@@ -72,6 +73,20 @@ const (
 // something each helper has to remember.
 type mutation func()
 
+// ViewImageCount returns the number of images in the served main gallery.
+// Raw embeds and external attachment galleries cannot resolve image facets.
+func ViewImageCount(embed interface{}) int {
+	gallery, _ := embed.(map[string]interface{})
+	if gallery["$type"] == TypeImagesWithAttachment+viewSuffix {
+		gallery, _ = gallery["images"].(map[string]interface{})
+	}
+	if gallery["$type"] != TypeImages+viewSuffix {
+		return 0
+	}
+	images, _ := gallery["images"].([]interface{})
+	return len(images)
+}
+
 // HydrateView rewrites embed in place from its record shape into its #view
 // shape, replacing every blob reference it understands with a URL.
 //
@@ -98,7 +113,7 @@ func HydrateView(embed map[string]interface{}, ownerDID, ownerPDSURL string) {
 	// includes the #view types of the ones it does act on, which is what makes
 	// it idempotent, and social.coves.embed.post, which carries no blobs.
 	switch embedType {
-	case TypeExternal, TypeImages, TypeVideo:
+	case TypeExternal, TypeImages, TypeVideo, TypeImagesWithAttachment:
 	default:
 		return
 	}
@@ -137,6 +152,9 @@ func HydrateView(embed map[string]interface{}, ownerDID, ownerPDSURL string) {
 				commits, projected = projectImages(images, ownerDID, ownerPDSURL)
 			}
 
+		case TypeImagesWithAttachment:
+			commits, projected = projectImagesWithAttachment(embed, ownerDID, ownerPDSURL)
+
 		case TypeVideo:
 			commits, projected = projectVideo(embed, ownerDID, ownerPDSURL)
 		}
@@ -168,10 +186,10 @@ func HydrateView(embed map[string]interface{}, ownerDID, ownerPDSURL string) {
 // HydrateCommentView projects a comment's embed, restricted to the union that
 // comments actually declare.
 //
-// Comments carry a narrower union than posts: social.coves.embed.images and
-// social.coves.embed.post, on the served view
-// (social.coves.community.comment.defs#commentView) and on the create and
-// update inputs alike. Posts additionally allow video and external.
+// Comments carry a narrower union than posts: images, quoted posts, and
+// imagesWithAttachment with a quoted-post attachment, on the served view
+// (social.coves.community.comment.defs#commentView). Posts additionally allow
+// video and external.
 //
 // The restriction has to be enforced here because nothing upstream enforces it.
 // Comment records live in the author's own repository and reach the index
@@ -187,9 +205,15 @@ func HydrateCommentView(embed map[string]interface{}, ownerDID, ownerPDSURL stri
 		return
 	}
 
-	// TypePost carries no blobs; anything other than images is outside
-	// the comment union entirely.
-	if embedType, _ := embed["$type"].(string); embedType != TypeImages {
+	// A composite comment may project only its gallery and quote attachment.
+	switch embedType, _ := embed["$type"].(string); embedType {
+	case TypeImages:
+	case TypeImagesWithAttachment:
+		attachment, _ := embed["attachment"].(map[string]interface{})
+		if attachmentType, _ := attachment["$type"].(string); attachmentType != TypePost && attachmentType != TypePost+viewSuffix {
+			return
+		}
+	default:
 		return
 	}
 
@@ -230,6 +254,19 @@ func ServableEmbed(stored interface{}) interface{} {
 	switch embedType, _ := embed["$type"].(string); embedType {
 	case TypeImages:
 		dropViewImageURLs(embed["images"])
+	case TypeImagesWithAttachment:
+		gallery, _ := embed["images"].(map[string]interface{})
+		attachment, _ := embed["attachment"].(map[string]interface{})
+		if gallery["$type"] != TypeImages {
+			return nil
+		}
+		switch attachmentType, _ := attachment["$type"].(string); attachmentType {
+		case TypeExternal, TypePost, TypePost + viewSuffix:
+		default:
+			return nil
+		}
+		embed["images"] = ServableEmbed(gallery)
+		embed["attachment"] = ServableEmbed(attachment)
 	case TypeVideo:
 		dropNonBlob(embed, "video")
 		dropNonBlob(embed, "thumbnail")
@@ -327,35 +364,65 @@ func IsBlueskyPostURI(uri string) bool {
 // Moderation blocks exactly these, so blocking and serving cannot drift apart.
 //
 // The embed is author-controlled and unvalidated, so this never fails: only a
-// social.coves.embed.images embed contributes, and an entry that is not an
+// images gallery contributes (standalone or nested), and an entry that is not an
 // object, carries no blob CID in either encoding blobCID accepts, or whose CID
 // does not decode is skipped. Each CID is decoded and re-encoded in its
 // canonical string form, the form the proxy route normalizes requests to, and
 // the result is de-duplicated in first-seen order.
 func CommentImageCIDs(embed map[string]interface{}) []string {
-	if embedType, _ := embed["$type"].(string); embedType != TypeImages {
-		return nil
+	return projectedBlobCIDs(embedblobs.CommentReferences(embed))
+}
+
+// projectImagesWithAttachment stages both parts before committing either, so
+// a malformed attachment never leaves the gallery partially hydrated.
+func projectImagesWithAttachment(embed map[string]interface{}, ownerDID, ownerPDSURL string) ([]mutation, bool) {
+	gallery, _ := embed["images"].(map[string]interface{})
+	if gallery["$type"] != TypeImages {
+		return nil, false
 	}
-	images, _ := embed["images"].([]interface{})
-	var cids []string
-	seen := make(map[string]bool, len(images))
-	for _, entry := range images {
-		image, isObject := entry.(map[string]interface{})
+	images, _ := gallery["images"].([]interface{})
+	if len(images) == 0 {
+		return nil, false
+	}
+	commits, ok := projectImages(images, ownerDID, ownerPDSURL)
+	if !ok {
+		return nil, false
+	}
+	attachment, _ := embed["attachment"].(map[string]interface{})
+	switch attachmentType, _ := attachment["$type"].(string); attachmentType {
+	case TypeExternal:
+		external, isObject := attachment["external"].(map[string]interface{})
 		if !isObject {
-			continue
+			return nil, false
 		}
-		parsed, err := cid.Decode(blobCID(image["image"]))
-		if err != nil {
-			continue
+		uri, isString := external["uri"].(string)
+		if !isString {
+			return nil, false
 		}
-		canonical := parsed.String()
-		if seen[canonical] {
-			continue
+		if _, err := syntax.ParseURI(uri); err != nil {
+			return nil, false
 		}
-		seen[canonical] = true
-		cids = append(cids, canonical)
+		attachmentCommits, projected := projectExternal(external, ownerDID, ownerPDSURL)
+		if !projected {
+			return nil, false
+		}
+		commits = append(commits, attachmentCommits...)
+		commits = append(commits, func() {
+			external["$type"] = TypeExternal + "#viewExternal"
+			embed["attachment"] = external
+		})
+	case TypePost, TypePost + viewSuffix:
+		quote := projectQuote(attachment)
+		post, _ := quote["post"].(map[string]interface{})
+		if post["uri"] == nil || post["cid"] == nil {
+			return nil, false
+		}
+		quote["$type"] = TypePost + viewSuffix
+		commits = append(commits, func() { embed["attachment"] = quote })
+	default:
+		return nil, false
 	}
-	return cids
+	return append(commits, func() { gallery["$type"] = TypeImages + viewSuffix }), true
 }
 
 // projectExternal computes the URL-bearing fields of
@@ -480,77 +547,30 @@ func imageURL(pdsURL, did, cid, preset string) string {
 	return blobs.HydrateImageURL(blobs.GetImageURLConfig(), pdsURL, did, cid, preset)
 }
 
-// blobCID extracts the CID from an atproto blob reference.
-//
-// It returns "" for anything that is not a blob carrying a CID, including a ref
-// in a shape we do not recognize, which is left as-is rather than guessed at.
-//
-// Two encodings are accepted. ref.$link is the current form, and is the only
-// one consulted when ref is an object — a ref object without a usable $link
-// yields "" rather than falling through. A top-level cid is the legacy blob
-// encoding that predates the CID-link format, used whenever ref is absent or is
-// not an object; records carrying it are still in circulation on the network
-// and reach our index through federation.
+// blobCID extracts the raw CID from an atproto blob reference.
 func blobCID(value interface{}) string {
-	blob, ok := value.(map[string]interface{})
-	if !ok {
-		return ""
-	}
-
-	if ref, ok := blob["ref"].(map[string]interface{}); ok {
-		if cid, ok := ref["$link"].(string); ok {
-			return cid
-		}
-		return ""
-	}
-
-	if cid, ok := blob["cid"].(string); ok {
-		return cid
-	}
-
-	return ""
+	return embedblobs.BlobCID(value)
 }
 
 // BlobCID exposes the same extraction rule to callers validating stored blobs
 // before asking the view projector to turn them into URLs.
-func BlobCID(value interface{}) string { return blobCID(value) }
+func BlobCID(value interface{}) string { return embedblobs.BlobCID(value) }
 
 // PostBlobCIDs returns the canonical, first-seen CIDs of post blobs served
 // through the image proxy. Malformed entries are skipped; video blobs are
 // served directly by the PDS, so only their thumbnails are included.
 func PostBlobCIDs(embed map[string]interface{}) []string {
+	return projectedBlobCIDs(embedblobs.PostReferences(embed))
+}
+
+// projectedBlobCIDs projects typed references to distinct CIDs in first-seen order.
+func projectedBlobCIDs(references []embedblobs.Reference) []string {
 	var cids []string
 	seen := make(map[string]bool)
-	addBlob := func(value interface{}) {
-		parsed, err := cid.Decode(blobCID(value))
-		if err != nil {
-			return
-		}
-		canonical := parsed.String()
-		if !seen[canonical] {
-			seen[canonical] = true
-			cids = append(cids, canonical)
-		}
-	}
-	addImages := func(value interface{}) {
-		images, _ := value.([]interface{})
-		for _, entry := range images {
-			image, ok := entry.(map[string]interface{})
-			if ok {
-				addBlob(image["image"])
-			}
-		}
-	}
-
-	switch embedType, _ := embed["$type"].(string); embedType {
-	case TypeImages:
-		addImages(embed["images"])
-	case TypeVideo:
-		addBlob(embed["thumbnail"])
-	case TypeExternal:
-		if external, ok := embed["external"].(map[string]interface{}); ok {
-			addBlob(external["thumb"])
-			addImages(external["images"])
+	for _, reference := range references {
+		if !seen[reference.CID] {
+			seen[reference.CID] = true
+			cids = append(cids, reference.CID)
 		}
 	}
 	return cids

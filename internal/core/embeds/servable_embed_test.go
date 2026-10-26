@@ -56,6 +56,54 @@ func serve(t *testing.T, stored interface{}) interface{} {
 	return served
 }
 
+func serveComment(t *testing.T, stored interface{}) interface{} {
+	t.Helper()
+	served := ServableEmbed(copyEmbed(t, stored))
+	if embed, ok := served.(map[string]interface{}); ok {
+		HydrateCommentView(embed, testDID, testPDS)
+	}
+	return served
+}
+
+func TestServableEmbed_CommentStringInImageBlobPositionIsNotServed(t *testing.T) {
+	withProxy(t, "https://img.coves.social")
+
+	for _, test := range []struct {
+		name  string
+		image string
+	}{
+		{"direct getBlob URL", "https://pds.example.com/xrpc/com.atproto.sync.getBlob?did=" + testDID + "&cid=" + testCID},
+		{"file URL", "file:///etc/passwd"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			served := serveComment(t, imagesEmbed(map[string]interface{}{"alt": "x", "image": test.image}))
+			assert.Equal(t, map[string]interface{}{
+				"$type":  "social.coves.embed.images",
+				"images": []interface{}{map[string]interface{}{"alt": "x"}},
+			}, served)
+
+			var stringsInValue []string
+			var collectStrings func(interface{})
+			collectStrings = func(value interface{}) {
+				switch typed := value.(type) {
+				case string:
+					stringsInValue = append(stringsInValue, typed)
+				case map[string]interface{}:
+					for _, field := range typed {
+						collectStrings(field)
+					}
+				case []interface{}:
+					for _, entry := range typed {
+						collectStrings(entry)
+					}
+				}
+			}
+			collectStrings(served)
+			assert.NotContains(t, stringsInValue, test.image)
+		})
+	}
+}
+
 func TestServableEmbed_ServesOnlyMediaURLsDerivedFromBlobs(t *testing.T) {
 	withProxy(t, "https://img.coves.social")
 	const blueskyURI = "at://did:plc:quoted/app.bsky.feed.post/3kquoted"
@@ -67,7 +115,7 @@ func TestServableEmbed_ServesOnlyMediaURLsDerivedFromBlobs(t *testing.T) {
 	}
 	quoteOf := func(embedType, uri string) map[string]interface{} {
 		return map[string]interface{}{
-			"$type": embedType, "post": map[string]interface{}{"uri": uri, "cid": testCID},
+			"$type": embedType, "post": map[string]interface{}{"uri": uri, "cid": testCID, "thumb": authorURL("content_preview")},
 			"resolved": forgedResolved, "images": []interface{}{map[string]interface{}{"thumb": authorURL("content_preview")}},
 		}
 	}

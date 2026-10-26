@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"strings"
 
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/embeds"
+	"Coves/internal/core/richtext"
 )
 
 // TransformBlobRefsToURLs projects a post's embed from its record shape into
@@ -25,21 +27,24 @@ import (
 // media around the image proxy and therefore around CSAM scanning — see
 // internal/core/embeds.
 func TransformBlobRefsToURLs(postView *PostView) {
-	if postView == nil || postView.Embed == nil {
+	if postView == nil {
 		return
 	}
 
-	embedMap, ok := postView.Embed.(map[string]interface{})
-	if !ok {
-		return
+	if embedMap, ok := postView.Embed.(map[string]interface{}); ok {
+		if ownerDID, ownerPDSURL, found := blobOwnerOf(postView); found {
+			embeds.HydrateView(embedMap, ownerDID, ownerPDSURL)
+		}
 	}
 
-	ownerDID, ownerPDSURL, ok := blobOwnerOf(postView)
-	if !ok {
-		return
+	if record, ok := postView.Record.(map[string]interface{}); ok {
+		if facets, found := record["facets"].([]interface{}); found {
+			content, _ := record["content"].(string)
+			filteredRecord := maps.Clone(record)
+			filteredRecord["facets"] = richtext.FilterImageFacets(facets, embeds.ViewImageCount(postView.Embed), len(content))
+			postView.Record = filteredRecord
+		}
 	}
-
-	embeds.HydrateView(embedMap, ownerDID, ownerPDSURL)
 }
 
 // blobOwnerOf reports the repository a post's blobs live in, and false when

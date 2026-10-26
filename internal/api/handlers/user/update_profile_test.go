@@ -3,8 +3,14 @@ package user
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +19,8 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/media"
+	"Coves/tests/testkit"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -26,6 +34,7 @@ type mockPDSClient struct {
 	getRecordError            error
 	uploadBlobError           error
 	uploadBlobRef             *blobs.BlobRef
+	uploads                   []profileUpload
 	putRecordError            error
 	putRecordWithCommitError  error
 	putRecordURI              string
@@ -41,6 +50,11 @@ type mockPDSClient struct {
 	putRecordRKey       string
 	putRecordValue      any
 	putRecordSwap       string
+}
+
+type profileUpload struct {
+	data     []byte
+	mimeType string
 }
 
 var _ pds.CommitClient = (*mockPDSClient)(nil)
@@ -95,7 +109,8 @@ func (m *mockPDSClient) GetLatestCommit(_ context.Context) (*pds.LatestCommit, e
 	panic("unexpected GetLatestCommit call")
 }
 
-func (m *mockPDSClient) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
+func (m *mockPDSClient) UploadBlob(_ context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
+	m.uploads = append(m.uploads, profileUpload{append([]byte(nil), data...), mimeType})
 	if m.uploadBlobError != nil {
 		return nil, m.uploadBlobError
 	}
@@ -122,11 +137,18 @@ func createMockFactory(client pds.CommitClient, err error) PDSClientFactory {
 
 // createTestHandler creates a handler with a mock factory for testing validation paths
 // that don't require actual PDS client operations
-func createTestHandler() *UpdateProfileHandler {
+func testMediaPipeline(t *testing.T) *media.Pipeline {
+	t.Helper()
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 4, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
+	return pipeline
+}
+
+func createTestHandler(t *testing.T) *UpdateProfileHandler {
 	// Use a factory that will never be called (tests exit before PDS client creation)
 	return NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.CommitClient, error) {
 		return nil, errors.New("mock factory should not be called in validation tests")
-	})
+	}, testMediaPipeline(t))
 }
 
 // createTestOAuthSession creates a test OAuth session for testing
@@ -149,7 +171,7 @@ func setTestOAuthSession(req *http.Request, userDID string, session *oauthlib.Cl
 
 // TestUpdateProfileHandler_Unauthenticated tests that unauthenticated requests return 401
 func TestUpdateProfileHandler_Unauthenticated(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -169,7 +191,7 @@ func TestUpdateProfileHandler_Unauthenticated(t *testing.T) {
 
 // TestUpdateProfileHandler_MissingOAuthSession tests that missing OAuth session returns 401
 func TestUpdateProfileHandler_MissingOAuthSession(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -192,7 +214,7 @@ func TestUpdateProfileHandler_MissingOAuthSession(t *testing.T) {
 
 // TestUpdateProfileHandler_InvalidRequestBody tests that invalid JSON returns 400
 func TestUpdateProfileHandler_InvalidRequestBody(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", strings.NewReader("not valid json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -210,7 +232,7 @@ func TestUpdateProfileHandler_InvalidRequestBody(t *testing.T) {
 
 // TestUpdateProfileHandler_AvatarSizeExceedsLimit tests that avatar over 1MB is rejected
 func TestUpdateProfileHandler_AvatarSizeExceedsLimit(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	// Create avatar blob larger than 1MB (1,000,001 bytes)
 	largeBlob := make([]byte, 1_000_001)
@@ -238,7 +260,7 @@ func TestUpdateProfileHandler_AvatarSizeExceedsLimit(t *testing.T) {
 
 // TestUpdateProfileHandler_BannerSizeExceedsLimit tests that banner over 2MB is rejected
 func TestUpdateProfileHandler_BannerSizeExceedsLimit(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	// Create banner blob larger than 2MB (2,000,001 bytes)
 	largeBlob := make([]byte, 2_000_001)
@@ -266,7 +288,7 @@ func TestUpdateProfileHandler_BannerSizeExceedsLimit(t *testing.T) {
 
 // TestUpdateProfileHandler_InvalidAvatarMimeType tests that invalid avatar mime type is rejected
 func TestUpdateProfileHandler_InvalidAvatarMimeType(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -291,7 +313,7 @@ func TestUpdateProfileHandler_InvalidAvatarMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_InvalidBannerMimeType tests that invalid banner mime type is rejected
 func TestUpdateProfileHandler_InvalidBannerMimeType(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -316,7 +338,7 @@ func TestUpdateProfileHandler_InvalidBannerMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_MethodNotAllowed tests that non-POST methods are rejected
 func TestUpdateProfileHandler_MethodNotAllowed(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
 
@@ -338,7 +360,7 @@ func TestUpdateProfileHandler_MethodNotAllowed(t *testing.T) {
 
 // TestUpdateProfileHandler_AvatarBlobWithoutMimeType tests that providing blob without mime type fails
 func TestUpdateProfileHandler_AvatarBlobWithoutMimeType(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -363,7 +385,7 @@ func TestUpdateProfileHandler_AvatarBlobWithoutMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_BannerBlobWithoutMimeType tests that providing banner without mime type fails
 func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -388,7 +410,7 @@ func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_DisplayNameTooLong tests that displayName exceeding limit is rejected
 func TestUpdateProfileHandler_DisplayNameTooLong(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	longName := strings.Repeat("a", MaxDisplayNameGraphemes+1)
 	reqBody := UpdateProfileRequest{
@@ -423,7 +445,7 @@ func TestUpdateProfileHandler_DescriptionTooLong(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := createTestHandler()
+			handler := createTestHandler(t)
 			body, err := json.Marshal(map[string]string{"description": tt.description})
 			require.NoError(t, err)
 
@@ -467,7 +489,7 @@ func TestUpdateProfileHandler_DescriptionWireKey(t *testing.T) {
 				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
 				putRecordCID: "bafyupdated",
 			}
-			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
@@ -488,7 +510,7 @@ func TestUpdateProfileHandler_DescriptionWireKey(t *testing.T) {
 
 // TestUpdateProfileHandler_MissingHostURL tests that missing PDS host URL returns error
 func TestUpdateProfileHandler_MissingHostURL(t *testing.T) {
-	handler := createTestHandler()
+	handler := createTestHandler(t)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -510,23 +532,6 @@ func TestUpdateProfileHandler_MissingHostURL(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "Missing PDS credentials")
 }
 
-// TestIsValidImageMimeType tests the mime type validation function
-func TestIsValidImageMimeType(t *testing.T) {
-	validTypes := []string{"image/png", "image/jpeg", "image/webp"}
-	for _, mt := range validTypes {
-		t.Run("valid_"+mt, func(t *testing.T) {
-			assert.True(t, isValidImageMimeType(mt))
-		})
-	}
-
-	invalidTypes := []string{"image/gif", "image/bmp", "application/pdf", "text/plain", "", "image/svg+xml"}
-	for _, mt := range invalidTypes {
-		t.Run("invalid_"+mt, func(t *testing.T) {
-			assert.False(t, isValidImageMimeType(mt))
-		})
-	}
-}
-
 // ============================================================================
 // PDS Client Error Path Tests
 // These tests use mock factories to test error handling for PDS operations
@@ -534,7 +539,7 @@ func TestIsValidImageMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_PDSClientCreationFails tests session restoration failure
 func TestUpdateProfileHandler_PDSClientCreationFails(t *testing.T) {
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(nil, errors.New("session restoration failed")))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(nil, errors.New("session restoration failed")), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -561,11 +566,11 @@ func TestUpdateProfileHandler_AvatarUploadUnauthorized(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrUnauthorized,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -589,11 +594,11 @@ func TestUpdateProfileHandler_AvatarUploadRateLimited(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrRateLimited,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -617,11 +622,11 @@ func TestUpdateProfileHandler_AvatarUploadPayloadTooLarge(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrPayloadTooLarge,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -660,13 +665,13 @@ func TestUpdateProfileHandler_BannerUploadUnauthorized(t *testing.T) {
 			failOnCall:    2, // Fail on banner upload
 			failError:     pds.ErrUnauthorized,
 		}, nil
-	})
+	}, testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("avatar data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -694,7 +699,7 @@ func TestUpdateProfileHandler_ProfileWriteUnauthorized(t *testing.T) {
 		},
 		putRecordWithCommitError: pds.ErrUnauthorized,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -724,7 +729,7 @@ func TestUpdateProfileHandler_ProfileWriteRateLimited(t *testing.T) {
 		},
 		putRecordWithCommitError: pds.ErrRateLimited,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -754,7 +759,7 @@ func TestUpdateProfileHandler_ProfileWritePayloadTooLarge(t *testing.T) {
 		},
 		putRecordWithCommitError: pds.ErrPayloadTooLarge,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -786,7 +791,7 @@ func TestUpdateProfileHandler_ProfileWriteForbidden(t *testing.T) {
 		},
 		putRecordWithCommitError: pds.ErrForbidden,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -813,7 +818,7 @@ func TestUpdateProfileHandler_Success(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -868,7 +873,7 @@ func TestUpdateProfileHandler_TextUpdatePreservesExistingRecord(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyupdated",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("New name")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -924,7 +929,7 @@ func TestUpdateProfileHandler_DescriptionChangeRemovesDescriptionFacets(t *testi
 				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
 				putRecordCID: "bafyupdated",
 			}
-			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 			body, _ := json.Marshal(UpdateProfileRequest{Description: strPtr(tt.description)})
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -979,7 +984,7 @@ func TestUpdateProfileHandler_UnchangedDescriptionPreservesDescriptionFacets(t *
 				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
 				putRecordCID: "bafyupdated",
 			}
-			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 			body, _ := json.Marshal(UpdateProfileRequest{Description: tt.description})
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1040,11 +1045,11 @@ func TestUpdateProfileHandler_AvatarReplacementPreservesRestOfStandingRecord(t *
 		putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
 		putRecordCID: "bafyupdated",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{
-		AvatarBlob:     []byte("new avatar"),
-		AvatarMimeType: "image/webp",
+		AvatarBlob:     testkit.TestJPEG(4, 4),
+		AvatarMimeType: "image/jpeg",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1082,7 +1087,7 @@ func TestUpdateProfileHandler_PutRecordSwapConflictIsHTTPConflict(t *testing.T) 
 		},
 		putRecordWithCommitError: pds.ErrSwapConflict,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Racing update")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1117,7 +1122,7 @@ func TestUpdateProfileHandler_NoCommitReturnsAcceptedRecordIdentity(t *testing.T
 		putRecordURI:             acceptedURI,
 		putRecordCID:             acceptedCID,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Standing name")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1150,7 +1155,7 @@ func TestUpdateProfileHandler_NoCommitAfterNotFoundReturnsAcceptedRecordIdentity
 		putRecordURI:             acceptedURI,
 		putRecordCID:             acceptedCID,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1177,7 +1182,7 @@ func TestUpdateProfileHandler_MissingRecordCreatesProfile(t *testing.T) {
 		putRecordURI:   "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID:   "bafycreated",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1203,7 +1208,7 @@ func TestUpdateProfileHandler_MissingRecordUsesCreateOnlyGuard(t *testing.T) {
 		putRecordURI:             "at://did:plc:testuser123/social.coves.actor.profile/self",
 		putRecordCID:             "bafyoverwritten",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1224,7 +1229,7 @@ func TestUpdateProfileHandler_MissingRecordUsesCreateOnlyGuard(t *testing.T) {
 
 func TestUpdateProfileHandler_NilGetRecordResponseDoesNotUseUnguardedWrite(t *testing.T) {
 	mockClient := &mockPDSClient{}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1251,7 +1256,7 @@ func TestUpdateProfileHandler_ExistingRecordWithEmptyCIDDoesNotUseUnguardedWrite
 		},
 		putRecordWithCommitError: pds.ErrSwapConflict,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Updated profile")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1273,7 +1278,7 @@ func TestUpdateProfileHandler_ExistingRecordWithEmptyCIDDoesNotUseUnguardedWrite
 
 func TestUpdateProfileHandler_GetRecordRateLimitedStopsWrite(t *testing.T) {
 	mockClient := &mockPDSClient{getRecordError: pds.ErrRateLimited}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{Description: strPtr("New bio")})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -1301,11 +1306,11 @@ func TestUpdateProfileHandler_SuccessWithAvatar(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1336,12 +1341,13 @@ type mockPDSClientWithCallCounter struct {
 	failError  error
 }
 
-func (m *mockPDSClientWithCallCounter) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
+func (m *mockPDSClientWithCallCounter) UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
 	*m.callCount++
 	if *m.callCount == m.failOnCall {
+		m.uploads = append(m.uploads, profileUpload{append([]byte(nil), data...), mimeType})
 		return nil, m.failError
 	}
-	return m.uploadBlobRef, nil
+	return m.mockPDSClient.UploadBlob(ctx, data, mimeType)
 }
 
 // ============================================================================
@@ -1364,7 +1370,7 @@ func TestNewUpdateProfileHandler_NilOAuthClientPanics(t *testing.T) {
 		}
 	}()
 
-	NewUpdateProfileHandler(nil)
+	NewUpdateProfileHandler(nil, testMediaPipeline(t))
 }
 
 // TestNewUpdateProfileHandlerWithFactory_NilFactoryPanics verifies that passing nil factory panics
@@ -1383,7 +1389,7 @@ func TestNewUpdateProfileHandlerWithFactory_NilFactoryPanics(t *testing.T) {
 		}
 	}()
 
-	NewUpdateProfileHandlerWithFactory(nil)
+	NewUpdateProfileHandlerWithFactory(nil, testMediaPipeline(t))
 }
 
 // ============================================================================
@@ -1395,11 +1401,11 @@ func TestUpdateProfileHandler_AvatarUploadReturnsNilRef(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobRef: nil, // Nil BlobRef
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1429,11 +1435,11 @@ func TestUpdateProfileHandler_AvatarUploadReturnsNilRefField(t *testing.T) {
 			Size:     100,
 		},
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1463,11 +1469,11 @@ func TestUpdateProfileHandler_AvatarUploadReturnsEmptyType(t *testing.T) {
 			Size:     100,
 		},
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1495,11 +1501,11 @@ func TestUpdateProfileHandler_BannerUploadReturnsNilRef(t *testing.T) {
 		return &mockPDSClientWithNilBannerRef{
 			callCount: &callCount,
 		}, nil
-	})
+	}, testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1529,11 +1535,11 @@ func TestUpdateProfileHandler_BannerUploadReturnsNilRefField(t *testing.T) {
 			Size:     100,
 		},
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1563,11 +1569,11 @@ func TestUpdateProfileHandler_BannerUploadReturnsEmptyType(t *testing.T) {
 			Size:     100,
 		},
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1659,10 +1665,10 @@ func TestUpdateProfileHandler_AvatarExactlyAtMaxSize(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	// Create avatar blob at exactly 1MB (1,000,000 bytes)
-	avatarBlob := make([]byte, MaxAvatarBlobSize)
+	avatarBlob := paddedProfileJPEG(t, MaxAvatarBlobSize)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -1702,10 +1708,10 @@ func TestUpdateProfileHandler_BannerExactlyAtMaxSize(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	// Create banner blob at exactly 2MB (2,000,000 bytes)
-	bannerBlob := make([]byte, MaxBannerBlobSize)
+	bannerBlob := paddedProfileJPEG(t, MaxBannerBlobSize)
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -1737,16 +1743,34 @@ func TestUpdateProfileHandler_BannerExactlyAtMaxSize(t *testing.T) {
 // Banner-Specific Error Path Tests
 // ============================================================================
 
+func paddedProfileJPEG(t *testing.T, size int) []byte {
+	t.Helper()
+	base := testkit.TestJPEG(4, 4)
+	remaining := size - len(base)
+	var segments [][]byte
+	for remaining > 0 {
+		segmentSize := min(remaining, 65537)
+		if remaining-segmentSize > 0 && remaining-segmentSize < 4 {
+			segmentSize -= 4 - (remaining - segmentSize)
+		}
+		segments = append(segments, testkit.JPEGMarkerSegment(0xef, make([]byte, segmentSize-4)))
+		remaining -= segmentSize
+	}
+	data := testkit.JPEGWithSegments(base, segments...)
+	require.Len(t, data, size)
+	return data
+}
+
 // TestUpdateProfileHandler_BannerUploadRateLimited tests banner upload rate limiting
 func TestUpdateProfileHandler_BannerUploadRateLimited(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrRateLimited,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1770,11 +1794,11 @@ func TestUpdateProfileHandler_BannerUploadPayloadTooLarge(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrPayloadTooLarge,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1800,11 +1824,11 @@ func TestUpdateProfileHandler_BannerUploadForbidden(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrForbidden,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1829,11 +1853,11 @@ func TestUpdateProfileHandler_AvatarUploadForbidden(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrForbidden,
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestJPEG(4, 4),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1857,11 +1881,11 @@ func TestUpdateProfileHandler_BannerUploadGenericError(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: errors.New("network error"),
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
-		BannerBlob:     []byte("banner data"),
+		BannerBlob:     testkit.TestJPEG(4, 4),
 		BannerMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -1893,7 +1917,7 @@ func TestUpdateProfileHandler_EmptyRequestSuccess(t *testing.T) {
 		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	// Empty request - no fields set
 	reqBody := UpdateProfileRequest{}
@@ -1955,12 +1979,12 @@ func TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack(t *testing.T) 
 		putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
 		putRecordCID: "bafyreifake",
 	}
-	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
 
 	body, _ := json.Marshal(UpdateProfileRequest{
 		DisplayName:    strPtr("Written Through"),
 		Description:    strPtr("and read back by the consumer"),
-		AvatarBlob:     []byte("fake image data"),
+		AvatarBlob:     testkit.TestPNG(4, 4),
 		AvatarMimeType: "image/png",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -2017,4 +2041,184 @@ func TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack(t *testing.T) 
 		"a request that did not touch the banner emitted a banner key: the consumer reads an "+
 			"empty value as an instruction to clear the stored one")
 	assert.NotContains(t, record, bannerCID)
+}
+
+func sendProfileImage(t *testing.T, mockClient *mockPDSClient, request UpdateProfileRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil), testMediaPipeline(t))
+	body, err := json.Marshal(request)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const did = "did:plc:testuser123"
+	req = setTestOAuthSession(req, did, createTestOAuthSession(did))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	return response
+}
+
+func TestUpdateProfileHandlerUploadsSanitizedSniffedJPEG(t *testing.T) {
+	withGPS := testkit.JPEGWithSegments(testkit.TestJPEG(12, 8), testkit.JPEGExifGPSegment(1))
+	plain := testkit.TestJPEG(12, 8)
+	for _, row := range []struct {
+		name     string
+		avatar   bool
+		data     []byte
+		declared string
+	}{
+		{"avatar Exif GPS declared PNG", true, withGPS, "image/png"},
+		{"banner Exif GPS declared PNG", false, withGPS, "image/png"},
+		{"avatar JPEG declared octet stream", true, plain, "application/octet-stream"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			mock := &mockPDSClient{
+				uploadBlobRef: &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": "bafytest"}, MimeType: "image/jpeg", Size: len(row.data)},
+				putRecordURI:  "at://did:plc:testuser123/social.coves.actor.profile/self", putRecordCID: "bafytest",
+			}
+			request := UpdateProfileRequest{}
+			if row.avatar {
+				request.AvatarBlob, request.AvatarMimeType = row.data, row.declared
+			} else {
+				request.BannerBlob, request.BannerMimeType = row.data, row.declared
+			}
+			response := sendProfileImage(t, mock, request)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Len(t, mock.uploads, 1, "image must be uploaded")
+			upload := mock.uploads[0]
+			assert.Equal(t, "image/jpeg", upload.mimeType)
+			require.True(t, bytes.HasPrefix(upload.data, []byte{0xff, 0xd8}), "uploaded bytes must be JPEG")
+			segments, _, err := testkit.WalkJPEGSegments(upload.data)
+			require.NoError(t, err)
+			for _, segment := range segments {
+				assert.NotEqual(t, byte(0xe1), segment.Marker, "APP1 must be removed")
+			}
+			if bytes.Contains(upload.data, []byte("Exif\x00\x00")) {
+				t.Error("uploaded JPEG retains Exif bytes")
+			}
+		})
+	}
+}
+
+func TestUpdateProfileHandlerRejectsUnsupportedOrCorruptImage(t *testing.T) {
+	var encoded bytes.Buffer
+	require.NoError(t, gif.Encode(&encoded, image.NewPaletted(image.Rect(0, 0, 4, 4), color.Palette{color.Black, color.White}), nil))
+	heic := binary.BigEndian.AppendUint32(nil, 20)
+	heic = append(heic, "ftypheic"...)
+	heic = binary.BigEndian.AppendUint32(heic, 0)
+	heic = append(heic, "heic"...)
+	corruptPNG := testkit.TestPNG(4, 4)
+	idat := bytes.Index(corruptPNG, []byte("IDAT"))
+	require.GreaterOrEqual(t, idat, 0)
+	require.Greater(t, len(corruptPNG), idat+6)
+	corruptPNG[idat+6] ^= 0xff
+	for _, row := range []struct {
+		name                string
+		avatar              bool
+		data                []byte
+		declared, wantError string
+	}{
+		{"avatar GIF declared PNG", true, encoded.Bytes(), "image/png", "InvalidMimeType"},
+		{"avatar HEIC declared JPEG", true, heic, "image/jpeg", "InvalidMimeType"},
+		{"banner GIF declared WebP", false, encoded.Bytes(), "image/webp", "InvalidMimeType"},
+		{"avatar PNG corrupt IDAT", true, corruptPNG, "image/png", "InvalidImage"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			mock := &mockPDSClient{
+				uploadBlobRef: &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": "bafytest"}, MimeType: "image/png", Size: len(row.data)},
+				putRecordURI:  "at://did:plc:testuser123/social.coves.actor.profile/self", putRecordCID: "bafytest",
+			}
+			request := UpdateProfileRequest{}
+			if row.avatar {
+				request.AvatarBlob, request.AvatarMimeType = row.data, row.declared
+			} else {
+				request.BannerBlob, request.BannerMimeType = row.data, row.declared
+			}
+			response := sendProfileImage(t, mock, request)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			var body struct {
+				Error string `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			assert.Equal(t, row.wantError, body.Error)
+			assert.Empty(t, mock.uploads, "rejected image must not reach UploadBlob")
+		})
+	}
+}
+
+// rotatedNoiseJPEG encodes seeded noise at a low quality and marks it with Exif
+// orientation 6, so the pipeline must decode, rotate, and re-encode it at a
+// higher quality, which makes the re-encode much larger than the input.
+func rotatedNoiseJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	random := rand.New(rand.NewPCG(17, 92))
+	noise := image.NewRGBA(image.Rect(0, 0, width, height))
+	for index := range noise.Pix {
+		if index%4 == 3 {
+			noise.Pix[index] = 0xff
+		} else {
+			noise.Pix[index] = uint8(random.UintN(256))
+		}
+	}
+	var encoded bytes.Buffer
+	require.NoError(t, jpeg.Encode(&encoded, noise, &jpeg.Options{Quality: 30}))
+	return testkit.JPEGWithSegments(encoded.Bytes(), testkit.JPEGExifGPSegment(6))
+}
+
+func TestUpdateProfileHandlerRejectsRotatedReEncodeOverLexiconMaxSize(t *testing.T) {
+	oversizedAvatar := rotatedNoiseJPEG(t, 1400, 1400)
+	oversizedBanner := rotatedNoiseJPEG(t, 2000, 2000)
+	for _, row := range []struct {
+		name                   string
+		request                UpdateProfileRequest
+		oversized              []byte
+		limit                  int
+		wantError, wantMessage string
+	}{
+		{
+			name:      "avatar",
+			request:   UpdateProfileRequest{AvatarBlob: oversizedAvatar, AvatarMimeType: "image/jpeg"},
+			oversized: oversizedAvatar, limit: MaxAvatarBlobSize,
+			wantError: "AvatarTooLarge", wantMessage: "Avatar exceeds 1MB limit",
+		},
+		{
+			// The valid avatar must not be uploaded before the banner is rejected.
+			name: "banner after valid avatar",
+			request: UpdateProfileRequest{
+				AvatarBlob: testkit.TestJPEG(12, 8), AvatarMimeType: "image/jpeg",
+				BannerBlob: oversizedBanner, BannerMimeType: "image/jpeg",
+			},
+			oversized: oversizedBanner, limit: MaxBannerBlobSize,
+			wantError: "BannerTooLarge", wantMessage: "Banner exceeds 2MB limit",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			// Fixture preconditions: the input passes the per-endpoint input cap,
+			// and the pipeline's rotated re-encode crosses it with margin.
+			require.LessOrEqual(t, len(row.oversized), row.limit*7/10, "fixture input must be well under the cap")
+			ingested, err := testMediaPipeline(t).Ingest(context.Background(), media.Input{
+				Data:   row.oversized,
+				Accept: []media.Format{media.FormatJPEG},
+			})
+			require.NoError(t, err)
+			require.Greater(t, len(ingested.Data), row.limit*12/10,
+				"fixture no longer re-encodes past the cap (input %d bytes, output %d bytes); raise its dimensions", len(row.oversized), len(ingested.Data))
+			t.Logf("fixture input %d bytes, re-encoded output %d bytes", len(row.oversized), len(ingested.Data))
+
+			mock := &mockPDSClient{
+				uploadBlobRef: &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": "bafytest"}, MimeType: "image/jpeg", Size: 1},
+				putRecordURI:  "at://did:plc:testuser123/social.coves.actor.profile/self", putRecordCID: "bafytest",
+			}
+			response := sendProfileImage(t, mock, row.request)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			var body struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			assert.Equal(t, row.wantError, body.Error)
+			assert.Equal(t, row.wantMessage, body.Message)
+			assert.Empty(t, mock.uploads, "no blob may be uploaded when a re-encode exceeds the cap")
+			assert.False(t, mock.putRecordWithCommitCalled, "no profile record may be written")
+		})
+	}
 }

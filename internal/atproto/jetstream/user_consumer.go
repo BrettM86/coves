@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/userblocks"
@@ -430,7 +431,10 @@ func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string,
 		return nil
 	}
 
-	input := users.UpdateProfileInput{}
+	// Profile records are complete snapshots: missing or unusable image blobs
+	// clear the previously stored CID rather than keeping it.
+	avatarCID, bannerCID := "", ""
+	input := users.UpdateProfileInput{AvatarCID: &avatarCID, BannerCID: &bannerCID}
 
 	// Extract displayName
 	if dn, ok := commit.Record["displayName"].(string); ok {
@@ -445,14 +449,14 @@ func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string,
 	// Extract avatar CID from blob ref structure
 	if avatarMap, ok := commit.Record["avatar"].(map[string]interface{}); ok {
 		if cid, ok := extractBlobCID(avatarMap); ok {
-			input.AvatarCID = &cid
+			avatarCID = canonicalProfileBlobCID(did, "avatar", cid)
 		}
 	}
 
 	// Extract banner CID from blob ref structure
 	if bannerMap, ok := commit.Record["banner"].(map[string]interface{}); ok {
 		if cid, ok := extractBlobCID(bannerMap); ok {
-			input.BannerCID = &cid
+			bannerCID = canonicalProfileBlobCID(did, "banner", cid)
 		}
 	}
 	rawOrigin, carriesOrigin := userProfileOriginFromRecord(commit.Record)
@@ -632,6 +636,20 @@ func (c *UserEventConsumer) admitUserProfileOrigin(ctx context.Context, did, sto
 		return userProfileOrigin{}, nil
 	}
 	return sanitizeUserProfileOrigin(raw), nil
+}
+
+// canonicalProfileBlobCID returns the canonical form of a profile image CID, so
+// the stored column matches the blob reference written for it, or "" when the
+// link is not a usable blob CID. The CID itself is not logged.
+func canonicalProfileBlobCID(did, slot, raw string) string {
+	canonical, ok := embedblobs.CanonicalBlobCID(raw)
+	if !ok {
+		slog.Warn("profile image blob has an unusable CID; clearing it",
+			slog.String("did", did),
+			slog.String("slot", slot))
+		return ""
+	}
+	return canonical
 }
 
 // handleProfileDelete processes profile delete operations

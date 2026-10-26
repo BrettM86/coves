@@ -5,7 +5,7 @@
 # Usage:
 #   CF_API_TOKEN=<token with Zone:DNS:Edit on coves.social> \
 #   LEXICON_DID=did:plc:xxxxxxxxxxxx \
-#   ./scripts/publish-lexicon-dns.sh [--include-moderation] [--include-notification]
+#   ./scripts/publish-lexicon-dns.sh [--include-moderation] [--include-notification] [--include-media]
 #
 # Idempotent: existing records are updated in place, missing ones created.
 set -euo pipefail
@@ -45,6 +45,7 @@ for FLAG in "$@"; do
   case "$FLAG" in
     --include-moderation) AUTHORITIES+=("_lexicon.moderation.${ZONE_NAME}") ;;
     --include-notification) AUTHORITIES+=("_lexicon.notification.${ZONE_NAME}") ;;
+    --include-media) AUTHORITIES+=("_lexicon.media.${ZONE_NAME}") ;;
     *) echo "error: unknown flag ${FLAG}" >&2; exit 1 ;;
   esac
 done

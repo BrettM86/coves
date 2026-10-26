@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/core/users"
 	"Coves/tests/testkit"
 
@@ -217,11 +218,32 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	`, "at://"+communityDID+"/social.coves.community.post/testpost", testDID, communityDID)
 	require.NoError(t, err)
 
+	// A postv2 with two images, and the blob references its indexing wrote.
+	// Another account's reference is the control: erasure is scoped to the DID.
+	const postV2URI = "at://did:plc:testdeletewithposts/social.coves.community.postv2/imagepost"
+	_, err = db.Exec(`
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+		VALUES ($1, 'bafypostv2', 'imagepost', $2, $3, 'Image Post', NOW())
+	`, postV2URI, testDID, communityDID)
+	require.NoError(t, err)
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	blobReferences := NewBlobReferenceRepository(db)
+	require.NoError(t, blobReferences.ReplaceSubjectTx(ctx, tx, testDID, postV2URI, []embedblobs.Reference{
+		{CID: "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", Kind: embedblobs.KindPostImage},
+		{CID: "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", Kind: embedblobs.KindPostImage},
+	}))
+	require.NoError(t, blobReferences.ReplaceSubjectTx(ctx, tx, "did:plc:testdeleteotherowner",
+		"at://did:plc:testdeleteotherowner/social.coves.community.postv2/otherpost", []embedblobs.Reference{
+			{CID: "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", Kind: embedblobs.KindPostImage},
+		}))
+	require.NoError(t, tx.Commit())
+
 	// Verify post exists
 	var postCount int
 	err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE author_did = $1", testDID).Scan(&postCount)
 	require.NoError(t, err)
-	assert.Equal(t, 1, postCount)
+	assert.Equal(t, 2, postCount)
 
 	// Delete the user
 	err = repo.Delete(ctx, testDID)
@@ -235,6 +257,13 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE author_did = $1", testDID).Scan(&postCount)
 	require.NoError(t, err)
 	assert.Equal(t, 0, postCount, "Deleting a user must still delete their posts")
+
+	var referenceCount int
+	require.NoError(t, db.QueryRow("SELECT COUNT(*) FROM blob_references WHERE owner_did = $1", testDID).Scan(&referenceCount))
+	assert.Equal(t, 0, referenceCount, "Deleting a user must delete their blob references")
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM blob_references
+		WHERE owner_did = 'did:plc:testdeleteotherowner' AND active`).Scan(&referenceCount))
+	assert.Equal(t, 1, referenceCount, "Another account's blob references must survive the erasure")
 }
 
 // seedAdmissionRow inserts a community_post_admissions row directly via SQL.

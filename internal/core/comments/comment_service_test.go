@@ -476,6 +476,10 @@ func (m *mockCommunityRepo) UpdateHandle(ctx context.Context, did, handle string
 	return nil
 }
 
+func (m *mockCommunityRepo) RebuildProfileBlobReferences(ctx context.Context, did string) error {
+	return nil
+}
+
 func (m *mockCommunityRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
 	return nil
 }

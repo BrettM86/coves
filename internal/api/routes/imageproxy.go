@@ -9,7 +9,7 @@ import (
 // RegisterImageProxyRoutes registers image proxy endpoints on the router.
 // The image proxy serves transformed images from AT Protocol PDSes.
 //
-// Route: GET /img/{preset}/plain/{did}/{cid}
+// Route: GET, HEAD /img/{preset}/plain/{did}/{cid}
 //
 // Parameters:
 //   - preset: Image transformation preset (e.g., "avatar", "banner", "content_preview")
@@ -19,4 +19,5 @@ import (
 // The endpoint supports ETag-based caching with If-None-Match headers.
 func RegisterImageProxyRoutes(r chi.Router, handler *imageproxyhandlers.Handler) {
 	r.Get("/img/{preset}/plain/{did}/{cid}", handler.HandleImage)
+	r.Head("/img/{preset}/plain/{did}/{cid}", handler.HandleImage)
 }

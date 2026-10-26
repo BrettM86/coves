@@ -10,13 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/utils"
+	"Coves/internal/core/blobreferences"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
+	"Coves/internal/db/postgres"
 
 	"github.com/lib/pq"
 	"github.com/rivo/uniseg"
@@ -50,6 +53,8 @@ type CommentEventConsumer struct {
 	// comment's notifications and repoints its upvote groups, all inside the event's
 	// transaction. nil means notifications are neither written nor removed.
 	notifications notifications.Repository
+	// nil disables blob reference writes.
+	blobReferences blobreferences.Repository
 }
 
 // CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
@@ -148,6 +153,58 @@ func (c *CommentEventConsumer) NotificationsWired() bool { return c.notification
 // erasure marker under the shared erasure lock inside the write transaction, so it
 // is active exactly when notifications are wired.
 func (c *CommentEventConsumer) ErasureGated() bool { return c.notifications != nil }
+
+// WithCommentBlobReferences indexes the blobs served by an indexed comment embed.
+func WithCommentBlobReferences(repository blobreferences.Repository) CommentEventConsumerOption {
+	return func(c *CommentEventConsumer) { c.blobReferences = repository }
+}
+
+// BlobReferencesWired reports whether the consumer writes blob references.
+func (c *CommentEventConsumer) BlobReferencesWired() bool { return c.blobReferences != nil }
+
+// replaceCommentBlobReferences extracts references from the serialized embed
+// written to the comment row in this transaction.
+func (c *CommentEventConsumer) replaceCommentBlobReferences(ctx context.Context, tx *sql.Tx, ownerDID, subjectURI string, storedEmbed *string) error {
+	var embed map[string]interface{}
+	if storedEmbed != nil {
+		if err := json.Unmarshal([]byte(*storedEmbed), &embed); err != nil {
+			return fmt.Errorf("decode stored comment embed: %w", err)
+		}
+	}
+	if err := c.blobReferences.ReplaceSubjectTx(ctx, tx, ownerDID, subjectURI, embedblobs.CommentReferences(embed)); err != nil {
+		return fmt.Errorf("replace comment blob references: %w", err)
+	}
+	return nil
+}
+
+// lockCommentRootLifecycle takes the erasure and root locks before content
+// rows. Resurrection also locks the stored root, since deletion can still be
+// sweeping that thread. A missing root is allowed; only a durable marker stops
+// publishing. The marker read follows the lock wait in its own statement so a
+// READ COMMITTED transaction sees a deletion that committed while it waited.
+func (c *CommentEventConsumer) lockCommentRootLifecycle(ctx context.Context, tx *sql.Tx, actorDID, uri, incomingRootURI string) (bool, error) {
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock_shared("+postgres.ErasureLockKeySQL+")", actorDID); err != nil {
+		return false, fmt.Errorf("lock comment actor against erasure: %w", err)
+	}
+	var storedRootURI string
+	err := tx.QueryRowContext(ctx, `SELECT root_uri FROM comments WHERE uri = $1`, uri).Scan(&storedRootURI)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("read comment root before lifecycle lock: %w", err)
+	}
+	if incomingRootURI == "" {
+		incomingRootURI = storedRootURI
+	}
+	if err := postgres.LockPostRootLifecyclesTx(ctx, tx, []string{storedRootURI, incomingRootURI}, true); err != nil {
+		return false, err
+	}
+	var deleted bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM deleted_community_post_roots WHERE root_uri = $1
+	)`, incomingRootURI).Scan(&deleted); err != nil {
+		return false, fmt.Errorf("check deleted community root: %w", err)
+	}
+	return deleted, nil
+}
 
 // BridgeTrustWired reports whether the consumer holds a bridge trust gate.
 func (c *CommentEventConsumer) BridgeTrustWired() bool { return c.bridgeTrust != nil }
@@ -510,6 +567,16 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 			log.Printf("INFO: dropping %s update for erased account %s", CommentCollection, repoDID)
 			return nil
 		}
+	}
+	deletedRoot, err := c.lockCommentRootLifecycle(ctx, tx, repoDID, uri, "")
+	if err != nil {
+		return err
+	}
+	if deletedRoot {
+		log.Printf("INFO: dropping %s update under a deleted community post root: %s", CommentCollection, uri)
+		return nil
+	}
+	if c.notifications != nil {
 		err = tx.QueryRowContext(ctx,
 			`SELECT COALESCE(content_facets::text, ''), created_at, parent_uri, root_uri
 			 FROM comments WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri,
@@ -546,6 +613,11 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	if rowsAffected == 0 {
 		log.Printf("Update event for comment that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
+	}
+	if c.blobReferences != nil {
+		if err := c.replaceCommentBlobReferences(ctx, tx, repoDID, uri, embedJSON); err != nil {
+			return err
+		}
 	}
 
 	if c.notifications != nil && !erased {
@@ -590,6 +662,17 @@ func (c *CommentEventConsumer) blockRejectedUpdateMedia(ctx context.Context, uri
 			log.Printf("Failed to rollback transaction: %v", rollbackErr)
 		}
 	}()
+	stale, err := lockedRecordRevIsStale(ctx, tx, uri, rev)
+	if err != nil {
+		return err
+	}
+	if stale {
+		logSkippedStaleRev(ConsumerComments, "update", uri, rev)
+		return nil
+	}
+	if _, err := c.lockCommentRootLifecycle(ctx, tx, commenterDID, uri, ""); err != nil {
+		return err
+	}
 	current, err := lockCurrentIncomingEvent(ctx, tx, lockCommentRowQuery, ConsumerComments, uri, rev, timeUS)
 	if err != nil {
 		return fmt.Errorf("failed to check rejected comment update is current: %w", err)
@@ -654,6 +737,10 @@ func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string
 		}
 	}
 
+	if _, err := c.lockCommentRootLifecycle(ctx, tx, repoDID, uri, ""); err != nil {
+		return err
+	}
+
 	// 1. Soft-delete the comment: blank content but preserve structure.
 	// DELETE event from Jetstream = author deleted their own comment (the repo
 	// owner IS the commenter), so deleted_by is the repo DID.
@@ -678,6 +765,11 @@ func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string
 		}
 		log.Printf("Comment already deleted or not found: %s", uri)
 		return nil
+	}
+	if c.blobReferences != nil {
+		if err := c.blobReferences.DeactivateSubjectTx(ctx, tx, uri); err != nil {
+			return fmt.Errorf("deactivate comment blob references: %w", err)
+		}
 	}
 
 	// NOTE: We intentionally do NOT decrement parent counts (comment_count/reply_count)
@@ -739,6 +831,15 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			log.Printf("INFO: dropping %s create for erased account %s", CommentCollection, comment.CommenterDID)
 			return nil
 		}
+	}
+
+	deletedRoot, err := c.lockCommentRootLifecycle(ctx, tx, comment.CommenterDID, comment.URI, comment.RootURI)
+	if err != nil {
+		return err
+	}
+	if deletedRoot {
+		log.Printf("INFO: dropping %s create under a deleted community post root: %s", CommentCollection, comment.URI)
+		return nil
 	}
 
 	// 1. Check if comment exists and handle resurrection case
@@ -812,6 +913,11 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 					existingID,
 				); err != nil {
 					return fmt.Errorf("failed to apply re-created comment content: %w", err)
+				}
+				if c.blobReferences != nil {
+					if err := c.replaceCommentBlobReferences(ctx, tx, comment.CommenterDID, comment.URI, comment.Embed); err != nil {
+						return err
+					}
 				}
 				// An active re-create is an edit: use the pre-update creation time for
 				// activation, and let edit fan-out suppress the unchanged reply recipient.
@@ -979,6 +1085,11 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	} else {
 		// Unexpected error checking for existing comment
 		return fmt.Errorf("failed to check for existing comment: %w", checkErr)
+	}
+	if c.blobReferences != nil {
+		if err := c.replaceCommentBlobReferences(ctx, tx, comment.CommenterDID, comment.URI, comment.Embed); err != nil {
+			return err
+		}
 	}
 
 	// 1.5. Reconcile reply_count for this newly inserted comment
@@ -1271,6 +1382,10 @@ func (c *CommentEventConsumer) validateCommentEvent(ctx context.Context, repoDID
 
 	if err := validateATURI(comment.Reply.Parent.URI); err != nil {
 		return fmt.Errorf("%w: invalid parent URI: %v", ErrPermanentEvent, err)
+	}
+
+	if err := validateEmbedImageCount(comment.Embed); err != nil {
+		return err
 	}
 
 	return nil

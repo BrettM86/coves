@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"Coves/internal/atproto/embedblobs"
+	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/users"
 	"Coves/internal/validation"
 
@@ -383,7 +385,9 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	// Notification fan-out takes the shared erasure lock for actor_did before
 	// checking deleted_accounts, since actors have no foreign key. Taking the
 	// exclusive lock before the marker means fan-out either finishes before
-	// erasure starts or sees the marker.
+	// erasure starts or sees the marker. Profile updates (UpdateProfile) also
+	// take the shared lock before writing users or blob_references, so they
+	// wait for the whole erasure rather than interleave with steps 10a-13.
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock("+ErasureLockKeySQL+")", did); err != nil {
 		return fmt.Errorf("failed to take erasure lock for did=%s: %w", did, err)
 	}
@@ -579,6 +583,46 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
 	}
 
+	// 10a. Delete every blob reference the account owns (posts, comments,
+	// avatar, banner). After the posts delete, matching the consumer's lock
+	// order: posts row, then blob_references. Profile updates write the users
+	// row before their blob_references, the opposite order to steps 10a and
+	// 13; the shared erasure lock they take first keeps them out of this window.
+	// Lock references before purge rows, retaining inactive references as well.
+	// Close the result set before issuing the upserts on this transaction.
+	rows, err := tx.QueryContext(ctx, `SELECT blob_cid FROM blob_references
+		WHERE owner_did = $1 ORDER BY blob_cid, subject_uri, kind FOR UPDATE`, did)
+	if err != nil {
+		return fmt.Errorf("query erasure image references: %w", err)
+	}
+	defer rows.Close()
+	var purgeTargets []imageproxy.BlockedBlob
+	seen := make(map[string]bool)
+	for rows.Next() {
+		var blobCID string
+		if err := rows.Scan(&blobCID); err != nil {
+			return fmt.Errorf("scan erasure image reference: %w", err)
+		}
+		canonicalCID, err := imageproxy.CanonicalCID(blobCID)
+		if err != nil || canonicalCID != blobCID || seen[blobCID] {
+			continue
+		}
+		seen[blobCID] = true
+		purgeTargets = append(purgeTargets, imageproxy.BlockedBlob{OwnerDID: did, CID: blobCID})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate erasure image references: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close erasure image references: %w", err)
+	}
+	if err := (&moderationTransaction{tx: tx}).RecordCDNPurgeTargets(ctx, purgeTargets); err != nil {
+		return fmt.Errorf("record erasure CDN purge targets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM blob_references WHERE owner_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete blob_references for did=%s: %w", did, err)
+	}
+
 	// 11. Delete the modlog content snapshots of this author's removed posts
 	// and comments; their moderation actions stay. This must follow the
 	// comments and posts deletes: an in-flight removal holds a share lock on
@@ -722,7 +766,26 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 	user := &users.User{}
 	var displayNameVal, descriptionVal, avatarCIDVal, bannerCIDVal, origin, originUsername, originURL, originSoftware sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, args...).
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("failed to start profile update transaction: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			slog.Error("failed to rollback profile update transaction", slog.String("error", err.Error()))
+		}
+	}()
+
+	// Account erasure deletes blob_references before the users row under the
+	// exclusive erasure lock. Taking the shared lock before touching either
+	// keeps a profile write from deadlocking with an erasure in progress, or
+	// committing a reference between its two deletes that would outlive the
+	// account; after an erasure the UPDATE below finds no user.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock_shared("+ErasureLockKeySQL+")", did); err != nil {
+		return nil, fmt.Errorf("failed to take shared erasure lock for profile update: %w", err)
+	}
+
+	err = tx.QueryRowContext(ctx, query, args...).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
 			&displayNameVal, &descriptionVal, &avatarCIDVal, &bannerCIDVal, &origin, &originUsername, &originURL, &originSoftware)
 
@@ -739,6 +802,15 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 	user.BannerCID = bannerCIDVal.String
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
 		origin.String, originUsername.String, originURL.String, originSoftware.String
+
+	subjectURI := "at://" + did + "/" + users.ProfileCollection + "/self"
+	if err := NewBlobReferenceRepository(r.db).ReplaceSubjectTx(ctx, tx, did, subjectURI,
+		embedblobs.ProfileReferences(user.AvatarCID, user.BannerCID)); err != nil {
+		return nil, fmt.Errorf("failed to replace profile blob references: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit profile update transaction: %w", err)
+	}
 
 	return user, nil
 }

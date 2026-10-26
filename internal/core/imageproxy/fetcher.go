@@ -42,6 +42,7 @@ type PDSFetcher struct {
 	// read would make the guarded branch untestable in parallel and force the
 	// whole package serial.
 	allowPrivateHosts bool
+	transportOptions  []covesoauth.Option
 }
 
 // DefaultMaxSourceSizeMB is the default maximum source image size if not configured.
@@ -58,6 +59,11 @@ type PDSFetcherOption func(*PDSFetcher)
 // refuses, and a local dev stack runs its PDS on the developer's own machine.
 func WithPrivateHostsAllowed() PDSFetcherOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
 	return func(f *PDSFetcher) { f.allowPrivateHosts = true }
+}
+
+// withTransportOptions is an unexported test seam; production must not pass transport options.
+func withTransportOptions(opts ...covesoauth.Option) PDSFetcherOption {
+	return func(f *PDSFetcher) { f.transportOptions = append(f.transportOptions, opts...) }
 }
 
 // PrivateHostOptions returns the options a caller holding an allow-private
@@ -117,6 +123,7 @@ func NewPDSFetcher(timeout time.Duration, maxSizeMB int, opts ...PDSFetcherOptio
 		covesoauth.PrivateAddressOptions(f.allowPrivateHosts),
 		covesoauth.WithMaxResponseBytes(f.maxSizeBytes+1),
 	)
+	clientOpts = append(clientOpts, f.transportOptions...)
 	f.client = covesoauth.NewSSRFSafeHTTPClient(clientOpts...)
 
 	// The shared client ships a 15s ceiling of its own, and this one is

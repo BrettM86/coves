@@ -38,6 +38,7 @@ type Repository interface {
 	Update(ctx context.Context, community *Community) (*Community, error)
 	UpdateHandle(ctx context.Context, did, handle string) error
 	Delete(ctx context.Context, did string) error
+	RebuildProfileBlobReferences(ctx context.Context, did string) error
 
 	// Credential Management (for token refresh)
 	UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error

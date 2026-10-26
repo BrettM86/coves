@@ -1,0 +1,128 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "did:plc:programming123",
+  "title": "Gallery: my home lab rack",
+  "content": "Front of the rack: [1] and the back: [8]",
+  "facets": [
+    {
+      "index": {
+        "byteStart": 19,
+        "byteEnd": 22
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#image",
+          "index": 0
+        }
+      ]
+    },
+    {
+      "index": {
+        "byteStart": 37,
+        "byteEnd": 40
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#image"
+        }
+      ]
+    }
+  ],
+  "embed": {
+    "$type": "social.coves.embed.images",
+    "images": [
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200000
+        },
+        "alt": "Rack photo 1"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreih6kvpkpwzi6vlk7cx6xoauvterrn3fqp75lwvj6saow4dbotcm2q"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200001
+        },
+        "alt": "Rack photo 2"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200002
+        },
+        "alt": "Rack photo 3"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreih6kvpkpwzi6vlk7cx6xoauvterrn3fqp75lwvj6saow4dbotcm2q"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200003
+        },
+        "alt": "Rack photo 4"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200004
+        },
+        "alt": "Rack photo 5"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreih6kvpkpwzi6vlk7cx6xoauvterrn3fqp75lwvj6saow4dbotcm2q"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200005
+        },
+        "alt": "Rack photo 6"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200006
+        },
+        "alt": "Rack photo 7"
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreih6kvpkpwzi6vlk7cx6xoauvterrn3fqp75lwvj6saow4dbotcm2q"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200007
+        },
+        "alt": "Rack photo 8"
+      }
+    ]
+  },
+  "langs": [
+    "en"
+  ],
+  "createdAt": "2026-07-22T10:00:00Z"
+}

@@ -3,10 +3,15 @@
 package routes_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"io/fs"
 	"net/http"
@@ -36,14 +41,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mediaImageCID returns a real, canonical CIDv1 for label. The proxy decodes
-// every CID, so a fixture must be a decodable CID rather than a lookalike.
+var mediaImageBlobs sync.Map // canonical CID -> PNG bytes served by the fake PDS
+
+type allowMediaReferences struct{}
+
+func (allowMediaReferences) HasActiveReference(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func mediaImageBytes(label string) []byte {
+	image := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	for index, value := range sha256.Sum256([]byte(label)) {
+		image.SetRGBA(index, 0, color.RGBA{R: value, A: 255})
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
+
+// mediaImageCID registers the PNG bytes named by a canonical raw sha2-256 CID.
 func mediaImageCID(label string) string {
-	digest, err := multihash.Sum([]byte("moderation media "+label), multihash.SHA2_256, -1)
+	data := mediaImageBytes(label)
+	digest, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	if err != nil {
 		panic(err)
 	}
-	return cid.NewCidV1(cid.Raw, digest).String()
+	imageCID := cid.NewCidV1(cid.Raw, digest).String()
+	mediaImageBlobs.Store(imageCID, data)
+	return imageCID
 }
 
 // base58MediaCID re-encodes a canonical CID in base58btc: the same CID in a
@@ -93,8 +120,13 @@ func (p *mediaPDS) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	data, found := mediaImageBlobs.Load(key.cid)
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "image/png")
-	_, _ = w.Write(testkit.TestPNG(32, 32))
+	_, _ = w.Write(data.([]byte))
 }
 
 func (p *mediaPDS) count(did, cid string) int {
@@ -161,12 +193,14 @@ type moderationMediaHarness struct {
 }
 
 type moderationMediaHarnessConfig struct {
-	now             func() time.Time
-	targets         func(*sql.DB, func() time.Time) moderation.CDNPurgeTargets
-	wrapStore       func(moderation.Store) moderation.Store
-	wrapCache       func(*imageproxy.DiskCache, *sql.DB, string) imageproxy.Cache
-	wrapTargetStore func(moderation.CDNPurgeTargetStore) moderation.CDNPurgeTargetStore
-	purger          moderation.MediaPurger
+	now                   func() time.Time
+	targets               func(*sql.DB, func() time.Time) moderation.CDNPurgeTargets
+	wrapStore             func(moderation.Store) moderation.Store
+	wrapCache             func(*imageproxy.DiskCache, *sql.DB, string) imageproxy.Cache
+	wrapTargetStore       func(moderation.CDNPurgeTargetStore) moderation.CDNPurgeTargetStore
+	installBlobOwnerIndex bool
+	wrapBlobOwnerIndex    func(imageproxy.BlobOwnerIndex) imageproxy.BlobOwnerIndex
+	purger                moderation.MediaPurger
 }
 
 func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(*moderationMediaHarnessConfig)) (*moderationMediaHarness, *waitingMediaFetcher) {
@@ -227,8 +261,15 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(
 	var serviceOptions []imageproxy.ServiceOption
 	if queue != nil {
 		serviceOptions = append(serviceOptions, imageproxy.WithCDNPurgeRecorder(queue))
+		if options.installBlobOwnerIndex {
+			var index imageproxy.BlobOwnerIndex = postgres.NewBlobReferenceRepository(db)
+			if options.wrapBlobOwnerIndex != nil {
+				index = options.wrapBlobOwnerIndex(index)
+			}
+			serviceOptions = append(serviceOptions, imageproxy.WithBlobOwnerIndex(index))
+		}
 	}
-	proxyService, err := imageproxy.NewService(serviceCache, processor, fetcher, store, imageproxy.DefaultConfig(), serviceOptions...)
+	proxyService, err := imageproxy.NewService(serviceCache, processor, fetcher, store, allowMediaReferences{}, imageproxy.DefaultConfig(), serviceOptions...)
 	require.NoError(t, err)
 	var mediaPurger moderation.MediaPurger = proxyService
 	if options.purger != nil {

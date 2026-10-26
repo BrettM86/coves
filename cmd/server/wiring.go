@@ -17,6 +17,7 @@ import (
 	"Coves/internal/config"
 	"Coves/internal/core/adminreports"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobreferences"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/bridgedvotes"
@@ -26,6 +27,7 @@ import (
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
@@ -36,6 +38,7 @@ import (
 	"Coves/internal/core/votes"
 	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/notify/telegram"
+	"Coves/internal/validation"
 
 	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
 	postgresRepo "Coves/internal/db/postgres"
@@ -124,8 +127,11 @@ type application struct {
 	notificationRepo notifications.Repository
 	// The same repository also performs the hourly retention sweeps.
 	notificationRetentionSweeper notifications.RetentionSweeper
-	userBlockRepo                userblocks.Repository
-	aggregatorRepo               aggregators.Repository
+	// blobReferenceRepo is handed to the post consumer, which records the
+	// blobs each indexed post embed serves.
+	blobReferenceRepo blobreferences.Repository
+	userBlockRepo     userblocks.Repository
+	aggregatorRepo    aggregators.Repository
 	// admissionRepo is shared by the ingestion consumer, which WRITES the
 	// per-(community, post) decisions, and the status query, which reads them.
 	admissionRepo posts.AdmissionRepository
@@ -176,6 +182,11 @@ type application struct {
 
 	// imageProxyHandler is nil when the image proxy is disabled.
 	imageProxyHandler *imageproxyhandlers.Handler
+	mediaPipeline     *media.Pipeline
+	mediaUploads      *media.UploadService
+	// authorRepoFactory opens an author's own repo: the browser session when
+	// there is one, the aggregator's stored session otherwise.
+	authorRepoFactory posts.AuthorRepoFactory
 	// stopImageProxyCleanup halts the disk cache eviction job and the blocked
 	// media purge job. Never nil.
 	stopImageProxyCleanup context.CancelFunc
@@ -191,9 +202,9 @@ type application struct {
 //
 // On failure it cleans up whatever it already started and returns (nil, err),
 // the conventional Go contract. Returning a usable value alongside an error
-// and asking the caller to Close it would invert that convention, and would
-// become a nil dereference during an already-failing boot the first time
-// anyone added a plain `return nil, err` below.
+// and asking the caller to Close it would invert that convention. The deferred
+// cleanup retains the constructed pointer separately: a `return nil, err`
+// assigns nil to the named result before the defer executes.
 func buildApplication(
 	ctx context.Context,
 	cfg *config.Config,
@@ -211,12 +222,23 @@ func buildApplication(
 		stopImageProxyCleanup: func() {},
 	}
 
+	constructed := app
 	defer func() {
 		if err != nil {
-			app.Close()
+			constructed.Close()
 			app = nil
 		}
 	}()
+
+	app.mediaPipeline, err = media.NewPipeline(cfg.Media.Upload)
+	if err != nil {
+		return nil, fmt.Errorf("creating media upload pipeline: %w", err)
+	}
+	uploadLimiter, err := media.NewUploadLimiter(cfg.Media.UploadLimit)
+	if err != nil {
+		return nil, fmt.Errorf("creating media upload limiter: %w", err)
+	}
+	app.mediaUploads = media.NewUploadService(app.mediaPipeline, uploadLimiter)
 
 	app.buildIdentity()
 	if err = app.buildAuth(); err != nil {
@@ -389,6 +411,7 @@ func (a *application) buildRepositories() {
 	a.postRepo = postgresRepo.NewPostRepository(a.db)
 	a.voteRepo = postgresRepo.NewVoteRepository(a.db)
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
+	a.blobReferenceRepo = postgresRepo.NewBlobReferenceRepository(a.db)
 	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
 		a.notificationRepo = postgresRepo.NewNotificationRepository(a.db, postgresRepo.WithBridgedUpvoteTotals())
 	} else {
@@ -475,7 +498,7 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.cfg.Instance.Domain,
 		provisioner,
 		a.oauthClient,
-		blobService,
+		blobService, a.mediaPipeline,
 		communityPDSOptions...,
 	)
 	a.authenticateInstanceWithPDS(ctx)
@@ -543,6 +566,16 @@ func (a *application) buildServices(ctx context.Context) error {
 	// waiting for their own write to come back around the firehose.
 	acceptanceEngine := a.buildAcceptanceEngine()
 
+	// The final postv2 and comment records are checked against their lexicons
+	// before they are written, from the schemas compiled into the binary (a
+	// deployed server has no lexicon directory beside it). Failing to load them
+	// fails startup.
+	lexiconValidator, err := validation.NewEmbeddedLexiconValidator(false)
+	if err != nil {
+		return fmt.Errorf("building the lexicon validator: %w", err)
+	}
+
+	a.authorRepoFactory = posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID)
 	a.postService = posts.NewPostService(
 		a.postRepo, a.communityService, a.aggregatorService, blobService,
 		unfurlService, a.blueskyService, a.cfg.PDS.URL,
@@ -554,9 +587,10 @@ func (a *application) buildServices(ctx context.Context) error {
 		posts.WithPDSClientOptions(pds.PrivateHostOptions(a.allowPrivateHosts())...),
 		// The AUTHOR's own credentials: a browser session when there is one,
 		// and an aggregator's stored tokens when there is not (§4.2 step 3).
-		posts.WithAuthorRepoFactory(
-			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID),
-		),
+		posts.WithAuthorRepoFactory(a.authorRepoFactory),
+		// Unfurled thumbnails are sanitized before they reach the author's repo.
+		posts.WithMediaPipeline(a.mediaPipeline),
+		posts.WithLexiconValidator(lexiconValidator),
 		posts.WithSyncAcceptance(a.admissionRepo, acceptanceEngine),
 		// The SAME writer the engine accepts through, so both ends of an
 		// acceptance's life — the write the fast path makes and the withdrawal
@@ -593,6 +627,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.commentService = comments.NewCommentService(
 		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,
 		a.oauthClient, a.oauthStore, nil,
+		comments.WithLexiconValidator(lexiconValidator),
 	)
 	a.notificationService = notifications.NewService(a.notificationRepo.(notifications.ReadRepository))
 	a.notificationListService = notifications.NewListService(a.notificationRepo.(notifications.ReadRepository), a.userRepo, a.postRepo, a.commentRepo)
@@ -934,20 +969,7 @@ func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 		return nil, fmt.Errorf("creating image proxy processor: %w", err)
 	}
 
-	moderationRepository := postgresRepo.NewModerationRepository(a.db)
-	service, handler, stopBlockedMediaPurge, err := buildImageProxyService(cfg, a.cfg.Media.CDNPurge, a.cdnPurgeQueue, imageProxyDependencies{
-		cache:     cache,
-		processor: processor,
-		// The SSRF hatch is open only in dev, where the PDS runs on the
-		// developer's own machine. In production this fetch dials whatever
-		// address a DID document's serviceEndpoint names, over a public route
-		// that carries no credential.
-		fetcher: imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
-			imageproxy.PrivateHostOptions(a.allowPrivateHosts())...),
-		blocks:   moderationRepository,
-		lister:   moderationRepository,
-		resolver: a.identityResolver,
-	})
+	service, handler, stopBlockedMediaPurge, err := buildImageProxyService(cfg, a.cfg.Media.CDNPurge, a.cdnPurgeQueue, a.imageProxyServiceDependencies(cfg, cache, processor))
 	if err != nil {
 		return nil, fmt.Errorf("creating image proxy service: %w", err)
 	}
@@ -977,6 +999,26 @@ func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 		"max_in_flight_requests", cfg.MaxInFlightRequests,
 	)
 	return service, nil
+}
+
+// imageProxyServiceDependencies assembles the service dependencies without I/O.
+func (a *application) imageProxyServiceDependencies(cfg imageproxy.Config, cache imageproxy.Cache, processor imageproxy.Processor) imageProxyDependencies {
+	moderationRepository := postgresRepo.NewModerationRepository(a.db)
+	return imageProxyDependencies{
+		cache:     cache,
+		processor: processor,
+		// The SSRF hatch is open only in dev, where the PDS runs on the
+		// developer's own machine. In production this fetch dials whatever
+		// address a DID document's serviceEndpoint names, over a public route
+		// that carries no credential.
+		fetcher: imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
+			imageproxy.PrivateHostOptions(a.allowPrivateHosts())...),
+		blocks:     moderationRepository,
+		lister:     moderationRepository,
+		resolver:   a.identityResolver,
+		blobOwners: a.blobReferenceRepo,
+		references: a.blobReferenceRepo,
+	}
 }
 
 func (a *application) buildJetstreamInfrastructure() {

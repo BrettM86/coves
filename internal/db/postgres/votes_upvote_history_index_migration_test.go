@@ -17,6 +17,12 @@ func TestVotesUpvoteHistoryIndexMigration054_DownAndUpRoundTrip(t *testing.T) {
 	db := testkit.DB(t)
 
 	assertVotesUpvoteHistoryIndex(t, db, "after 054 Up")
+	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
+	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
+	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))
+	require.EqualValues(t, 63, testkit.MigrateDownOne(t, db, 63))
+	require.EqualValues(t, 62, testkit.MigrateDownOne(t, db, 62))
+	require.EqualValues(t, 61, testkit.MigrateDownOne(t, db, 61))
 	require.EqualValues(t, 60, testkit.MigrateDownOne(t, db, 60),
 		"060 (users bio renamed to description) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),

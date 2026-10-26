@@ -204,6 +204,58 @@ func TestTypedPostErrorsUseTheirOwnMessage(t *testing.T) {
 	}
 }
 
+// An embed the lexicon refuses is its own 400, so a client can point the user
+// at the attachment rather than the whole form. The invalid-embed error is also
+// a ValidationError, so its rule must win over the shared InvalidRequest rule,
+// and the message is the typed error's own text without wrapper context.
+func TestInvalidEmbedIsItsOwnBadRequest(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("createPost: %w", posts.NewValidationErrorFrom("embed",
+		fmt.Errorf("%w: images[0].alt is too long", posts.ErrInvalidEmbed))))
+
+	body := assertXRPCError(t, rec, http.StatusBadRequest, "InvalidEmbed")
+	if body.Message != "embed: invalid embed: images[0].alt is too long" {
+		t.Errorf("message = %q, want just the typed error's text", body.Message)
+	}
+}
+
+// Too many images is its own 400, distinct from InvalidEmbed.
+func TestTooManyImagesIsItsOwnBadRequest(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("createPost: %w", &posts.ValidationError{
+		Field: "embed", Message: "an embed may carry at most 8 images", Err: posts.ErrTooManyImages,
+	}))
+
+	assertXRPCError(t, rec, http.StatusBadRequest, "TooManyImages")
+}
+
+func TestInvalidImageFacetIsItsOwnBadRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "validation error on facets wrapping the sentinel",
+			err: fmt.Errorf("createPost: %w", &posts.ValidationError{
+				Field: "facets", Message: "an #image facet must place an image of the embed", Err: posts.ErrInvalidImageFacet,
+			}),
+		},
+		{
+			name: "bare sentinel",
+			err:  fmt.Errorf("updatePost: %w", posts.ErrInvalidImageFacet),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, tc.err)
+
+			assertXRPCError(t, rec, http.StatusBadRequest, "InvalidImageFacet")
+		})
+	}
+}
+
 // The sentinel rules replaced err.Error() echoes with fixed strings, so an
 // internal wrapper can no longer reach the client.
 func TestSentinelMessagesAreFixed(t *testing.T) {

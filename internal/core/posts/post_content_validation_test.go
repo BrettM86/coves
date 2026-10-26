@@ -231,9 +231,13 @@ func TestValidatePostContent_LangsAndTags(t *testing.T) {
 		// The half that keeps the pins above honest: a validator that refused
 		// everything would pass every one of them, and would silently cost
 		// authors fields the lexicon allows.
+		// The last tag sits on both per-tag caps at once: 64 graphemes, the
+		// final one carrying 288 combining marks, for exactly 640 bytes.
+		atBothCaps := strings.Repeat("t", maxTagGraphemes) + strings.Repeat("\u0301", (maxTagLength-maxTagGraphemes)/2)
+		require.Len(t, atBothCaps, maxTagLength)
 		require.NoError(t, normalizeAndValidatePostContent(postContent{
 			Langs: []string{"en", "fr", "de"},
-			Tags:  []string{"a", "b", "c", "d", "e", "f", "g", strings.Repeat("t", maxTagLength)},
+			Tags:  []string{"a", "b", "c", "d", "e", "f", "g", atBothCaps},
 		}))
 	})
 

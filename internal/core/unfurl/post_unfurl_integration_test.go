@@ -51,7 +51,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
-		nil,
+		nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 
@@ -152,7 +152,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
-		nil,
+		nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 
@@ -227,7 +227,10 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 				"images": []interface{}{
 					map[string]interface{}{
 						"image": map[string]interface{}{
-							"ref": "bafytest123",
+							"$type":    "blob",
+							"ref":      map[string]interface{}{"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+							"mimeType": "image/jpeg",
+							"size":     48213,
 						},
 						"alt": "Test image",
 					},

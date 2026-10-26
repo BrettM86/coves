@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -489,6 +490,42 @@ func TestAcceptanceConsumer_FetchedRecordNamingAnotherCommunity_IsPermanentlyRef
 
 	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, record.URI),
 		"the refused record must not be indexed")
+}
+
+func TestAcceptanceConsumer_FetchedRecordWithMoreThanEightImages_IsPermanentlyRefused(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	f := newRealRepoFixture(t, db)
+
+	// The firehose path refuses a post whose images list is longer than the
+	// lexicon allows. A community acceptance must not index the same record by
+	// fetching it directly. Entries without blobs keep the PDS from demanding
+	// uploads; the count alone breaks the lexicon.
+	images := make([]interface{}, 0, MaxEmbedImages+1)
+	for index := 0; index <= MaxEmbedImages; index++ {
+		images = append(images, map[string]interface{}{"alt": fmt.Sprintf("image %d", index)})
+	}
+	record := f.author.CreateRecord(t, PostV2Collection, map[string]any{
+		"$type":     PostV2Collection,
+		"community": accCommunity,
+		"title":     "nine images",
+		"content":   "more images than the lexicon allows",
+		"embed":     map[string]interface{}{"$type": "social.coves.embed.images", "images": images},
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	err := f.consumer.HandleEvent(ctx,
+		acceptanceEvent(accCommunity, record.URI, record.CID, testkit.TID(), time.Now().UnixMicro()))
+
+	require.Error(t, err, "an accepted post with more than eight images must not be indexed by the direct fetch")
+	assert.ErrorIs(t, err, ErrPermanentEvent, "the image count is fixed in the pinned record, so no retry can make it valid")
+	assert.ErrorContains(t, err, "maximum of 8")
+	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, record.URI),
+		"the refused record must not be indexed")
+	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM blob_references WHERE subject_uri = $1`, record.URI),
+		"the refused record must not leave blob references")
 }
 
 func TestDirectPostFetcher_RefusesAnOversizedBody(t *testing.T) {

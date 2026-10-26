@@ -19,7 +19,7 @@ The dev stack runs in Docker from `docker-compose.dev.yml` with settings from `.
 
 ## Running
 
-`make dev-up` starts Postgres, the PLC directory and its Postgres, the PDS and Jetstream. `make run` runs `make db-migrate` and then `scripts/dev-run.sh`, which sources `.env.dev` and runs `go run -tags dev ./cmd/server`. `make db-migrate` calls the `goose` CLI, so it must be on `PATH`. The server also applies migrations itself at startup.
+`make dev-up` starts Postgres, the PLC directory and its Postgres, the PDS and Jetstream. `make run` runs `make db-migrate` and then `scripts/dev-run.sh`, which sources `.env.dev` and runs `go run -tags dev ./cmd/server`. The server also applies migrations itself at startup.
 
 The `dev` build tag compiles in the localhost OAuth resolvers (`internal/atproto/oauth/dev_resolver.go`, `dev_auth_resolver.go`). Without it the server falls back to stubs and OAuth against the local HTTP PDS does not work. Do not start the dev AppView with plain `go run ./cmd/server`.
 
@@ -43,7 +43,9 @@ Keep `OAUTH_SEAL_SECRET` and `ENCRYPTION_KEY` set in `.env.dev`. If `OAUTH_SEAL_
 
 ## Migrations
 
-Migrations are goose SQL files in `internal/db/migrations/`, named with a sequential three-digit prefix (`053_name.sql`), and embedded into the binary through `migrations.FS`. Create one with `goose -s -dir internal/db/migrations create name sql`; without `-s` goose uses a timestamp prefix, which breaks the ordering. Write both `Up` and `Down`. Never edit a migration that has been applied anywhere; add a new one.
+Migrations are goose SQL and Go files in `internal/db/migrations/`, named with a sequential three-digit prefix (`053_name.sql`), and embedded into the binary through `migrations.FS`. Create one with `goose -s -dir internal/db/migrations create name sql`; without `-s` goose uses a timestamp prefix, which breaks the ordering. Write both `Up` and `Down`. Never edit a migration that has been applied anywhere; add a new one.
+
+`make db-migrate` and `make db-migrate-down` run `go run ./cmd/migrate up|down`, which applies the embedded migrations the same way the server does at startup. Set `MIGRATE_DSN=...` to target another database. Go backfills register with `goose.AddMigrationContext` in `init()`. The stock `goose` CLI cannot run them; apply migrations through `cmd/migrate` or the server.
 
 ## Tests
 

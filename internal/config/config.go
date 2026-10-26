@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/media"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
@@ -405,6 +407,10 @@ type MediaConfig struct {
 	// the production invariant below before anything starts.
 	ImageProxy imageproxy.Config
 
+	Upload media.Config
+
+	UploadLimit media.UploadLimitConfig
+
 	// CDNPurge configures optional Cloudflare edge invalidation for blocked media.
 	CDNPurge CDNPurgeConfig
 
@@ -582,9 +588,56 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	imageProxy.Enabled = imageProxyEnabled
+	uploadMaxConcurrent, err := intVar("MEDIA_UPLOAD_MAX_CONCURRENT", media.DefaultMaxConcurrent)
+	if err != nil {
+		return nil, err
+	}
+	if uploadMaxConcurrent < 1 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_MAX_CONCURRENT must be positive")
+	}
+	uploadMaxLongEdge, err := intVar("MEDIA_UPLOAD_MAX_LONG_EDGE", media.DefaultMaxLongEdge)
+	if err != nil {
+		return nil, err
+	}
+	if uploadMaxLongEdge < 1 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_MAX_LONG_EDGE must be positive")
+	}
+	uploadsPerTenMinutes, err := intVar("MEDIA_UPLOAD_RATE_PER_10MIN", media.DefaultUploadsPerTenMinutes)
+	if err != nil {
+		return nil, err
+	}
+	if uploadsPerTenMinutes < 1 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_RATE_PER_10MIN must be positive")
+	}
+
+	uploadBytesPerDay := media.DefaultUploadBytesPerDay
+	if raw := lookup("MEDIA_UPLOAD_BYTES_PER_DAY"); raw != "" {
+		uploadBytesPerDay, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("MEDIA_UPLOAD_BYTES_PER_DAY must be an integer: %w", err)
+		}
+	}
+	if uploadBytesPerDay <= 0 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_BYTES_PER_DAY must be positive")
+	}
+	uploadWarnFraction := media.DefaultUploadWarnFraction
+	if raw := lookup("MEDIA_UPLOAD_WARN_FRACTION"); raw != "" {
+		uploadWarnFraction, err = strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("MEDIA_UPLOAD_WARN_FRACTION must be a number: %w", err)
+		}
+	}
+	if math.IsNaN(uploadWarnFraction) || math.IsInf(uploadWarnFraction, 0) || uploadWarnFraction <= 0 || uploadWarnFraction > 1 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_WARN_FRACTION must be in (0, 1]")
+	}
 
 	cfg.Media = MediaConfig{
 		ImageProxy: imageProxy,
+		Upload:     media.Config{MaxConcurrent: uploadMaxConcurrent, MaxLongEdge: uploadMaxLongEdge},
+		UploadLimit: media.UploadLimitConfig{
+			UploadsPerTenMinutes: uploadsPerTenMinutes,
+			BytesPerDay:          uploadBytesPerDay, WarnFraction: uploadWarnFraction,
+		},
 		CDNPurge: CDNPurgeConfig{
 			ZoneID:   lookup("CLOUDFLARE_CACHE_PURGE_ZONE_ID"),
 			APIToken: lookup("CLOUDFLARE_CACHE_PURGE_API_TOKEN"),

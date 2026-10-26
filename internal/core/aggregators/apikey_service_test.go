@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
@@ -1467,6 +1469,84 @@ func TestAPIKeyService_RefreshTokensIfNeeded_Coordinated(t *testing.T) {
 			}
 			if _, ok := sessions["browser"]; !ok {
 				t.Error("the aggregator's unrelated session must survive")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// StoredSession Tests
+// =============================================================================
+
+type storeLookup struct {
+	did       string
+	sessionID string
+}
+
+func TestAPIKeyService_StoredSession(t *testing.T) {
+	const aggregatorDID = "did:plc:storedsessionbot"
+	storeErr := errors.New("session store query failed")
+	rows := []struct {
+		name        string
+		session     *oauth.ClientSessionData
+		storeErr    error
+		wantScopes  []string
+		wantDead    bool
+		wantWrapped error
+	}{
+		{
+			name: "stored session found",
+			session: &oauth.ClientSessionData{
+				AccountDID: syntax.DID("did:plc:storedsessionbot"),
+				SessionID:  "apikey",
+				Scopes:     []string{"atproto", "blob:*/*"},
+			},
+			wantScopes: []string{"atproto", "blob:*/*"},
+		},
+		{name: "no stored session row", storeErr: fmt.Errorf("get session: %w", covesoauth.ErrSessionNotFound), wantDead: true},
+		{name: "store returns neither session nor error", wantDead: true},
+		{name: "store fails", storeErr: storeErr, wantWrapped: storeErr},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			var lookups []storeLookup
+			deletes := 0
+			store := &mockOAuthStore{
+				getSessionFunc: func(_ context.Context, did syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
+					lookups = append(lookups, storeLookup{did: did.String(), sessionID: sessionID})
+					return row.session, row.storeErr
+				},
+				deleteSessionFunc: func(context.Context, syntax.DID, string) error {
+					deletes++
+					return nil
+				},
+			}
+			service := NewAPIKeyService(&mockRepository{}, &oauth.ClientApp{Store: store})
+
+			session, err := service.StoredSession(context.Background(), aggregatorDID)
+
+			if want := []storeLookup{{did: "did:plc:storedsessionbot", sessionID: "apikey"}}; !slices.Equal(lookups, want) {
+				t.Errorf("store lookups: got %+v, want %+v", lookups, want)
+			}
+			if deletes != 0 {
+				t.Errorf("store DeleteSession calls: got %d, want 0", deletes)
+			}
+			switch {
+			case row.wantScopes != nil:
+				if err != nil {
+					t.Fatalf("StoredSession: unexpected error %v", err)
+				}
+				if session == nil || session.AccountDID != "did:plc:storedsessionbot" || !slices.Equal(session.Scopes, row.wantScopes) {
+					t.Errorf("session: got %+v, want did:plc:storedsessionbot with scopes %v", session, row.wantScopes)
+				}
+			case row.wantDead:
+				if !errors.Is(err, ErrOAuthSessionDead) {
+					t.Errorf("error: got %v, want one matching ErrOAuthSessionDead", err)
+				}
+			default:
+				if err == nil || errors.Is(err, ErrOAuthSessionDead) || !errors.Is(err, row.wantWrapped) {
+					t.Errorf("error: got %v, want one matching the store error and not ErrOAuthSessionDead", err)
+				}
 			}
 		})
 	}

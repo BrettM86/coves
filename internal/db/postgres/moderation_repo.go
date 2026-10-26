@@ -202,9 +202,12 @@ func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI 
 	return &post, nil
 }
 
-// externalEmbedURI returns the link URI of an external link embed, or empty
-// for any other or malformed embed or a uri that is not a valid URI.
+// externalEmbedURI returns the link URI of an external link embed, including
+// an image gallery attachment, or empty for other or malformed embeds or URIs.
 func externalEmbedURI(embed map[string]any) string {
+	if embedType, _ := embed["$type"].(string); embedType == embeds.TypeImagesWithAttachment {
+		embed, _ = embed["attachment"].(map[string]any)
+	}
 	if embedType, _ := embed["$type"].(string); embedType != embeds.TypeExternal {
 		return ""
 	}
@@ -565,6 +568,40 @@ func (t *moderationTransaction) RecordCDNPurgeTargets(ctx context.Context, blobs
 	return nil
 }
 
+// RependCDNPurgeTargets runs in the removal transaction that activates an
+// every-owner block. It re-pends every recorded target of each CID, pending or
+// completed, and bumps generation and claim so an attempt sent before this
+// transaction commits can neither complete nor reschedule the row.
+func (t *moderationTransaction) RependCDNPurgeTargets(ctx context.Context, cids []string) ([]imageproxy.BlockedBlob, error) {
+	if len(cids) == 0 {
+		return nil, nil
+	}
+	rows, err := t.tx.QueryContext(ctx, `
+		UPDATE moderation_media_purges SET
+		    state = 'pending', attempts = 0, next_attempt_at = '-infinity',
+		    earliest_completion_at = NULL, last_failure_code = NULL,
+		    generation = generation + 1, claim = claim + 1, updated_at = NOW()
+		WHERE blob_cid = ANY($1)
+		RETURNING owner_did, blob_cid
+	`, pq.Array(cids))
+	if err != nil {
+		return nil, fmt.Errorf("re-pend CDN purge targets: %w", err)
+	}
+	defer rows.Close()
+	var repended []imageproxy.BlockedBlob
+	for rows.Next() {
+		var blob imageproxy.BlockedBlob
+		if err := rows.Scan(&blob.OwnerDID, &blob.CID); err != nil {
+			return nil, fmt.Errorf("scan re-pended CDN purge target: %w", err)
+		}
+		repended = append(repended, blob)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read re-pended CDN purge targets: %w", err)
+	}
+	return repended, nil
+}
+
 // ClaimDueCDNPurgeTargets locks pending rows due at claim.DueAt without waiting
 // on other workers. A clock sample after the locks anchors completion to a time
 // no earlier than the committing transaction's visibility.
@@ -913,4 +950,42 @@ func (r *ModerationRepository) RecordCDNPurgeTargets(ctx context.Context, blobs 
 		return nil, fmt.Errorf("commit CDN purge target recording: %w", err)
 	}
 	return pended, nil
+}
+
+// RecordMissingCDNPurgeTargets commits, in its own transaction, only the
+// targets not yet recorded and leaves every recorded target, pending or
+// completed, untouched. It returns the targets it inserted.
+func (r *ModerationRepository) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) (inserted []imageproxy.BlockedBlob, err error) {
+	if len(blobs) == 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin missing CDN purge target recording: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, rollbackErr)
+		}
+	}()
+	for _, blob := range blobs {
+		var recorded imageproxy.BlockedBlob
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO moderation_media_purges (owner_did, blob_cid)
+			VALUES ($1, $2)
+			ON CONFLICT (owner_did, blob_cid) DO NOTHING
+			RETURNING owner_did, blob_cid
+		`, blob.OwnerDID, blob.CID).Scan(&recorded.OwnerDID, &recorded.CID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("record missing CDN purge target: %w", err)
+		}
+		inserted = append(inserted, recorded)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit missing CDN purge target recording: %w", err)
+	}
+	return inserted, nil
 }

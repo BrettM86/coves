@@ -3,6 +3,7 @@ package moderation_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -364,6 +365,25 @@ func (transaction *inMemoryModerationTransaction) InsertMediaBlocks(_ context.Co
 func (transaction *inMemoryModerationTransaction) RecordCDNPurgeTargets(_ context.Context, blobs []imageproxy.BlockedBlob) error {
 	transaction.state.cdnPurgeTargets = append(transaction.state.cdnPurgeTargets, blobs...)
 	return nil
+}
+
+// RependCDNPurgeTargets returns each distinct recorded target of the CIDs; the
+// fake keeps no target state to move back to pending.
+func (transaction *inMemoryModerationTransaction) RependCDNPurgeTargets(_ context.Context, cids []string) ([]imageproxy.BlockedBlob, error) {
+	return distinctTargetsOfCIDs(transaction.state.cdnPurgeTargets, cids), nil
+}
+
+func distinctTargetsOfCIDs(recorded []imageproxy.BlockedBlob, cids []string) []imageproxy.BlockedBlob {
+	var repended []imageproxy.BlockedBlob
+	seen := make(map[imageproxy.BlockedBlob]bool)
+	for _, blob := range recorded {
+		if !slices.Contains(cids, blob.CID) || seen[blob] {
+			continue
+		}
+		seen[blob] = true
+		repended = append(repended, blob)
+	}
+	return repended
 }
 
 func (transaction *inMemoryModerationTransaction) DeactivateMediaBlocks(_ context.Context, actionID string) error {

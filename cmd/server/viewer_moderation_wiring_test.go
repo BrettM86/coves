@@ -13,6 +13,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/userblocks"
@@ -103,6 +104,8 @@ type unreachableUserBlockService struct{ userblocks.Service }
 // router mounts social.coves.actor.getViewerAuthority with the application's
 // authority. Services the route does not use stay nil.
 func TestRegisterXRPCRoutesServesGetViewerAuthority(t *testing.T) {
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 	unsealer, store, adminToken := viewerModerationSessions(viewerModerationAdminDID)
 	authority := moderation.NewAllowlistAuthority([]string{viewerModerationAdminDID})
 	clientConfig := indigooauth.NewLocalhostConfig("http://127.0.0.1:0/oauth/callback", []string{"atproto"})
@@ -112,6 +115,7 @@ func TestRegisterXRPCRoutesServesGetViewerAuthority(t *testing.T) {
 		authMiddleware:      middleware.NewOAuthAuthMiddleware(unsealer, store),
 		instanceAdminAuth:   middleware.NewInstanceAdminMiddleware(unsealer, store, nil, authority),
 		moderationAuthority: authority,
+		mediaPipeline:       pipeline,
 		userBlockService:    unreachableUserBlockService{},
 	}
 	router := chi.NewRouter()
@@ -138,6 +142,8 @@ func TestRegisterXRPCRoutesServesGetViewerAuthority(t *testing.T) {
 // building its routes, rather than serving reads that silently omit
 // viewer.moderation.
 func TestRegisterXRPCRoutesPanicsWithoutViewerModerationWiring(t *testing.T) {
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 	for _, test := range []struct {
 		name        string
 		authority   moderation.Authority
@@ -155,6 +161,7 @@ func TestRegisterXRPCRoutesPanicsWithoutViewerModerationWiring(t *testing.T) {
 				authMiddleware:      middleware.NewOAuthAuthMiddleware(unsealer, store),
 				instanceAdminAuth:   middleware.NewInstanceAdminMiddleware(unsealer, store, nil, moderation.NewAllowlistAuthority(nil)),
 				moderationAuthority: test.authority,
+				mediaPipeline:       pipeline,
 				userBlockService:    unreachableUserBlockService{},
 			}
 			assert.Panics(t, func() { registerXRPCRoutes(chi.NewRouter(), app) })

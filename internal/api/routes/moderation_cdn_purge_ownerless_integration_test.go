@@ -20,6 +20,7 @@ import (
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -179,6 +180,107 @@ func ownerlessTargetOwners(t *testing.T, db *sql.DB, cid string) []string {
 	return owners
 }
 
+func seedOwnerlessBlobReference(t *testing.T, db *sql.DB, owner, cid, subject, kind string, active bool) {
+	t.Helper()
+	_, err := db.ExecContext(t.Context(), `
+		INSERT INTO blob_references (owner_did, blob_cid, subject_uri, kind, active)
+		VALUES ($1, $2, $3, $4, $5)
+	`, owner, cid, subject, kind, active)
+	require.NoError(t, err)
+}
+
+func installOwnerlessBlobIndex(options *moderationMediaHarnessConfig) {
+	options.installBlobOwnerIndex = true
+}
+
+func TestModerationCDNPurgeOwnerlessIndexNamesUncachedOwners(t *testing.T) {
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex)
+	imageCID := mediaImageCID("ownerless index cold")
+	otherCID := mediaImageCID("ownerless index other")
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	ownerF := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxf"))
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", true)
+	seedOwnerlessBlobReference(t, h.db, ownerF, otherCID,
+		"at://"+ownerF+"/app.bsky.actor.profile/self", "avatar", true)
+	h.assertNoCachedBlob(t, imageCID, "")
+
+	h.remove(t, subject, "social.coves.moderation.defs#reasonIllegalContent")
+	waitModerationCDN(t, h.queue)
+	require.ElementsMatch(t, []string{ownerA, h.ownerB, ownerC}, ownerlessTargetOwners(t, h.db, imageCID))
+	var otherOwnerTargets int
+	require.NoError(t, h.db.QueryRowContext(t.Context(), `SELECT count(*) FROM moderation_media_purges WHERE owner_did = $1`, ownerF).Scan(&otherOwnerTargets))
+	assert.Zero(t, otherOwnerTargets)
+}
+
+func TestModerationCDNPurgeOwnerlessIndexUnionsCachedOwnersBeforeDeletion(t *testing.T) {
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	imageCID := mediaImageCID("ownerless index warm")
+	var boundary *ownerlessDeletionBoundary
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex,
+		func(options *moderationMediaHarnessConfig) {
+			options.wrapCache = func(cache *imageproxy.DiskCache, db *sql.DB, root string) imageproxy.Cache {
+				boundary = &ownerlessDeletionBoundary{DiskCache: cache, db: db, root: root, cid: imageCID}
+				return boundary
+			}
+		})
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	ownerD := ownerlessOwnerC
+	boundary.owners = []string{h.ownerB, ownerD}
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	otherPost, _ := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, otherPost.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", true)
+	for _, preset := range []string{"content_preview", "content_full"} {
+		for _, owner := range []string{h.ownerB, ownerD} {
+			require.NoError(t, h.cache.Set(preset, owner, imageCID, testkit.TestPNG(32, 32)))
+		}
+	}
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB, ownerD)
+
+	h.remove(t, subject, "social.coves.moderation.defs#reasonIllegalContent")
+	waitModerationCDN(t, h.queue)
+	require.ElementsMatch(t, []string{ownerA, h.ownerB, ownerC, ownerD}, ownerlessTargetOwners(t, h.db, imageCID))
+	h.assertNoCachedBlob(t, imageCID, "")
+	assert.Empty(t, boundary.snapshot(), "every deletion of B/D must follow a committed target")
+}
+
+func TestModerationCDNPurgeOwnerlessIndexIncludesInactiveOwners(t *testing.T) {
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex)
+	imageCID := mediaImageCID("ownerless index inactive")
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", false)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", false)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", false)
+	var total, active int
+	require.NoError(t, h.db.QueryRowContext(t.Context(), `
+		SELECT count(*), count(*) FILTER (WHERE active) FROM blob_references WHERE blob_cid = $1
+	`, imageCID).Scan(&total, &active))
+	require.Equal(t, 3, total)
+	require.Zero(t, active)
+	h.assertNoCachedBlob(t, imageCID, "")
+
+	h.remove(t, subject, "social.coves.moderation.defs#reasonIllegalContent")
+	waitModerationCDN(t, h.queue)
+	require.ElementsMatch(t, []string{ownerA, h.ownerB, ownerC}, ownerlessTargetOwners(t, h.db, imageCID))
+}
+
 // Not parallel: this test replaces slog.Default while removal logs unmappable directories.
 func TestModerationCDNPurgeOwnerlessRemovalNamesCachedOwnersBeforeDeletion(t *testing.T) {
 	const ownerD = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
@@ -246,6 +348,85 @@ func (store failingOwnerlessRecordStore) RecordCDNPurgeTargets(ctx context.Conte
 	return store.CDNPurgeTargetStore.RecordCDNPurgeTargets(ctx, blobs)
 }
 
+type failingOwnerlessBlobIndex struct {
+	imageproxy.BlobOwnerIndex
+	failing *atomic.Bool
+}
+
+func (index failingOwnerlessBlobIndex) ListBlobOwners(ctx context.Context, cid string) ([]string, error) {
+	if index.failing.Load() {
+		return nil, errors.New("blob owner index unavailable")
+	}
+	return index.BlobOwnerIndex.ListBlobOwners(ctx, cid)
+}
+
+func TestModerationCDNPurgeOwnerlessIndexFailureRetainsBytesUntilSweep(t *testing.T) {
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	var failing atomic.Bool
+	failing.Store(true)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex,
+		func(options *moderationMediaHarnessConfig) {
+			options.wrapBlobOwnerIndex = func(index imageproxy.BlobOwnerIndex) imageproxy.BlobOwnerIndex {
+				return failingOwnerlessBlobIndex{BlobOwnerIndex: index, failing: &failing}
+			}
+		})
+	imageCID := mediaImageCID("ownerless index lookup failure")
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", true)
+	for _, preset := range []string{"content_preview", "content_full"} {
+		require.NoError(t, h.cache.Set(preset, h.ownerB, imageCID, testkit.TestPNG(32, 32)))
+	}
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB)
+
+	h.remove(t, subject, "social.coves.moderation.defs#reasonIllegalContent")
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.Error(t, h.proxyService.PurgeBlob(ctx, imageCID))
+	require.Error(t, h.proxyService.PurgeActiveBlocks(ctx, postgres.NewModerationRepository(h.db)))
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB)
+	assert.NotContains(t, ownerlessTargetOwners(t, h.db, imageCID), ownerC)
+
+	failing.Store(false)
+	require.NoError(t, h.proxyService.PurgeActiveBlocks(ctx, postgres.NewModerationRepository(h.db)))
+	require.ElementsMatch(t, []string{ownerA, h.ownerB, ownerC}, ownerlessTargetOwners(t, h.db, imageCID))
+	h.assertNoCachedBlob(t, imageCID, "")
+}
+
+func TestModerationCDNPurgeOwnerScopedIndexKeepsOtherOwnersCached(t *testing.T) {
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex)
+	imageCID := mediaImageCID("owner scoped index guard")
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", true)
+	for _, preset := range []string{"content_preview", "content_full"} {
+		for _, owner := range []string{ownerA, h.ownerB} {
+			require.NoError(t, h.cache.Set(preset, owner, imageCID, testkit.TestPNG(32, 32)))
+		}
+	}
+	requireOwnerlessCachedEntries(t, h, imageCID, ownerA, h.ownerB)
+
+	h.remove(t, subject, "social.coves.moderation.defs#reasonSpam")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, h.proxyService.PurgeActiveBlocks(ctx, postgres.NewModerationRepository(h.db)))
+	require.ElementsMatch(t, []string{ownerA}, ownerlessTargetOwners(t, h.db, imageCID))
+	h.assertNoCachedBlob(t, imageCID, ownerA)
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB)
+}
+
 func TestModerationCDNPurgeOwnerlessRecordingFailureRetainsBytesUntilSweep(t *testing.T) {
 	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
 	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
@@ -296,7 +477,7 @@ func TestModerationCDNPurgeOwnerlessRestartRecordsTargetsBeforeDeleting(t *testi
 	repo := postgres.NewModerationRepository(h.db)
 	restarted, err := imageproxy.NewService(fixture.boundary, processor,
 		imageproxy.NewPDSFetcher(30*time.Second, 10, imageproxy.WithPrivateHostsAllowed()),
-		repo, imageproxy.DefaultConfig(), imageproxy.WithCDNPurgeRecorder(h.queue))
+		repo, allowMediaReferences{}, imageproxy.DefaultConfig(), imageproxy.WithCDNPurgeRecorder(h.queue))
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -348,10 +529,194 @@ func TestModerationCDNPurgeOwnerlessUnconfiguredDeletesWithoutRecording(t *testi
 	require.NoError(t, err)
 	restarted, err := imageproxy.NewService(h.cache, processor,
 		imageproxy.NewPDSFetcher(30*time.Second, 10, imageproxy.WithPrivateHostsAllowed()),
-		postgres.NewModerationRepository(h.db), imageproxy.DefaultConfig())
+		postgres.NewModerationRepository(h.db), allowMediaReferences{}, imageproxy.DefaultConfig())
 	require.NoError(t, err)
 	require.NoError(t, restarted.PurgeActiveBlocks(t.Context(), postgres.NewModerationRepository(h.db)))
 	h.assertNoCachedBlob(t, imageCID, "")
 	assert.Zero(t, moderationCDNTargetCount(t, h.db))
 	assert.Empty(t, endpoint.Requests())
+}
+
+const ownerlessIllegalContent = "social.coves.moderation.defs#reasonIllegalContent"
+
+func TestModerationCDNPurgeOwnerlessSkipsNonCanonicalIndexOwner(t *testing.T) {
+	const nonCanonicalOwner = "did:web:Example.test"
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex)
+	imageCID := mediaImageCID("ownerless index non-canonical owner")
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	seedOwnerlessBlobReference(t, h.db, nonCanonicalOwner, imageCID,
+		"at://"+nonCanonicalOwner+"/app.bsky.actor.profile/self", "avatar", true)
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	for _, preset := range []string{"content_preview", "content_full"} {
+		require.NoError(t, h.cache.Set(preset, h.ownerB, imageCID, testkit.TestPNG(32, 32)))
+	}
+	requireOwnerlessCachedEntries(t, h, imageCID, h.ownerB)
+
+	h.remove(t, subject, ownerlessIllegalContent)
+	waitModerationCDN(t, h.queue)
+	assert.ElementsMatch(t, []string{ownerA, h.ownerB}, ownerlessTargetOwners(t, h.db, imageCID),
+		"a non-canonical indexed owner must not stop the valid owners from being recorded")
+	h.assertNoCachedBlob(t, imageCID, "")
+
+	for _, preset := range []string{"content_preview", "content_full"} {
+		require.NoError(t, h.cache.Set(preset, h.ownerB, imageCID, testkit.TestPNG(32, 32)))
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, h.proxyService.PurgeActiveBlocks(ctx, postgres.NewModerationRepository(h.db)))
+	h.assertNoCachedBlob(t, imageCID, "")
+	assert.NotContains(t, ownerlessTargetOwners(t, h.db, imageCID), nonCanonicalOwner)
+}
+
+// ownerlessCompletedBlock is an illegal-content removal whose every-owner
+// block has indexed owners A (the author), B and C, none of them cached, and
+// whose purge targets have all completed.
+type ownerlessCompletedBlock struct {
+	h        *moderationMediaHarness
+	endpoint *testkit.CloudflarePurgeEndpoint
+	clock    *moderationCDNClock
+	subject  moderation.StrongRef
+	removed  *moderation.MutationResult
+	cid      string
+	owners   []string
+}
+
+func newOwnerlessCompletedBlock(t *testing.T, label string) ownerlessCompletedBlock {
+	t.Helper()
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	h := newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, 90*time.Second, installOwnerlessBlobIndex)
+	imageCID := mediaImageCID(label)
+	subject, ownerA := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	ownerC := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxc"))
+	seedOwnerlessBlobReference(t, h.db, ownerA, imageCID, subject.URI, "post_image", true)
+	seedOwnerlessBlobReference(t, h.db, h.ownerB, imageCID,
+		"at://"+h.ownerB+"/"+moderation.CommentCollection+"/"+testkit.TID(), "comment_image", true)
+	seedOwnerlessBlobReference(t, h.db, ownerC, imageCID,
+		"at://"+ownerC+"/app.bsky.actor.profile/self", "avatar", true)
+	h.assertNoCachedBlob(t, imageCID, "")
+
+	removed := h.remove(t, subject, ownerlessIllegalContent)
+	waitModerationCDN(t, h.queue)
+	clock.Set(time.Date(2026, 9, 28, 12, 1, 30, 0, time.UTC))
+	require.NoError(t, h.queue.Sweep(t.Context()))
+	owners := []string{ownerA, h.ownerB, ownerC}
+	require.ElementsMatch(t, owners, ownerlessTargetOwners(t, h.db, imageCID))
+	for _, owner := range owners {
+		require.Equal(t, "completed", moderationCDNTarget(t, h.db, owner, imageCID).state, "target for %s", owner)
+	}
+	return ownerlessCompletedBlock{h: h, endpoint: endpoint, clock: clock, subject: subject, removed: removed, cid: imageCID, owners: owners}
+}
+
+// sweep runs the blocked media sweep at the given time, waits for its
+// immediate purge attempts, then runs the queue sweep once the write timeout
+// has passed so every target purged at that time can complete.
+func (block ownerlessCompletedBlock) sweep(t *testing.T, at time.Time) {
+	t.Helper()
+	block.clock.Set(at)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, block.h.proxyService.PurgeActiveBlocks(ctx, postgres.NewModerationRepository(block.h.db)))
+	waitModerationCDN(t, block.h.queue)
+	block.clock.Set(at.Add(90 * time.Second))
+	require.NoError(t, block.h.queue.Sweep(ctx))
+}
+
+// requestedFileCounts counts how often each file was sent from request index from on.
+func (block ownerlessCompletedBlock) requestedFileCounts(from int) map[string]int {
+	counts := make(map[string]int)
+	for _, request := range block.endpoint.Requests()[from:] {
+		for _, file := range request.Files {
+			counts[file]++
+		}
+	}
+	return counts
+}
+
+func TestModerationCDNPurgeOwnerlessSweepLeavesCompletedIndexTargets(t *testing.T) {
+	block := newOwnerlessCompletedBlock(t, "ownerless sweep completed index")
+	before := len(block.endpoint.Requests())
+
+	block.sweep(t, time.Date(2026, 9, 28, 13, 0, 0, 0, time.UTC))
+	block.sweep(t, time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	assert.Empty(t, block.requestedFileCounts(before), "sweeps must not purge completed index-only targets again")
+	for _, owner := range block.owners {
+		assert.Equal(t, "completed", moderationCDNTarget(t, block.h.db, owner, block.cid).state, "target for %s", owner)
+	}
+}
+
+func TestModerationCDNPurgeOwnerlessSweepRecordsNewlyIndexedOwner(t *testing.T) {
+	block := newOwnerlessCompletedBlock(t, "ownerless sweep new index owner")
+	ownerE := fixtures.DID(testkit.UniqueIDWithPrefix(t, "idxe"))
+	seedOwnerlessBlobReference(t, block.h.db, ownerE, block.cid,
+		"at://"+ownerE+"/app.bsky.actor.profile/self", "avatar", true)
+	before := len(block.endpoint.Requests())
+
+	block.sweep(t, time.Date(2026, 9, 28, 13, 0, 0, 0, time.UTC))
+	counts := block.requestedFileCounts(before)
+	for _, file := range moderationCDNFiles(ownerE, block.cid) {
+		assert.Positive(t, counts[file], "the sweep must purge %s", file)
+	}
+	assert.Equal(t, "completed", moderationCDNTarget(t, block.h.db, ownerE, block.cid).state)
+}
+
+func TestModerationCDNPurgeOwnerlessRemovalAfterRestoreRependsIndexOwners(t *testing.T) {
+	block := newOwnerlessCompletedBlock(t, "ownerless restore re-removal")
+	h := block.h
+	restored := h.restore(t, block.subject, block.removed)
+	block.clock.Set(time.Date(2026, 9, 28, 13, 0, 0, 0, time.UTC))
+	before := len(block.endpoint.Requests())
+	result, err := h.moderation.RemoveContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "mediaadmin")), moderation.RemoveContentRequest{
+		Subject: block.subject, ExpectedVersion: restored.State.Version,
+		IdempotencyKey: "remove-" + testkit.UniqueID(t), Reason: ownerlessIllegalContent,
+	})
+	require.NoError(t, err)
+	require.Equal(t, moderation.OutcomeApplied, result.Outcome)
+	waitModerationCDN(t, h.queue)
+	counts := block.requestedFileCounts(before)
+	for _, owner := range block.owners {
+		assert.Equal(t, "pending", moderationCDNTarget(t, h.db, owner, block.cid).state, "re-removal must re-pend %s", owner)
+		for _, file := range moderationCDNFiles(owner, block.cid) {
+			assert.Equal(t, 1, counts[file], "the re-removal's immediate attempt must purge %s once", file)
+		}
+	}
+
+	block.clock.Set(time.Date(2026, 9, 28, 13, 1, 30, 0, time.UTC))
+	require.NoError(t, h.queue.Sweep(t.Context()))
+	counts = block.requestedFileCounts(before)
+	for _, owner := range block.owners {
+		assert.Equal(t, "completed", moderationCDNTarget(t, h.db, owner, block.cid).state, "target for %s", owner)
+		for _, file := range moderationCDNFiles(owner, block.cid) {
+			assert.Equal(t, 2, counts[file], "the completing sweep must purge %s once more", file)
+		}
+	}
+
+	afterCompletion := len(block.endpoint.Requests())
+	block.sweep(t, time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	assert.Empty(t, block.requestedFileCounts(afterCompletion), "a later sweep must not purge the re-removal's targets again")
+	for _, owner := range block.owners {
+		assert.Equal(t, "completed", moderationCDNTarget(t, h.db, owner, block.cid).state, "target for %s", owner)
+	}
+}
+
+func TestModerationCDNPurgeOwnerlessSweepRependsRecachedOwner(t *testing.T) {
+	block := newOwnerlessCompletedBlock(t, "ownerless sweep recached owner")
+	h := block.h
+	for _, preset := range []string{"content_preview", "content_full"} {
+		require.NoError(t, h.cache.Set(preset, h.ownerB, block.cid, testkit.TestPNG(32, 32)))
+	}
+	requireOwnerlessCachedEntries(t, h, block.cid, h.ownerB)
+	before := len(block.endpoint.Requests())
+
+	block.sweep(t, time.Date(2026, 9, 28, 13, 0, 0, 0, time.UTC))
+	h.assertNoCachedBlob(t, block.cid, "")
+	counts := block.requestedFileCounts(before)
+	for _, file := range moderationCDNFiles(h.ownerB, block.cid) {
+		assert.Positive(t, counts[file], "re-cached bytes must purge %s again", file)
+	}
+	assert.Equal(t, "completed", moderationCDNTarget(t, h.db, h.ownerB, block.cid).state)
 }

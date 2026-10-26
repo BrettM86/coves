@@ -6,7 +6,6 @@ toolchain go1.26.10
 
 require (
 	github.com/bluesky-social/indigo v0.0.0-20261020053033-bdacece3f80e
-	github.com/disintegration/imaging v1.6.2
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/cors v1.2.2
 	github.com/gorilla/websocket v1.5.3

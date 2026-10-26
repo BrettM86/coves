@@ -3,7 +3,8 @@ package jetstream
 import (
 	"errors"
 	"fmt"
-	"time"
+
+	"Coves/internal/atproto/identity"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
@@ -141,7 +142,7 @@ func requireDIDShaped(field, value string) error {
 // per-DID identityRefreshFailureDebounce; a debounce hit still purges the cached
 // DID and defers without spending a redrive attempt. See docs/SECURITY_MODEL.md,
 // Firehose error classes.
-const identityResolveTimeout = 5 * time.Second
+const identityResolveTimeout = identity.ResolveTimeout
 
 // authorHydrationTimeout shares the identity resolution ceiling so equivalent
 // attacker-triggered lookups cannot drift to different limits.

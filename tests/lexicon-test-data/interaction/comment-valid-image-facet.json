@@ -1,0 +1,45 @@
+{
+  "$type": "social.coves.community.comment",
+  "reply": {
+    "root": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    },
+    "parent": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    }
+  },
+  "content": "Here is the fix I used: [1]",
+  "facets": [
+    {
+      "index": {
+        "byteStart": 24,
+        "byteEnd": 27
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#image",
+          "index": 0
+        }
+      ]
+    }
+  ],
+  "createdAt": "2025-01-09T16:30:00Z",
+  "embed": {
+    "$type": "social.coves.embed.images",
+    "images": [
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 200000
+        },
+        "alt": "Rack photo 1"
+      }
+    ]
+  }
+}

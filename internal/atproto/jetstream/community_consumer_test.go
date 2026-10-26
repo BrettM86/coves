@@ -145,17 +145,14 @@ func TestCommunityProfileBlobRefs(t *testing.T) {
 		assert.Nil(t, profile.Avatar)
 	})
 
-	t.Run("only one of the two present leaves the other alone", func(t *testing.T) {
+	t.Run("an avatar without a banner extracts only the avatar", func(t *testing.T) {
 		t.Parallel()
 		record := base()
 		record["avatar"] = blobRef(avatarCID)
 
 		avatar, banner := cidsOf(t, record)
 		assert.Equal(t, avatarCID, avatar)
-		assert.Empty(t, banner,
-			"a record with an avatar and no banner must not produce a banner CID: the consumer "+
-				"only assigns when extraction succeeds, which is what stops an update that omits "+
-				"the banner from blanking a stored one")
+		assert.Empty(t, banner, "an absent banner must not produce a CID")
 	})
 
 	t.Run("a malformed ref yields nothing rather than a partial value", func(t *testing.T) {
@@ -171,39 +168,11 @@ func TestCommunityProfileBlobRefs(t *testing.T) {
 		assert.Empty(t, avatar)
 	})
 
-	t.Run("an omitted image does not blank a stored one", func(t *testing.T) {
+	t.Run("an omitted image has no extractable CID", func(t *testing.T) {
 		t.Parallel()
-		// THE `if ok` GUARDS, stated as the invariant they exist for.
-		//
-		// Both the create and update paths assign conditionally:
-		//
-		//	if avatarCID, ok := extractBlobCID(profile.Avatar); ok { … = avatarCID }
-		//
-		// so a record that omits a picture leaves the stored CID untouched
-		// rather than clearing it. That matters because UpdateCommunity rebuilds
-		// the profile record from scratch and only sets `avatar` when a NEW blob
-		// was uploaded — so a display-name-only edit ships a record with no
-		// avatar key at all, and the guard is the only thing that stops every
-		// such edit from wiping the community's picture.
-		//
-		// Modelled here as the decision the consumer makes (extraction
-		// succeeded, or it did not), which is what the guard branches on; the
-		// end-to-end version is the community contract's update step, and the
-		// erasure risk on the WRITE side is
-		// TestService_CreateAndUpdateWriteBlobRefsIntoTheProfileRecord.
-		withImage := base()
-		withImage["avatar"] = blobRef(avatarCID)
-		stored, ok := extractBlobCID(mustParse(t, withImage).Avatar)
-		require.True(t, ok)
-		require.Equal(t, avatarCID, stored)
-
-		// The follow-up edit carries no avatar at all.
-		_, ok = extractBlobCID(mustParse(t, base()).Avatar)
-		require.False(t, ok,
-			"extraction must FAIL for an omitted image, because failing is what makes the "+
-				"consumer's `if ok` skip the assignment and keep the stored CID. If this ever "+
-				"returned ok with an empty string, every display-name-only update would blank "+
-				"the community's avatar")
+		cid, ok := extractBlobCID(mustParse(t, base()).Avatar)
+		require.Empty(t, cid)
+		require.False(t, ok, "an absent avatar is not a blob reference")
 	})
 
 	t.Run("a picture that is not an object fails the whole record", func(t *testing.T) {

@@ -3,6 +3,7 @@ package imageproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +35,7 @@ func TestImageProxyService_BlocksBeforeReadingCache(t *testing.T) {
 				checks.Add(1)
 				return true, nil
 			})
-			service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, DefaultConfig())
+			service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), DefaultConfig())
 			require.NoError(t, err)
 			data, err := service.GetImageResolvingPDS(t.Context(), "avatar", moderationTestOwner, moderationTestCID, resolvedPDS("https://pds.example.com"))
 			assert.ErrorIs(t, err, ErrBlobBlocked)
@@ -62,7 +63,7 @@ func TestImageProxyService_RefusesNoncanonicalOwnerDID(t *testing.T) {
 				checks.Add(1)
 				return false, nil
 			})
-			service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, DefaultConfig())
+			service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), DefaultConfig())
 			require.NoError(t, err)
 
 			data, err := service.GetImageResolvingPDS(t.Context(), "avatar", test.owner, moderationTestCID, func(context.Context) (string, error) {
@@ -89,7 +90,7 @@ func TestImageProxyService_BlockCheckFailureFailsClosed(t *testing.T) {
 	fetcher := NewMockFetcher([]byte("fetched secret"), nil)
 	lookupError := errors.New("block lookup unavailable")
 	checker := blockCheckFunc(func(context.Context, string, string) (bool, error) { return false, lookupError })
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 	data, err := service.GetImageResolvingPDS(t.Context(), "avatar", moderationTestOwner, moderationTestCID, resolvedPDS("https://pds.example.com"))
 	assert.ErrorIs(t, err, ErrBlockCheckFailed)
@@ -100,7 +101,9 @@ func TestImageProxyService_BlockCheckFailureFailsClosed(t *testing.T) {
 
 func TestImageProxyService_BlockArrivesWhileFetching(t *testing.T) {
 	cache := NewMockCache()
-	fetcher := newBlockingFetcher([]byte("source image"))
+	source := []byte("source image")
+	cid := rawCIDForTest(t, source)
+	fetcher := newBlockingFetcher(source)
 	t.Cleanup(fetcher.Release)
 	var blocked atomic.Bool
 	var checks atomic.Int32
@@ -108,9 +111,9 @@ func TestImageProxyService_BlockArrivesWhileFetching(t *testing.T) {
 		checks.Add(1)
 		return blocked.Load(), nil
 	})
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
-	done := callGetImageAsync(t.Context(), service, moderationTestCID)
+	done := callGetImageAsync(t.Context(), service, cid)
 	fetcher.waitForEntries(t, 1, 5*time.Second)
 	require.EqualValues(t, 1, checks.Load(), "pre-read check must finish before fetching")
 	blocked.Store(true)
@@ -128,6 +131,7 @@ func TestImageProxyService_BlockArrivesWhileFetching(t *testing.T) {
 
 func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 	cache := NewMockCache()
+	cid := rawCIDForTest(t, []byte("raw"))
 	var checks atomic.Int32
 	checkingAfterFetch := make(chan struct{})
 	releaseCheck := make(chan struct{})
@@ -141,9 +145,9 @@ func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 		}
 		return false, nil
 	})
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), checker, DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
-	imageDone := callGetImageAsync(t.Context(), service, moderationTestCID)
+	imageDone := callGetImageAsync(t.Context(), service, cid)
 	select {
 	case <-checkingAfterFetch:
 	case <-time.After(5 * time.Second):
@@ -153,7 +157,7 @@ func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 	purgeDone := make(chan error, 1)
 	go func() {
 		close(purgeStarted)
-		purgeDone <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", moderationTestCID)
+		purgeDone <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", cid)
 	}()
 	<-purgeStarted
 	testkit.Holds(t, 200*time.Millisecond, func() (bool, error) {
@@ -179,7 +183,7 @@ func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 		t.Fatal("purge did not finish after the writer")
 	}
 	assert.Equal(t, 1, cache.SetCalls(), "the writer must have cached bytes before purge completed")
-	data, found, err := cache.Get("avatar", "did:plc:test123", moderationTestCID)
+	data, found, err := cache.Get("avatar", "did:plc:test123", cid)
 	require.NoError(t, err)
 	assert.False(t, found, "purge must remove the writer's cache entry across the race")
 	assert.Empty(t, data)
@@ -190,7 +194,7 @@ func TestImageProxyService_PurgeBlobClearsAllOwners(t *testing.T) {
 	cache.SetCacheData("avatar", moderationTestOwner, moderationTestCID, []byte("first"))
 	cache.SetCacheData("banner", "did:plc:otherowner", moderationTestCID, []byte("second"))
 	cache.SetCacheData("avatar", moderationTestOwner, "bafyreiunrelatedimage", []byte("unrelated"))
-	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 	require.NoError(t, service.PurgeBlob(t.Context(), moderationTestCID))
 	for _, entry := range []struct{ preset, did string }{{"avatar", moderationTestOwner}, {"banner", "did:plc:otherowner"}} {
@@ -209,25 +213,26 @@ func TestImageProxyService_IsBlobBlockedUsesChecker(t *testing.T) {
 		assert.Equal(t, moderationTestCID, cid)
 		return true, nil
 	})
-	service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), checker, DefaultConfig())
+	service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 	blocked, err := service.IsBlobBlocked(t.Context(), moderationTestOwner, moderationTestCID)
 	require.NoError(t, err)
 	assert.True(t, blocked)
 }
 
-// cidOnOtherStripe returns a CID whose publication lock differs from cid's,
-// so a test can show that work on one stripe does not stall the other.
-func cidOnOtherStripe(t *testing.T, service *ImageProxyService, cid string) string {
+// payloadOnOtherStripe returns bytes and their raw CID on a different
+// publication stripe, so the second request stays a real cache miss.
+func payloadOnOtherStripe(t *testing.T, service *ImageProxyService, cid string) ([]byte, string) {
 	t.Helper()
-	for _, suffix := range "abcdefghijklmnopqrstuvwxyz" {
-		candidate := cid[:len(cid)-1] + string(suffix)
+	for attempt := range 256 {
+		payload := []byte(fmt.Sprintf("raw on another stripe %d", attempt))
+		candidate := rawCIDForTest(t, payload)
 		if service.publicationLock(candidate) != service.publicationLock(cid) {
-			return candidate
+			return payload, candidate
 		}
 	}
 	t.Fatal("no candidate CID landed on another publication stripe")
-	return ""
+	return nil, ""
 }
 
 // parkingPurgeCache parks DeleteCID until released, standing in for a purge
@@ -262,7 +267,7 @@ func TestImageProxyService_BlockedRequestPurgesItsCacheEntry(t *testing.T) {
 	checker := blockCheckFunc(func(_ context.Context, did, _ string) (bool, error) {
 		return did == moderationTestOwner, nil
 	})
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher(nil, nil), checker, DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher(nil, nil), checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 
 	_, err = service.GetImageResolvingPDS(t.Context(), "avatar", moderationTestOwner, moderationTestCID, resolvedPDS("https://pds.example.com"))
@@ -281,17 +286,18 @@ func TestImageProxyService_PurgeDiskWorkDoesNotHoldPublicationLock(t *testing.T)
 	var releaseOnce sync.Once
 	releasePurge := func() { releaseOnce.Do(func() { close(cache.release) }) }
 	t.Cleanup(releasePurge)
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), allowAllBlockChecker(), DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
+	cid := rawCIDForTest(t, []byte("raw"))
 
 	purgeDone := make(chan error, 1)
-	go func() { purgeDone <- service.PurgeBlob(t.Context(), moderationTestCID) }()
+	go func() { purgeDone <- service.PurgeBlob(t.Context(), cid) }()
 	select {
 	case <-cache.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("purge never reached the cache walk")
 	}
-	result := receiveImage(t, callGetImageAsync(t.Context(), service, moderationTestCID),
+	result := receiveImage(t, callGetImageAsync(t.Context(), service, cid),
 		"cache publication on the purged CID's stripe while the purge walks the cache")
 	require.NoError(t, result.err)
 	releasePurge()
@@ -319,10 +325,13 @@ func TestImageProxyService_ProcessingSlotFreeDuringPublication(t *testing.T) {
 		return false, nil
 	})
 	cache := NewMockCache()
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), checker, semaphoreTestConfig(1))
+	parkedPayload := []byte("raw parked")
+	parkedCID = rawCIDForTest(t, parkedPayload)
+	fetcher := NewMockFetcher(nil, nil)
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), semaphoreTestConfig(1))
 	require.NoError(t, err)
-	parkedCID = moderationTestCID
-	otherCID := cidOnOtherStripe(t, service, parkedCID)
+	otherPayload, otherCID := payloadOnOtherStripe(t, service, parkedCID)
+	fetcher.dataByCID = map[string][]byte{parkedCID: parkedPayload, otherCID: otherPayload}
 
 	parkedDone := callGetImageAsync(t.Context(), service, parkedCID)
 	select {
@@ -340,6 +349,8 @@ func TestImageProxyService_ProcessingSlotFreeDuringPublication(t *testing.T) {
 // waiting for publication is transient memory the in-flight cap must still
 // count, or a slow recheck lets outputs pile up beyond the documented bound.
 func TestImageProxyService_AdmissionHeldDuringPublication(t *testing.T) {
+	parkedPayload := []byte("raw parked")
+	parkedCID := rawCIDForTest(t, parkedPayload)
 	parkedCheck := make(chan struct{})
 	releaseCheck := make(chan struct{})
 	var releaseOnce sync.Once
@@ -347,18 +358,19 @@ func TestImageProxyService_AdmissionHeldDuringPublication(t *testing.T) {
 	t.Cleanup(release)
 	var checksForParked atomic.Int32
 	checker := blockCheckFunc(func(_ context.Context, _, cid string) (bool, error) {
-		if cid == moderationTestCID && checksForParked.Add(1) == 2 {
+		if cid == parkedCID && checksForParked.Add(1) == 2 {
 			close(parkedCheck)
 			<-releaseCheck
 		}
 		return false, nil
 	})
-	fetcher := NewMockFetcher([]byte("raw"), nil)
-	service, err := NewService(NewMockCache(), NewMockProcessor([]byte("processed"), nil), fetcher, checker, admissionTestConfig(1))
+	fetcher := NewMockFetcher(nil, nil)
+	service, err := NewService(NewMockCache(), NewMockProcessor([]byte("processed"), nil), fetcher, checker, allowAllReferences(), admissionTestConfig(1))
 	require.NoError(t, err)
-	otherCID := cidOnOtherStripe(t, service, moderationTestCID)
+	otherPayload, otherCID := payloadOnOtherStripe(t, service, parkedCID)
+	fetcher.dataByCID = map[string][]byte{parkedCID: parkedPayload, otherCID: otherPayload}
 
-	parkedDone := callGetImageAsync(t.Context(), service, moderationTestCID)
+	parkedDone := callGetImageAsync(t.Context(), service, parkedCID)
 	select {
 	case <-parkedCheck:
 	case <-time.After(5 * time.Second):
@@ -377,38 +389,40 @@ func TestImageProxyService_AdmissionHeldDuringPublication(t *testing.T) {
 }
 
 func TestImageProxyService_CallerDisconnectAfterProcessingStillCaches(t *testing.T) {
+	cid := rawCIDForTest(t, []byte("raw"))
 	cache := NewMockCache()
 	processor := newBlockingProcessor([]byte("processed"))
 	t.Cleanup(processor.Release)
 	checker := blockCheckFunc(func(ctx context.Context, _, _ string) (bool, error) {
 		return false, ctx.Err()
 	})
-	service, err := NewService(cache, processor, NewMockFetcher([]byte("raw"), nil), checker, DefaultConfig())
+	service, err := NewService(cache, processor, NewMockFetcher([]byte("raw"), nil), checker, allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
-	done := callGetImageAsync(ctx, service, moderationTestCID)
+	done := callGetImageAsync(ctx, service, cid)
 	processor.waitForEntries(t, 1, 5*time.Second)
 	cancel()
 	processor.Release()
 	receiveImage(t, done, "request whose caller disconnected during processing")
-	data, found := cache.GetSetData("avatar", "did:plc:test123", moderationTestCID)
+	data, found := cache.GetSetData("avatar", "did:plc:test123", cid)
 	assert.True(t, found, "processed bytes must be cached even though the caller went away")
 	assert.Equal(t, []byte("processed"), data)
 }
 
 func TestImageProxyService_PurgeReturnsWhileFetchIsParked(t *testing.T) {
+	cid := rawCIDForTest(t, []byte("raw"))
 	cache := NewMockCache()
 	fetcher := newBlockingFetcher([]byte("raw"))
 	t.Cleanup(fetcher.Release)
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, allowAllBlockChecker(), DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, allowAllBlockChecker(), allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
-	done := callGetImageAsync(t.Context(), service, moderationTestCID)
+	done := callGetImageAsync(t.Context(), service, cid)
 	fetcher.waitForEntries(t, 1, 5*time.Second)
 
 	purged := make(chan error, 2)
 	go func() {
-		purged <- service.PurgeBlob(t.Context(), moderationTestCID)
-		purged <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", moderationTestCID)
+		purged <- service.PurgeBlob(t.Context(), cid)
+		purged <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", cid)
 	}()
 	for range 2 {
 		select {
@@ -423,10 +437,11 @@ func TestImageProxyService_PurgeReturnsWhileFetchIsParked(t *testing.T) {
 }
 
 func TestImageProxyService_PublicationWaiterReleasedWhenContextEnds(t *testing.T) {
+	cid := rawCIDForTest(t, []byte("raw"))
 	cache := NewMockCache()
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), allowAllBlockChecker(), DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
-	release, err := service.lockPublication(t.Context(), moderationTestCID)
+	release, err := service.lockPublication(t.Context(), cid)
 	require.NoError(t, err)
 	t.Cleanup(release)
 
@@ -434,7 +449,7 @@ func TestImageProxyService_PublicationWaiterReleasedWhenContextEnds(t *testing.T
 		ctx, cancel := context.WithCancel(t.Context())
 		waiterDone := make(chan error, 1)
 		go func() {
-			_, err := service.lockPublication(ctx, moderationTestCID)
+			_, err := service.lockPublication(ctx, cid)
 			waiterDone <- err
 		}()
 		cancel()
@@ -448,7 +463,7 @@ func TestImageProxyService_PublicationWaiterReleasedWhenContextEnds(t *testing.T
 
 	t.Run("publication gives up at its bound and fails closed", func(t *testing.T) {
 		service.publicationTimeout = 20 * time.Millisecond
-		result := receiveImage(t, callGetImageAsync(t.Context(), service, moderationTestCID), "publication waiting on a held stripe")
+		result := receiveImage(t, callGetImageAsync(t.Context(), service, cid), "publication waiting on a held stripe")
 		assert.ErrorIs(t, result.err, ErrBlockCheckFailed)
 		assert.ErrorIs(t, result.err, context.DeadlineExceeded)
 		assert.Empty(t, result.data, "bytes that were never rechecked must not be served")
@@ -481,7 +496,7 @@ func TestImageProxyService_PurgeActiveBlocksRemovesBlockedEntries(t *testing.T) 
 	lister := blockedBlobListerFunc(func(context.Context) ([]BlockedBlob, error) {
 		return []BlockedBlob{{OwnerDID: ownerA, CID: ownerBlocked}, {CID: everyOwner}, {OwnerDID: ownerB, CID: everyOwner}}, nil
 	})
-	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig())
+	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig())
 	require.NoError(t, err)
 
 	require.NoError(t, service.PurgeActiveBlocks(t.Context(), lister))

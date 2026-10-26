@@ -538,6 +538,51 @@ func TestCommunityAPIContract(t *testing.T) {
 	})
 }
 
+// TestCommunityDescriptionUpdatePreservesImages guards Coves' description-only
+// write through the PDS, firehose, indexed view and image proxy.
+func TestCommunityDescriptionUpdatePreservesImages(t *testing.T) {
+	p := newPipeline(t)
+	creator := p.IndexedAccount(t, "cimg")
+	client := p.AppView.As(p.AppView.SignIn(t, creator))
+	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
+	defer cancel()
+
+	var created struct {
+		DID string `json:"did"`
+	}
+	require.NoError(t, client.Procedure(ctx, "social.coves.community.create", map[string]any{
+		"name": testkit.UniqueIDWithPrefix(t, "ci"), "description": "community before description edit",
+		"avatarBlob": testkit.TestPNG(64, 64), "avatarMimeType": "image/png",
+		"bannerBlob": testkit.TestPNG(96, 32), "bannerMimeType": "image/png",
+	}, &created))
+	require.NotEmpty(t, created.DID)
+	before, err := p.Community(ctx, created.DID)
+	require.NoError(t, err)
+	require.NotEmpty(t, before.Avatar)
+	require.NotEmpty(t, before.Banner)
+	require.NotEqual(t, before.Avatar, before.Banner, "avatar and banner must have distinct URLs")
+	avatar := requireServesImage(t, p, "created community avatar", before.Avatar)
+	banner := requireServesImage(t, p, "created community banner", before.Banner)
+
+	const description = "community after description-only edit"
+	require.NoError(t, client.Procedure(ctx, "social.coves.community.update", map[string]any{
+		"communityDid": created.DID, "description": description,
+	}, nil))
+	var after communityView
+	p.Await(t, "the description-only update to reach community.get through the firehose", func() (bool, error) {
+		view, err := p.Community(ctx, created.DID)
+		if err != nil {
+			return false, err
+		}
+		after = view
+		return view.Description == description, nil
+	})
+	require.Equal(t, before.Avatar, after.Avatar, "the description edit must keep the avatar URL")
+	require.Equal(t, before.Banner, after.Banner, "the description edit must keep the banner URL")
+	require.Equal(t, avatar.Body, requireServesImage(t, p, "community avatar after description edit", after.Avatar).Body)
+	require.Equal(t, banner.Body, requireServesImage(t, p, "community banner after description edit", after.Banner).Body)
+}
+
 // summarize renders a community list compactly for a failure message.
 func summarize(views []communityView) string {
 	if len(views) == 0 {

@@ -109,6 +109,12 @@ func TestModerationContentSnapshotCapture(t *testing.T) {
 			public:   true,
 		},
 		{
+			name: "gallery post removal keeps its attached external link", subject: post("Snapshot gallery title",
+				`{"$type":"social.coves.embed.imagesWithAttachment","images":`+moderationTwoImageEmbed()+`,"attachment":`+snapshotLinkEmbed+`}`), reason: snapshotReasonSpam,
+			snapshot: map[string]any{"title": "Snapshot gallery title", "text": "indexed post content", "linkUrl": snapshotLinkURL, "capturedCid": moderationPostCID},
+			public:   true,
+		},
+		{
 			name: "comment removal keeps its body and records its root post", subject: restrictedLogComment(t, db, authorDID, root), reason: snapshotReasonSpam,
 			snapshot: map[string]any{"text": "restricted log comment", "capturedCid": moderationCommentCID},
 			rootURI:  root.URI, public: true,

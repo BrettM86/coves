@@ -37,6 +37,10 @@ func (store *cdnRecordStore) RecordCDNPurgeTargets(_ context.Context, blobs []im
 	return append([]imageproxy.BlockedBlob(nil), store.pended...), nil
 }
 
+func (store *cdnRecordStore) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error) {
+	return store.RecordCDNPurgeTargets(ctx, blobs)
+}
+
 func (store *cdnRecordStore) ClaimDueCDNPurgeTargets(_ context.Context, claim moderation.CDNPurgeClaim) ([]moderation.CDNPurgeTarget, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()

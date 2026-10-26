@@ -78,6 +78,10 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"moderation-view-invalid-too-many-sources.json":                "array length out of bounds",
 	"subject-state-invalid-version-empty.json":                     "string length outside specified range",
 	"subscription-invalid-visibility.json":                         "outside specified range",
+	"comment-invalid-image-facet-index.json":                       "integer val outside specified range: 8",
+	"postv2-invalid-image-facet-index.json":                        "integer val outside specified range: 8",
+	"postv2-invalid-image-facet-missing-index.json":                "required field missing: index",
+	"postv2-invalid-image-facet-negative-index.json":               "integer val outside specified range: -1",
 	// The fixture's ONE violation is the decision enum. It used to carry an
 	// accidental second violation (a literal `$1` in subject — an unexpanded
 	// template), and with two invalid fields the reported error followed Go's

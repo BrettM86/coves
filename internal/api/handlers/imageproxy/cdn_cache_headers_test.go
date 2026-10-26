@@ -26,7 +26,7 @@ func TestHandler_CDNPurgeCacheHeadersThroughRouter(t *testing.T) {
 
 	const long = "public, max-age=86400, s-maxage=31536000"
 	const short = "public, max-age=86400"
-	const etag = `"avatar-` + validTestCID + `"`
+	const etag = `"r2-avatar-` + validTestCID + `"`
 	defaultBases := []string{"https://img.example.test", "https://cdn.example.test"}
 	for _, test := range []struct {
 		name, host, owner, spelling, suffix, origin, wantCache string

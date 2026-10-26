@@ -183,6 +183,16 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 							return unavailable(err)
 						}
 					}
+					// Activating an every-owner block purges every owner
+					// already recorded for its CID once more; owners not yet
+					// recorded are added by the post-commit purge or the sweep.
+					if cids := everyOwnerBlockCIDs(newlyBlocked); len(cids) > 0 {
+						repended, err := tx.RependCDNPurgeTargets(ctx, cids)
+						if err != nil {
+							return unavailable(err)
+						}
+						purgeBlobs = appendMissingCDNPurgeBlobs(purgeBlobs, repended)
+					}
 				}
 			}
 			state, err := newSubjectState(request.Subject.URI, version+1, recordState, current, action, activeLabels, s.config.InstanceDID)

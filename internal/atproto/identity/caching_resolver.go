@@ -3,10 +3,16 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
+
+// ResolveTimeout bounds identity resolution at attacker-reachable call sites.
+const ResolveTimeout = 5 * time.Second
 
 // cachingResolver wraps a base resolver with caching
 type cachingResolver struct {
@@ -110,13 +116,20 @@ func (r *cachingResolver) ResolveHandle(ctx context.Context, handle string) (did
 	return identity.DID, identity.PDSURL, nil
 }
 
-// ResolveDID returns a minimal DID document holding only the PDS service entry
-// (none when the identity has no PDS). It goes through Resolve so a miss for a
+// ResolveDID rejects a malformed DID, then returns a minimal DID document
+// holding only the PDS service entry (none when the identity has no PDS). It goes through Resolve so a miss for a
 // verified identity writes the identity cache; without that, every image-proxy
 // CDN miss would cost a PLC or did:web fetch. Unverified or handle-less
 // identities and resolution failures are held only in the in-process negative
 // cache, so those DIDs are re-fetched after it expires.
 func (r *cachingResolver) ResolveDID(ctx context.Context, did string) (*DIDDocument, error) {
+	if _, err := syntax.ParseDID(did); err != nil {
+		return nil, &ErrInvalidIdentifier{
+			Identifier: did,
+			Reason:     fmt.Sprintf("invalid DID format: %v", err),
+		}
+	}
+
 	ident, err := r.Resolve(ctx, did)
 	if err != nil {
 		return nil, err

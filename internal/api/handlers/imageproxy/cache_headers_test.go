@@ -17,7 +17,7 @@ import (
 func TestHandler_RoutedImageCacheHeaders(t *testing.T) {
 	const path = "/img/avatar/plain/" + validTestDID + "/" + validTestCID
 	const cacheControl = "public, max-age=86400"
-	const etag = `"avatar-` + validTestCID + `"`
+	const etag = `"r2-avatar-` + validTestCID + `"`
 
 	route := func(service Service) http.Handler {
 		router := chi.NewRouter()
@@ -140,7 +140,7 @@ func TestHandler_RoutedImageCacheHeaders(t *testing.T) {
 		processor, err := imageproxy.NewProcessor(imageproxy.DefaultMaxSourceMegapixels)
 		require.NoError(t, err)
 		service, err := imageproxy.NewService(cache, processor, imageproxy.NewPDSFetcher(time.Second, 1),
-			blockedBlobChecker{}, imageproxy.Config{
+			blockedBlobChecker{}, allowAllReferences{}, imageproxy.Config{
 				MaxConcurrentProcesses: 1, ProcessQueueWait: time.Second, MaxInFlightRequests: 1,
 			})
 		require.NoError(t, err)

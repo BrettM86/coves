@@ -47,7 +47,7 @@ func TestModerationMediaBlockHoldsForEveryDIDSpelling(t *testing.T) {
 			require.NotEmpty(t, request.URL.RawPath, "escaped owner must reach chi as a raw path")
 		}
 		if conditional {
-			request.Header.Set("If-None-Match", `"`+preset+`-`+blobCID+`"`)
+			request.Header.Set("If-None-Match", `"r2-`+preset+`-`+blobCID+`"`)
 		}
 		response, err := h.proxy.Client().Do(request)
 		require.NoError(t, err)

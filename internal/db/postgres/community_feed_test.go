@@ -70,7 +70,7 @@ func newCommunityFeedHandler(db *sql.DB) *communityFeed.GetCommunityHandler {
 		testkit.Endpoints().PDS.HandleDomain,
 		nil,
 		nil,
-		nil,
+		nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(

@@ -33,7 +33,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"image/color"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,8 +51,9 @@ import (
 
 	imageproxycore "Coves/internal/core/imageproxy"
 
-	"github.com/disintegration/imaging"
 	"github.com/go-chi/chi/v5"
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,6 +67,12 @@ type allowAllBlockChecker struct{}
 
 func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, error) {
 	return false, nil
+}
+
+type allowAllReferences struct{}
+
+func (allowAllReferences) HasActiveReference(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 // fixedPDSResolver is an identity.Resolver that sends every DID to one PDS.
@@ -149,6 +159,7 @@ func newProxyServerWithCache(t *testing.T, resolver identity.Resolver, fetchTime
 		// without this option and assert the listener is never reached.
 		imageproxycore.NewPDSFetcher(fetchTimeout, 10, imageproxycore.WithPrivateHostsAllowed()),
 		allowAllBlockChecker{},
+		allowAllReferences{},
 		imageproxycore.Config{
 			Enabled:                true,
 			CachePath:              cacheDir,
@@ -201,6 +212,14 @@ func servePNG(data []byte) func(http.ResponseWriter) {
 	}
 }
 
+func rawCIDForServingFixture(data []byte) string {
+	digest, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	if err != nil {
+		panic(err)
+	}
+	return cid.NewCidV1(cid.Raw, digest).String()
+}
+
 // unreachableURL returns the address of a server that has already been shut
 // down, so a connection to it is refused immediately.
 //
@@ -247,7 +266,7 @@ func fetch(t *testing.T, url string, header http.Header) (*http.Response, []byte
 func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 	t.Helper()
 
-	img, err := imaging.Decode(bytes.NewReader(body))
+	img, _, err := image.Decode(bytes.NewReader(body))
 	require.NoError(t, err, "the proxy must return decodable image data")
 
 	bounds := img.Bounds()
@@ -261,11 +280,12 @@ func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafkreicdmtgb7deaakqrghapqrdjva63vqcieyzzi66q2pokcwyotdermy"
+	imageBytes := testkit.TestPNGColor(100, 100, color.RGBA{R: 255, G: 128, B: 64, A: 255})
+	cid := rawCIDForServingFixture(imageBytes)
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
-		cid: servePNG(testkit.TestPNGColor(100, 100, color.RGBA{R: 255, G: 128, B: 64, A: 255})),
+		cid: servePNG(imageBytes),
 	})
 	server := newProxyServer(t, &fixedPDSResolver{pdsURL: upstream.URL}, defaultFetchTimeout)
 
@@ -273,9 +293,8 @@ func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 		resp, body := fetch(t, proxyURL(server, "avatar", did, cid), nil)
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		// The proxy always re-encodes: whatever the source format was, clients
-		// get one predictable format back.
-		assert.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"))
+		// A PNG source is re-encoded as PNG at the preset's dimensions.
+		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
 		// The avatar preset upscales a 100x100 source to its full 1000x1000.
 		assertImageSize(t, body, 1000, 1000)
 	})
@@ -362,6 +381,8 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 	t.Parallel()
 
 	did := "did:plc:" + testkit.UniqueID(t)
+	textBytes := []byte("this is not an image")
+	corruptBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x00, 0x00}
 
 	// Each case needs a decodable CID: the handler refuses one it cannot
 	// decode with a 400 before any fetch, which would satisfy the assertion
@@ -371,18 +392,18 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 		cid   string
 		write func(http.ResponseWriter)
 	}{
-		{"textdata", "bafyreiebpu646nzrrs7utmoucb3c3pe3647so7duktwr4dpqlfkne2pgxa", func(w http.ResponseWriter) {
+		{"textdata", rawCIDForServingFixture(textBytes), func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("this is not an image"))
+			_, _ = w.Write(textBytes)
 		}},
-		{"corruptedimage", "bafyreiemmgzsvld73r3qvp2pw5huuw35b6u4jw2jyonwujf2bmuv7wmc7q", func(w http.ResponseWriter) {
+		{"corruptedimage", rawCIDForServingFixture(corruptBytes), func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "image/png")
 			w.WriteHeader(http.StatusOK)
 			// A PNG signature with nothing behind it.
-			_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x00, 0x00})
+			_, _ = w.Write(corruptBytes)
 		}},
-		{"emptybody", "bafyreidunnc32hpxlcbmarbymtp3ag6ztshqosrppgucarhtleb7hxv3nq", func(w http.ResponseWriter) {
+		{"emptybody", rawCIDForServingFixture(nil), func(w http.ResponseWriter) {
 			w.WriteHeader(http.StatusOK)
 		}},
 	}
@@ -419,8 +440,10 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 func TestImageProxy_PresetGeometry(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafkreieswtoyhdnkf552cgtp3jebltovvu6rc56hzhmuvgzghndwrtbe5i"
-	const smallCID = "bafkreifh4b76hmqvsksqlq3tuovcrekvsl7buylbztorfnwti3bp3zp4pq"
+	largeBytes := testkit.TestPNGColor(1000, 1000, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+	smallBytes := testkit.TestPNGColor(200, 200, color.RGBA{R: 100, G: 150, B: 200, A: 255})
+	cid := rawCIDForServingFixture(largeBytes)
+	smallCID := rawCIDForServingFixture(smallBytes)
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	// 1000x1000 so that both directions are exercised: the cover presets crop
@@ -428,8 +451,8 @@ func TestImageProxy_PresetGeometry(t *testing.T) {
 	// something to shrink. A source smaller than every preset would make the
 	// no-upscaling case below indistinguishable from a no-op.
 	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
-		cid:      servePNG(testkit.TestPNGColor(1000, 1000, color.RGBA{R: 200, G: 100, B: 50, A: 255})),
-		smallCID: servePNG(testkit.TestPNGColor(200, 200, color.RGBA{R: 100, G: 150, B: 200, A: 255})),
+		cid:      servePNG(largeBytes),
+		smallCID: servePNG(smallBytes),
 	})
 	server, cache := newProxyServerWithCache(t, &fixedPDSResolver{pdsURL: upstream.URL}, defaultFetchTimeout)
 

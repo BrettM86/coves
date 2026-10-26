@@ -645,18 +645,33 @@ func (r *PostRepository) buildAuthorPostsCursor(post *posts.PostView) string {
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
 }
 
-// SoftDelete marks a post as deleted by setting deleted_at
-// Called by Jetstream consumer after post is deleted from PDS
+// SoftDelete marks a post as deleted by setting deleted_at and deactivates the
+// post's blob references in the same transaction (posts row first, then
+// blob_references, the consumer's lock order).
 // Idempotent: Returns success if post already deleted or doesn't exist
 func (r *PostRepository) SoftDelete(ctx context.Context, uri string) error {
-	query := `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin soft delete transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE posts
 		SET deleted_at = NOW()
 		WHERE uri = $1 AND deleted_at IS NULL
-	`
-	_, err := r.db.ExecContext(ctx, query, uri)
-	if err != nil {
+	`, uri); err != nil {
 		return fmt.Errorf("failed to soft delete post: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE blob_references
+		SET active = false, updated_at = NOW()
+		WHERE subject_uri = $1 AND active
+	`, uri); err != nil {
+		return fmt.Errorf("failed to deactivate blob references of soft-deleted post: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit soft delete: %w", err)
 	}
 	return nil
 }

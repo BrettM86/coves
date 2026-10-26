@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -17,12 +18,14 @@ import (
 // imageProxyDependencies are the seams the image proxy service and handler
 // are built from.
 type imageProxyDependencies struct {
-	cache     imageproxy.Cache
-	processor imageproxy.Processor
-	fetcher   imageproxy.Fetcher
-	blocks    imageproxy.BlockChecker
-	lister    imageproxy.BlockedBlobLister
-	resolver  identity.Resolver
+	cache      imageproxy.Cache
+	processor  imageproxy.Processor
+	fetcher    imageproxy.Fetcher
+	blocks     imageproxy.BlockChecker
+	lister     imageproxy.BlockedBlobLister
+	resolver   identity.Resolver
+	blobOwners imageproxy.BlobOwnerIndex
+	references imageproxy.ReferenceChecker
 }
 
 // buildImageProxyService installs the recorder before the startup sweep runs.
@@ -30,10 +33,13 @@ func buildImageProxyService(cfg imageproxy.Config, purge config.CDNPurgeConfig, 
 	var serviceOptions []imageproxy.ServiceOption
 	var handlerOptions []imageproxyhandlers.HandlerOption
 	if queue != nil {
-		serviceOptions = append(serviceOptions, imageproxy.WithCDNPurgeRecorder(queue))
+		if dependencies.blobOwners == nil {
+			return nil, nil, nil, fmt.Errorf("CDN purge enabled without a blob owner index")
+		}
+		serviceOptions = append(serviceOptions, imageproxy.WithCDNPurgeRecorder(queue), imageproxy.WithBlobOwnerIndex(dependencies.blobOwners))
 		handlerOptions = append(handlerOptions, imageproxyhandlers.WithCDNPurgeBaseURLs(purge.BaseURLs))
 	}
-	service, err := imageproxy.NewService(dependencies.cache, dependencies.processor, dependencies.fetcher, dependencies.blocks, cfg, serviceOptions...)
+	service, err := imageproxy.NewService(dependencies.cache, dependencies.processor, dependencies.fetcher, dependencies.blocks, dependencies.references, cfg, serviceOptions...)
 	if err != nil {
 		return nil, nil, nil, err
 	}

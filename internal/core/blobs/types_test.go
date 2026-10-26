@@ -209,6 +209,26 @@ func TestHydrateImageURL_ProxyEnabled(t *testing.T) {
 	}
 }
 
+func TestHydrateImageURL_ProxyPresetsWithoutCDN(t *testing.T) {
+	config := ImageURLConfig{ProxyEnabled: true, ProxyBaseURL: "https://img.coves.example"}
+	const did = "did:plc:z72i7hdynmk6r22z27h6tvur"
+	const cid = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+	for _, test := range []struct{ preset, want string }{
+		{"avatar", "https://img.coves.example/img/avatar/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+		{"avatar_small", "https://img.coves.example/img/avatar_small/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+		{"banner", "https://img.coves.example/img/banner/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+		{"content_preview", "https://img.coves.example/img/content_preview/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+		{"content_full", "https://img.coves.example/img/content_full/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+		{"embed_thumbnail", "https://img.coves.example/img/embed_thumbnail/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},
+	} {
+		t.Run(test.preset, func(t *testing.T) {
+			if got := HydrateImageURL(config, "http://pds.invalid", did, cid, test.preset); got != test.want {
+				t.Errorf("HydrateImageURL = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHydrateImageURL_CDNOverride(t *testing.T) {
 	config := ImageURLConfig{
 		ProxyEnabled: true,

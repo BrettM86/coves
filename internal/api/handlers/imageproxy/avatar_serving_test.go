@@ -37,6 +37,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/media"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -85,6 +86,8 @@ func provisionCommunityAvatar(t *testing.T, width, height int, fill color.Color)
 	// rejects a handle outside its configured service domains, and the
 	// provisioner builds the community's handle as c-{name}.{domain}.
 	handleDomain := endpoints.PDS.HandleDomain
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 2, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		endpoints.PDS.BaseURL,
@@ -92,7 +95,7 @@ func provisionCommunityAvatar(t *testing.T, width, height int, fill color.Color)
 		handleDomain,
 		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL, communities.PrivateHostOptions(true)...),
 		nil, // no PDS client factory: provisioning uses the password session
-		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...),
+		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...), pipeline,
 		communities.PrivateHostOptions(true)...,
 	)
 
@@ -135,7 +138,7 @@ func TestImageProxy_ServesRealPDSAvatar(t *testing.T) {
 		resp, body := fetch(t, url, nil)
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
-		assert.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
 		assertImageSize(t, body, 360, 360)
 	})
 
@@ -145,7 +148,7 @@ func TestImageProxy_ServesRealPDSAvatar(t *testing.T) {
 		// The CID identifies stable bytes, but moderation can later block their
 		// serving. Without a purge, a browser or CDN must revalidate within a day.
 		assert.Equal(t, "public, max-age=86400", resp.Header.Get("Cache-Control"))
-		assert.Equal(t, fmt.Sprintf(`"avatar_small-%s"`, avatar.avatarCID), resp.Header.Get("ETag"))
+		assert.Equal(t, fmt.Sprintf(`"r2-avatar_small-%s"`, avatar.avatarCID), resp.Header.Get("ETag"))
 	})
 
 	t.Run("a matching ETag is answered with 304 and no body", func(t *testing.T) {

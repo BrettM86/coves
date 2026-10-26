@@ -77,6 +77,52 @@ func TestMergeUnfurlMetadata_TruncatesToLexiconLimits(t *testing.T) {
 			},
 		},
 		{
+			name:     "65-byte type is dropped, not cut",
+			external: map[string]interface{}{"uri": "https://example.com/a"},
+			result: unfurl.UnfurlResult{
+				Type: strings.Repeat("a", 65), Title: "t", Description: "d",
+				Provider: "example", Domain: "example.com",
+			},
+			want: map[string]interface{}{
+				"uri":         "https://example.com/a",
+				"title":       "t",
+				"description": "d",
+				"provider":    "example",
+				"domain":      "example.com",
+			},
+		},
+		{
+			name:     "64-byte type with an invalid byte is measured after replacement and dropped",
+			external: map[string]interface{}{"uri": "https://example.com/a"},
+			result: unfurl.UnfurlResult{
+				Type: strings.Repeat("a", 63) + "\xff", Title: "t", Description: "d",
+				Provider: "example", Domain: "example.com",
+			},
+			want: map[string]interface{}{
+				"uri":         "https://example.com/a",
+				"title":       "t",
+				"description": "d",
+				"provider":    "example",
+				"domain":      "example.com",
+			},
+		},
+		{
+			name:     "253-byte domain is kept",
+			external: map[string]interface{}{"uri": "https://example.com/a"},
+			result: unfurl.UnfurlResult{
+				Type: "article", Title: "t", Description: "d",
+				Provider: "example", Domain: strings.Repeat("d", 253),
+			},
+			want: map[string]interface{}{
+				"uri":         "https://example.com/a",
+				"title":       "t",
+				"description": "d",
+				"embedType":   "article",
+				"provider":    "example",
+				"domain":      strings.Repeat("d", 253),
+			},
+		},
+		{
 			name:     "multibyte description hits the 10000-byte cap before the grapheme cap, nothing split",
 			external: map[string]interface{}{"uri": "https://example.com/a"},
 			result: unfurl.UnfurlResult{

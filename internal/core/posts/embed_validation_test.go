@@ -270,7 +270,10 @@ func TestValidateEmbed(t *testing.T) {
 					t.Fatalf("validateEmbed() = nil, want error")
 				}
 				if !IsValidationError(err) {
-					t.Errorf("validateEmbed() error = %T, want *ValidationError (maps to 400 InvalidRequest)", err)
+					t.Errorf("validateEmbed() error = %T, want *ValidationError (maps to 400 InvalidEmbed)", err)
+				}
+				if !errors.Is(err, ErrInvalidEmbed) {
+					t.Errorf("validateEmbed() error = %v, want it to match ErrInvalidEmbed (maps to 400 InvalidEmbed)", err)
 				}
 				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("validateEmbed() error = %q, want it to contain %q", err.Error(), tt.errContains)
@@ -381,7 +384,10 @@ func TestNormalizeEmbedURIs(t *testing.T) {
 			t.Fatal("normalizeEmbedURIs() = nil, want error for a scheme-less uri")
 		}
 		if !IsValidationError(err) {
-			t.Errorf("error = %T, want *ValidationError (maps to 400 InvalidRequest)", err)
+			t.Errorf("error = %T, want *ValidationError (maps to 400 InvalidEmbed)", err)
+		}
+		if !errors.Is(err, ErrInvalidEmbed) {
+			t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
 		}
 		if !strings.Contains(err.Error(), "embed.external.uri") {
 			t.Errorf("error = %q, want it to name the offending field", err)
@@ -402,6 +408,9 @@ func TestNormalizeEmbedURIs(t *testing.T) {
 		}
 		if !IsValidationError(err) {
 			t.Errorf("error = %T, want *ValidationError", err)
+		}
+		if !errors.Is(err, ErrInvalidEmbed) {
+			t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
 		}
 		if !strings.Contains(err.Error(), "sources[1]") {
 			t.Errorf("error = %q, want it to point at sources[1]", err)
@@ -450,6 +459,9 @@ func TestNormalizeEmbedURIsBoundsSources(t *testing.T) {
 		if !IsValidationError(err) {
 			t.Errorf("error = %T, want *ValidationError", err)
 		}
+		if !errors.Is(err, ErrInvalidEmbed) {
+			t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
+		}
 		if !strings.Contains(err.Error(), "too many sources") {
 			t.Errorf("error = %q, want it to explain the limit", err)
 		}
@@ -487,6 +499,49 @@ func TestNormalizeEmbedURIsBoundsSources(t *testing.T) {
 			if !IsValidationError(err) {
 				t.Errorf("sources as %s: error = %T, want *ValidationError", name, err)
 			}
+			if !errors.Is(err, ErrInvalidEmbed) {
+				t.Errorf("sources as %s: error = %v, want it to match ErrInvalidEmbed", name, err)
+			}
+		}
+	})
+
+	t.Run("a non-object source is rejected with its index", func(t *testing.T) {
+		embed := external(map[string]interface{}{
+			"uri":     "https://kagi.com/news/daily",
+			"sources": []interface{}{source("https://example.com/ok"), "https://example.com/bare-string"},
+		})
+		err := normalizeEmbedURIs(embed)
+		if err == nil {
+			t.Fatal("normalizeEmbedURIs() = nil, want error for a non-object source")
+		}
+		if !IsValidationError(err) {
+			t.Errorf("error = %T, want *ValidationError", err)
+		}
+		if !errors.Is(err, ErrInvalidEmbed) {
+			t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
+		}
+		if !strings.Contains(err.Error(), "sources[1]") {
+			t.Errorf("error = %q, want it to point at sources[1]", err)
+		}
+	})
+
+	t.Run("an unparseable source uri is rejected with its index", func(t *testing.T) {
+		embed := external(map[string]interface{}{
+			"uri":     "https://kagi.com/news/daily",
+			"sources": []interface{}{source("https://example.com/ok"), source("not a url at all")},
+		})
+		err := normalizeEmbedURIs(embed)
+		if err == nil {
+			t.Fatal("normalizeEmbedURIs() = nil, want error for an unparseable source uri")
+		}
+		if !IsValidationError(err) {
+			t.Errorf("error = %T, want *ValidationError", err)
+		}
+		if !errors.Is(err, ErrInvalidEmbed) {
+			t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
+		}
+		if !strings.Contains(err.Error(), "sources[1]") {
+			t.Errorf("error = %q, want it to point at sources[1]", err)
 		}
 	})
 
@@ -530,6 +585,9 @@ func TestNormalizeEmbedURIsPreservesErrorChain(t *testing.T) {
 			if !IsValidationError(err) {
 				t.Errorf("error = %T, want it to still be a *ValidationError for the 400 mapping", err)
 			}
+			if !errors.Is(err, ErrInvalidEmbed) {
+				t.Errorf("error = %v, want it to match ErrInvalidEmbed as well as %v", err, tt.want)
+			}
 		})
 	}
 }
@@ -558,8 +616,80 @@ func TestNormalizeEmbedURIsRejectsForbiddenSchemeInSources(t *testing.T) {
 			if !errors.Is(err, validation.ErrURISchemeNotAllowed) {
 				t.Errorf("error = %v, want ErrURISchemeNotAllowed", err)
 			}
+			if !errors.Is(err, ErrInvalidEmbed) {
+				t.Errorf("error = %v, want it to match ErrInvalidEmbed", err)
+			}
 			if !strings.Contains(err.Error(), "sources[1]") {
 				t.Errorf("error = %q, want it to point at sources[1]", err)
+			}
+		})
+	}
+}
+
+// TestValidateExternalThumb pins that every thumb rejection is an invalid-embed
+// validation error, so a client that sends a URL string or a malformed blob gets
+// 400 InvalidEmbed rather than a generic InvalidRequest.
+func TestValidateExternalThumb(t *testing.T) {
+	externalWithThumb := func(thumb interface{}) map[string]interface{} {
+		return map[string]interface{}{
+			"$type": embedTypeExternal,
+			"external": map[string]interface{}{
+				"uri":   "https://example.com/article",
+				"thumb": thumb,
+			},
+		}
+	}
+
+	t.Run("a valid blob thumb and an absent thumb are accepted", func(t *testing.T) {
+		valid := externalWithThumb(map[string]interface{}{
+			"$type":    "blob",
+			"ref":      map[string]interface{}{"$link": "bafyblob"},
+			"mimeType": "image/png",
+			"size":     float64(1234),
+		})
+		if err := validateExternalThumb(valid); err != nil {
+			t.Errorf("validateExternalThumb(valid blob) = %v, want nil", err)
+		}
+		if err := validateExternalThumb(externalWithThumb(nil)); err != nil {
+			t.Errorf("validateExternalThumb(no thumb) = %v, want nil", err)
+		}
+	})
+
+	tests := []struct {
+		name        string
+		thumb       interface{}
+		errContains string
+	}{
+		{"thumb as a URL string", "https://example.com/thumb.jpg", "not URL string"},
+		{"non-object thumb", float64(7), "must be a blob object"},
+		{"thumb with the wrong $type", map[string]interface{}{
+			"$type":    "image",
+			"ref":      map[string]interface{}{"$link": "bafyblob"},
+			"mimeType": "image/png",
+		}, "$type: blob"},
+		{"thumb missing ref", map[string]interface{}{
+			"$type":    "blob",
+			"mimeType": "image/png",
+		}, "'ref'"},
+		{"thumb missing mimeType", map[string]interface{}{
+			"$type": "blob",
+			"ref":   map[string]interface{}{"$link": "bafyblob"},
+		}, "'mimeType'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateExternalThumb(externalWithThumb(tt.thumb))
+			if err == nil {
+				t.Fatal("validateExternalThumb() = nil, want error")
+			}
+			if !IsValidationError(err) {
+				t.Errorf("error = %T, want *ValidationError", err)
+			}
+			if !errors.Is(err, ErrInvalidEmbed) {
+				t.Errorf("error = %v, want it to match ErrInvalidEmbed (maps to 400 InvalidEmbed)", err)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContains)
 			}
 		})
 	}

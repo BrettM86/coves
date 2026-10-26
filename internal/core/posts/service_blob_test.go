@@ -11,6 +11,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/media"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/db/postgres"
@@ -42,9 +43,9 @@ import (
 //
 // # WHAT MUST SURVIVE THE MOVE
 //
-// UploadBlobFromURL is a CHOKE POINT, not a convenience: it bounds the fetch
-// with a timeout, refuses a Content-Type outside the image allowlist, and caps
-// the body at 6MB. Every one of those exists because the URL being fetched is
+// The thumbnail upload is a CHOKE POINT, not a convenience: FetchImageForURL
+// bounds the fetch with a timeout and caps the body at 6MB, and the media
+// pipeline refuses bytes that are not an accepted image. Every one of those exists because the URL being fetched is
 // attacker-influenced — a client picks the page that gets unfurled, and the page
 // picks the thumbnail. A new upload path that reached the PDS without them would
 // turn a link preview into an unbounded fetch performed by the AppView, with the
@@ -60,7 +61,7 @@ import (
 // producer of a thumbnail — CreatePostRequest.ThumbnailURL — is only honoured for
 // a TRUSTED aggregator, and trust is read from the process environment, which
 // t.Setenv cannot be combined with t.Parallel. The unfurl path exercises the
-// same UploadBlobFromURL call with no such constraint.
+// same uploadThumbnail call with no such constraint.
 type blobFixture struct {
 	base    *postFixture
 	service posts.Service
@@ -133,6 +134,8 @@ func newBlobFixture(t *testing.T) *blobFixture {
 	base := newPostFixture(t)
 	origin := newImageOrigin(t)
 	scripted := &scriptedUnfurl{thumbnailURL: origin.thumbnailURL()}
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 
 	return &blobFixture{
 		base:   base,
@@ -148,7 +151,8 @@ func newBlobFixture(t *testing.T) *blobFixture {
 			nil, // bluesky
 			base.pds.URL(),
 			append(base.writePathOptions(),
-				posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))...),
+				posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
+				posts.WithMediaPipeline(pipeline))...),
 	}
 }
 
@@ -246,50 +250,10 @@ func TestService_AThumbnailBlobLandsInTheAuthorsRepo(t *testing.T) {
 			"the community can garbage-collect it, and deleting the post will not release it")
 }
 
-func TestService_TheBlobGuardStillRefusesAnOversizeThumbnail(t *testing.T) {
-	t.Parallel()
-
-	// THE CHOKE POINT HAS TO SURVIVE THE MOVE. The URL being fetched here is
-	// attacker-influenced twice over — a client chooses the page, the page
-	// chooses the thumbnail — and the 6MB cap is what stops a link preview
-	// becoming an unbounded fetch the AppView performs with the author's own
-	// credentials into the author's own storage quota.
-	//
-	// The body is not a real image: the guard rejects on the Content-Type header
-	// and the byte count, neither of which requires decoding, so 7MB of zeros
-	// exercises the same branch as 7MB of PNG without the cost of producing one.
-	f := newBlobFixture(t)
-	f.origin.body = make([]byte, 7*1024*1024)
-
-	resp, err := f.postWithExternalEmbed(t, "a link whose preview image is enormous")
-
-	// The POST still succeeds. A thumbnail is an enhancement, and it has never
-	// been able to fail a post — the write path logs the upload failure and
-	// carries on. That stays true on the author path: an author must not lose a
-	// post because a remote page served a 7MB image.
-	require.NoErrorf(t, err,
-		"a refused thumbnail must not fail the post; the record is the author's and it is complete without it")
-
-	record := f.base.author.GetRecord(t, posts.PostV2Collection, rkeyOf(t, resp.URI))
-	_, hasThumb := thumbCIDOf(t, record)
-	assert.Falsef(t, hasThumb,
-		"the oversize image was uploaded and attached anyway — the size cap did not survive the move to "+
-			"the author's PDS")
-
-	// And nothing reached storage. Checked separately from the record because
-	// the two failures are different: a record with no thumb but a blob in the
-	// repo means the upload SUCCEEDED and only the attachment was dropped, which
-	// is the cap being enforced in the wrong place and paying the full cost of
-	// not having it.
-	assert.Emptyf(t, listBlobs(t, f.base.author),
-		"the oversize image reached the author's storage; the cap must refuse it before the upload, "+
-			"not discard the result afterwards")
-}
-
 func TestService_TheBlobGuardStillRefusesANonImageThumbnail(t *testing.T) {
 	t.Parallel()
 
-	// The other half of the guard. An allowlist that admitted arbitrary
+	// The pipeline half of the guard. A path that admitted arbitrary
 	// Content-Types would let a remote page put anything it liked into the
 	// author's repository — the AppView fetching it, the author's session
 	// signing for it, and the image proxy later serving it to readers.

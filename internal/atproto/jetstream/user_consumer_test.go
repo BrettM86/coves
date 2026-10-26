@@ -392,7 +392,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 				Record: map[string]interface{}{
 					"avatar": map[string]interface{}{
 						"$type":    "blob",
-						"ref":      map[string]interface{}{"$link": "bafkavatar123"},
+						"ref":      map[string]interface{}{"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"},
 						"mimeType": "image/jpeg",
 						"size":     float64(12345),
 					},
@@ -410,8 +410,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		}
 
 		call := mockService.updatedCalls[0]
-		if call.AvatarCID == nil || *call.AvatarCID != "bafkavatar123" {
-			t.Errorf("Expected avatar CID 'bafkavatar123', got %v", call.AvatarCID)
+		if call.AvatarCID == nil || *call.AvatarCID != "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm" {
+			t.Errorf("Expected avatar CID 'bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm', got %v", call.AvatarCID)
 		}
 	})
 
@@ -439,7 +439,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 				Record: map[string]interface{}{
 					"banner": map[string]interface{}{
 						"$type":    "blob",
-						"ref":      map[string]interface{}{"$link": "bafkbanner456"},
+						"ref":      map[string]interface{}{"$link": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"},
 						"mimeType": "image/png",
 						"size":     float64(54321),
 					},
@@ -457,8 +457,8 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		}
 
 		call := mockService.updatedCalls[0]
-		if call.BannerCID == nil || *call.BannerCID != "bafkbanner456" {
-			t.Errorf("Expected banner CID 'bafkbanner456', got %v", call.BannerCID)
+		if call.BannerCID == nil || *call.BannerCID != "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si" {
+			t.Errorf("Expected banner CID 'bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si', got %v", call.BannerCID)
 		}
 	})
 
@@ -488,13 +488,13 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 					"description": "A complete bio",
 					"avatar": map[string]interface{}{
 						"$type":    "blob",
-						"ref":      map[string]interface{}{"$link": "bafkfullav123"},
+						"ref":      map[string]interface{}{"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"},
 						"mimeType": "image/jpeg",
 						"size":     float64(10000),
 					},
 					"banner": map[string]interface{}{
 						"$type":    "blob",
-						"ref":      map[string]interface{}{"$link": "bafkfullbn456"},
+						"ref":      map[string]interface{}{"$link": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"},
 						"mimeType": "image/png",
 						"size":     float64(20000),
 					},
@@ -518,11 +518,11 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.Description == nil || *call.Description != "A complete bio" {
 			t.Errorf("Expected bio 'A complete bio', got %v", call.Description)
 		}
-		if call.AvatarCID == nil || *call.AvatarCID != "bafkfullav123" {
-			t.Errorf("Expected avatar CID 'bafkfullav123', got %v", call.AvatarCID)
+		if call.AvatarCID == nil || *call.AvatarCID != "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm" {
+			t.Errorf("Expected avatar CID 'bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm', got %v", call.AvatarCID)
 		}
-		if call.BannerCID == nil || *call.BannerCID != "bafkfullbn456" {
-			t.Errorf("Expected banner CID 'bafkfullbn456', got %v", call.BannerCID)
+		if call.BannerCID == nil || *call.BannerCID != "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si" {
+			t.Errorf("Expected banner CID 'bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si', got %v", call.BannerCID)
 		}
 	})
 
@@ -753,12 +753,12 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.DisplayName == nil || *call.DisplayName != "Test User" {
 			t.Errorf("Expected displayName 'Test User', got %v", call.DisplayName)
 		}
-		// Avatar and banner should be nil (not extracted due to invalid structure)
-		if call.AvatarCID != nil {
-			t.Errorf("Expected nil avatar CID for invalid blob, got %v", call.AvatarCID)
+		// Invalid blobs clear the stored avatar and banner CIDs.
+		if call.AvatarCID == nil || *call.AvatarCID != "" {
+			t.Errorf("Expected empty avatar CID for invalid blob, got %v", call.AvatarCID)
 		}
-		if call.BannerCID != nil {
-			t.Errorf("Expected nil banner CID for invalid structure, got %v", call.BannerCID)
+		if call.BannerCID == nil || *call.BannerCID != "" {
+			t.Errorf("Expected empty banner CID for invalid structure, got %v", call.BannerCID)
 		}
 	})
 }

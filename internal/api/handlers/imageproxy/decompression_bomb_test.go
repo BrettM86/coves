@@ -109,12 +109,13 @@ func TestHandler_RejectsDecompressionBombBeforeDecoding(t *testing.T) {
 	)
 
 	fetcher := &bombFetcher{payload: buildPNGDecompressionBomb(t, declaredWidth, declaredHeight)}
+	requestedCID := rawCIDForHandlerFixture(t, fetcher.payload)
 
 	processor, err := imageproxy.NewProcessor(imageproxy.DefaultMaxSourceMegapixels)
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
-	service, err := imageproxy.NewService(missCache{}, processor, fetcher, allowAllBlockChecker{}, imageproxy.DefaultConfig())
+	service, err := imageproxy.NewService(missCache{}, processor, fetcher, allowAllBlockChecker{}, allowAllReferences{}, imageproxy.DefaultConfig())
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -133,10 +134,10 @@ func TestHandler_RejectsDecompressionBombBeforeDecoding(t *testing.T) {
 	}
 	handler := NewHandler(service, resolver)
 
-	req := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+validTestCID, map[string]string{
+	req := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+requestedCID, map[string]string{
 		"preset": "avatar",
 		"did":    validTestDID,
-		"cid":    validTestCID,
+		"cid":    requestedCID,
 	})
 	recorder := httptest.NewRecorder()
 

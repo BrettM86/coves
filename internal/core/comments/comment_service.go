@@ -16,6 +16,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -106,15 +107,19 @@ type PostReader interface {
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo      Repository               // Comment data access
-	userRepo         users.UserRepository     // User lookup for author hydration
-	postRepo         PostReader               // Post lookup + the admission-aware header gate
-	communityRepo    communities.Repository   // Community lookup for community hydration
-	oauthClient      *oauthclient.OAuthClient // OAuth client for PDS authentication
-	oauthStore       oauth.ClientAuthStore    // OAuth session store
-	logger           *slog.Logger             // Structured logger
-	pdsClientFactory PDSClientFactory         // Optional, for testing. If nil, uses OAuth.
+	commentRepo      Repository                   // Comment data access
+	userRepo         users.UserRepository         // User lookup for author hydration
+	postRepo         PostReader                   // Post lookup + the admission-aware header gate
+	communityRepo    communities.Repository       // Community lookup for community hydration
+	oauthClient      *oauthclient.OAuthClient     // OAuth client for PDS authentication
+	oauthStore       oauth.ClientAuthStore        // OAuth session store
+	logger           *slog.Logger                 // Structured logger
+	pdsClientFactory PDSClientFactory             // Optional, for testing. If nil, uses OAuth.
+	lexiconValidator *validation.LexiconValidator // Optional; nil skips lexicon validation of written records
 }
+
+// CommentServiceOption configures optional commentService dependencies.
+type CommentServiceOption func(*commentService)
 
 // NewCommentService creates a new comment service instance
 // All repositories are required for proper view construction per lexicon requirements
@@ -126,11 +131,12 @@ func NewCommentService(
 	oauthClient *oauthclient.OAuthClient,
 	oauthStore oauth.ClientAuthStore,
 	logger *slog.Logger,
+	opts ...CommentServiceOption,
 ) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &commentService{
+	s := &commentService{
 		commentRepo:   commentRepo,
 		userRepo:      userRepo,
 		postRepo:      postRepo,
@@ -139,6 +145,10 @@ func NewCommentService(
 		oauthStore:    oauthStore,
 		logger:        logger,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // NewCommentServiceWithPDSFactory creates a comment service with a custom PDS client factory.
@@ -150,11 +160,12 @@ func NewCommentServiceWithPDSFactory(
 	communityRepo communities.Repository,
 	logger *slog.Logger,
 	factory PDSClientFactory,
+	opts ...CommentServiceOption,
 ) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &commentService{
+	s := &commentService{
 		commentRepo:      commentRepo,
 		userRepo:         userRepo,
 		postRepo:         postRepo,
@@ -162,6 +173,10 @@ func NewCommentServiceWithPDSFactory(
 		logger:           logger,
 		pdsClientFactory: factory,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // GetComments retrieves comments for a post with threading and pagination
@@ -691,6 +706,8 @@ func (s *commentService) buildCommentView(
 		}
 	}
 
+	commentRecord.Facets = richtext.FilterImageFacets(commentRecord.Facets, embeds.ViewImageCount(embed), len(commentRecord.Content))
+
 	return &CommentView{
 		URI:       comment.URI,
 		CID:       comment.CID,
@@ -845,6 +862,20 @@ func (s *commentService) getPDSClient(ctx context.Context, session *oauth.Client
 	return client, nil
 }
 
+// checkEmbedAndImageFacets checks the embed, then the #image facets against
+// it. It runs before richtext.ValidateFacets so a broken images embed (or a
+// ninth image) reports InvalidEmbed or TooManyImages rather than an #image
+// facet failure, and any facet carrying #image — including one whose range the
+// generic check would refuse — reports InvalidImageFacet.
+func (s *commentService) checkEmbedAndImageFacets(facets []interface{}, embed interface{}, contentByteLen int) error {
+	if err := s.validateCommentEmbed(embed); err != nil {
+		return err
+	}
+	embedObject, _ := embed.(map[string]interface{})
+	// The error matches ErrInvalidImageFacet, which is richtext's sentinel.
+	return richtext.CheckImageFacets(facets, embedObject, contentByteLen)
+}
+
 // CreateComment creates a new comment on a post or reply to another comment
 func (s *commentService) CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error) {
 	// Validate content not empty
@@ -866,6 +897,9 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 	if len(req.Facets) > 0 && content != req.Content {
 		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
 	}
+	if err := s.checkEmbedAndImageFacets(req.Facets, req.Embed, len(content)); err != nil {
+		return nil, err
+	}
 	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
 	}
@@ -881,18 +915,6 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 		return nil, err
 	}
 
-	// Create PDS client for this session
-	pdsClient, err := s.getPDSClient(ctx, session)
-	if err != nil {
-		s.logger.Error("failed to create PDS client",
-			"error", err,
-			"commenter", session.AccountDID)
-		return nil, fmt.Errorf("failed to create PDS client: %w", err)
-	}
-
-	// Generate TID for the record key
-	tid := syntax.NewTIDNow(0)
-
 	// Build comment record following the lexicon schema
 	record := CommentRecord{
 		Type:      commentCollection,
@@ -904,6 +926,24 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 		Labels:    req.Labels,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+
+	// The final record is checked against the lexicon before anything touches
+	// the author's PDS, so a refused comment writes nothing.
+	if err := s.validateCommentRecord(record); err != nil {
+		return nil, err
+	}
+
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"commenter", session.AccountDID)
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Generate TID for the record key
+	tid := syntax.NewTIDNow(0)
 
 	// Create the comment record on the user's PDS
 	uri, cid, err := pdsClient.CreateRecord(ctx, commentCollection, tid.String(), record)
@@ -970,6 +1010,13 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 	// for why offsets computed against untrimmed content must be rejected loudly.
 	if len(req.Facets) > 0 && content != req.Content {
 		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
+	}
+	// The embed and #image facets are checked before the stored record is
+	// fetched: the request's facets and embed are the edited record's, and only
+	// its reply refs and createdAt come from the stored record. The merged
+	// record is checked in full before it is written.
+	if err := s.checkEmbedAndImageFacets(req.Facets, req.Embed, len(content)); err != nil {
+		return nil, err
 	}
 	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
@@ -1039,6 +1086,10 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		Langs:     req.Langs,
 		Labels:    req.Labels,
 		CreatedAt: createdAt, // Preserve original timestamp
+	}
+
+	if err := s.validateCommentRecord(updatedRecord); err != nil {
+		return nil, err
 	}
 
 	// Update the record on PDS with optimistic locking via swapRecord CID

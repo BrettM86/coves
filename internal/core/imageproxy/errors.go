@@ -73,3 +73,13 @@ var ErrBlobBlocked = errors.New("blob blocked")
 
 // ErrBlockCheckFailed is returned when the moderation block check fails.
 var ErrBlockCheckFailed = errors.New("blob block check failed")
+
+// ErrBlobNotIndexed means the (owner, CID) pair has no active blob reference.
+var ErrBlobNotIndexed = errors.New("blob not indexed")
+
+// ErrReferenceCheckFailed is returned when active blob references cannot be checked.
+var ErrReferenceCheckFailed = errors.New("blob reference check failed")
+
+// ErrCIDMismatch is returned when the bytes a PDS served do not hash to the
+// requested CID (CIDv1, raw codec, sha2-256).
+var ErrCIDMismatch = errors.New("fetched blob does not match the requested CID")

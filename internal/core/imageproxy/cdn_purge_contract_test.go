@@ -51,6 +51,10 @@ func (recorder *observingCDNPurgeRecorder) RecordCDNPurgeTargets(_ context.Conte
 	return recorder.err
 }
 
+func (recorder *observingCDNPurgeRecorder) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []BlockedBlob) error {
+	return recorder.RecordCDNPurgeTargets(ctx, blobs)
+}
+
 type failingOwnerDirectoryCache struct {
 	*DiskCache
 	err error
@@ -90,7 +94,7 @@ func TestImageProxyService_CDNRecordsBlockedRequestsBeforeDeletion(t *testing.T)
 				assert.Equal(t, cid, checkedCID)
 				return true, nil
 			})
-			service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), checker, DefaultConfig(), WithCDNPurgeRecorder(recorder))
+			service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), checker, allowAllReferences(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
 			require.NoError(t, err)
 
 			image, err := service.GetImageResolvingPDS(t.Context(), preset, owner, cid, resolvedPDS("https://pds.example.test"))
@@ -120,7 +124,7 @@ func TestImageProxyService_CDNRecordsBlockedRequestsBeforeDeletion(t *testing.T)
 		}
 		recorder := &observingCDNPurgeRecorder{}
 		listingError := errors.New("owner directory unavailable")
-		service, err := NewService(&failingOwnerDirectoryCache{disk, listingError}, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
+		service, err := NewService(&failingOwnerDirectoryCache{disk, listingError}, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
 		require.NoError(t, err)
 		assert.ErrorIs(t, service.PurgeBlob(t.Context(), cid), listingError)
 		assert.Empty(t, recorder.called)
@@ -144,6 +148,10 @@ func (recorder *stallingCDNPurgeRecorder) RecordCDNPurgeTargets(ctx context.Cont
 	return ctx.Err()
 }
 
+func (recorder *stallingCDNPurgeRecorder) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []BlockedBlob) error {
+	return recorder.RecordCDNPurgeTargets(ctx, blobs)
+}
+
 func TestImageProxyService_PurgeBlobBoundsStalledCDNRecording(t *testing.T) {
 	const owner = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
 	const cid = moderationTestCID
@@ -157,7 +165,7 @@ func TestImageProxyService_PurgeBlobBoundsStalledCDNRecording(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, cache.Set(preset, owner, cid, []byte("cached image")))
 	recorder := &stallingCDNPurgeRecorder{deadlineSet: make(chan bool, 1)}
-	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
+	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), allowAllReferences(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
 	require.NoError(t, err)
 
 	purgeDone := make(chan error, 1)

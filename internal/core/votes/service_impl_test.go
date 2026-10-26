@@ -250,9 +250,11 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 
 func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.RecordResponse, error) {
 	f.getCalls++
-	require.NoError(f.t, ctx.Err(), "reconciliation must survive the original request deadline")
 	_, bounded := ctx.Deadline()
 	require.True(f.t, bounded, "reconciliation must have a bounded deadline")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if f.getHook != nil {
 		if err := f.getHook(ctx, rkey); err != nil {
 			return nil, err

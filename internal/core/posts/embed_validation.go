@@ -3,6 +3,7 @@ package posts
 import (
 	"fmt"
 
+	"Coves/internal/atproto/embedimages"
 	"Coves/internal/core/embeds"
 	"Coves/internal/validation"
 )
@@ -22,10 +23,11 @@ import (
 // post projections); those view types are never valid on create input and are
 // correctly rejected here as unknown.
 const (
-	embedTypeImages   = embeds.TypeImages
-	embedTypeVideo    = embeds.TypeVideo
-	embedTypeExternal = embeds.TypeExternal
-	embedTypePost     = embeds.TypePost
+	embedTypeImages               = embeds.TypeImages
+	embedTypeImagesWithAttachment = embeds.TypeImagesWithAttachment
+	embedTypeVideo                = embeds.TypeVideo
+	embedTypeExternal             = embeds.TypeExternal
+	embedTypePost                 = embeds.TypePost
 )
 
 // maxEmbedSources mirrors the maxLength on the sources array in
@@ -56,25 +58,46 @@ func validateEmbed(embed map[string]interface{}) error {
 
 	rawType, present := embed["$type"]
 	if !present {
-		return NewValidationError("embed",
+		return newInvalidEmbedError("embed",
 			"embed is missing its required $type discriminator (expected one of "+
-				embedTypeImages+", "+embedTypeVideo+", "+embedTypeExternal+", "+embedTypePost+")")
+				embedTypeImages+", "+embedTypeImagesWithAttachment+", "+embedTypeVideo+", "+embedTypeExternal+", "+embedTypePost+")")
 	}
 	embedType, isString := rawType.(string)
 	if !isString {
-		return NewValidationError("embed",
+		return newInvalidEmbedError("embed",
 			fmt.Sprintf("embed $type must be a string, got %T", rawType))
 	}
 
 	switch embedType {
+	case embedTypeImagesWithAttachment:
+		if err := validateEmbedImages(embed); err != nil {
+			return err
+		}
+		main, ok := embed["images"].(map[string]interface{})
+		if !ok || main["$type"] != embedTypeImages {
+			return newInvalidEmbedError("embed", "imagesWithAttachment requires an images embed in 'images'")
+		}
+		if err := validateEmbed(main); err != nil {
+			return err
+		}
+		attachment, ok := embed["attachment"].(map[string]interface{})
+		if !ok {
+			return newInvalidEmbedError("embed", "imagesWithAttachment requires an 'attachment' object")
+		}
+		attachmentType, _ := attachment["$type"].(string)
+		if attachmentType != embedTypeExternal && attachmentType != embedTypePost {
+			return newInvalidEmbedError("embed", "imagesWithAttachment attachment must be an external or post embed")
+		}
+		return validateEmbed(attachment)
+
 	case embedTypeExternal:
 		external, ok := embed["external"].(map[string]interface{})
 		if !ok {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires an 'external' object", embedTypeExternal))
 		}
 		if uri, ok := external["uri"].(string); !ok || uri == "" {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a non-empty 'external.uri' string", embedTypeExternal))
 		}
 		if err := validateExternalTextLimits(external); err != nil {
@@ -84,13 +107,19 @@ func validateEmbed(embed map[string]interface{}) error {
 	case embedTypeImages:
 		images, ok := embed["images"].([]interface{})
 		if !ok || len(images) == 0 {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a non-empty 'images' array", embedTypeImages))
+		}
+		// The count comes before any entry's shape, so a ninth image is too
+		// many images whatever the entries hold; validateEmbedImages returns
+		// the same ErrTooManyImages error the later record check does.
+		if len(images) > embedimages.MaxImages {
+			return validateEmbedImages(embed)
 		}
 		for i, raw := range images {
 			img, ok := raw.(map[string]interface{})
 			if !ok {
-				return NewValidationError("embed",
+				return newInvalidEmbedError("embed",
 					fmt.Sprintf("%s images[%d] must be an object", embedTypeImages, i))
 			}
 			// A blob always decodes to an object; reject a bare URL string the
@@ -98,7 +127,7 @@ func validateEmbed(embed map[string]interface{}) error {
 			// symmetric (deeper $type:blob/ref/mimeType validation is left to
 			// the blob-handling pipeline).
 			if _, ok := img["image"].(map[string]interface{}); !ok {
-				return NewValidationError("embed",
+				return newInvalidEmbedError("embed",
 					fmt.Sprintf("%s images[%d] requires an 'image' blob object", embedTypeImages, i))
 			}
 		}
@@ -108,29 +137,29 @@ func validateEmbed(embed map[string]interface{}) error {
 		// client mistake and must be rejected (same intent as the stricter
 		// external.thumb blob guard in the post service).
 		if _, ok := embed["video"].(map[string]interface{}); !ok {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a 'video' blob object", embedTypeVideo))
 		}
 
 	case embedTypePost:
 		post, ok := embed["post"].(map[string]interface{})
 		if !ok {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a 'post' strong reference", embedTypePost))
 		}
 		if uri, ok := post["uri"].(string); !ok || uri == "" {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a non-empty 'post.uri' string", embedTypePost))
 		}
 		if cid, ok := post["cid"].(string); !ok || cid == "" {
-			return NewValidationError("embed",
+			return newInvalidEmbedError("embed",
 				fmt.Sprintf("%s requires a non-empty 'post.cid' string", embedTypePost))
 		}
 
 	default:
-		return NewValidationError("embed",
-			fmt.Sprintf("unknown embed $type %q (allowed: %s, %s, %s, %s)",
-				embedType, embedTypeImages, embedTypeVideo, embedTypeExternal, embedTypePost))
+		return newInvalidEmbedError("embed",
+			fmt.Sprintf("unknown embed $type %q (allowed: %s, %s, %s, %s, %s)",
+				embedType, embedTypeImages, embedTypeImagesWithAttachment, embedTypeVideo, embedTypeExternal, embedTypePost))
 	}
 
 	return nil
@@ -163,6 +192,10 @@ func normalizeEmbedURIs(embed map[string]interface{}) error {
 	if embed == nil {
 		return nil
 	}
+	if embed["$type"] == embedTypeImagesWithAttachment {
+		attachment, _ := embed["attachment"].(map[string]interface{})
+		return normalizeEmbedURIs(attachment)
+	}
 	if embedType, _ := embed["$type"].(string); embedType != embedTypeExternal {
 		return nil
 	}
@@ -175,7 +208,7 @@ func normalizeEmbedURIs(embed map[string]interface{}) error {
 	if raw, ok := external["uri"].(string); ok {
 		normalized, err := validation.NormalizeURI(raw)
 		if err != nil {
-			return NewValidationErrorFrom("embed.external.uri", err)
+			return newInvalidEmbedErrorFrom("embed.external.uri", err)
 		}
 		external["uri"] = normalized
 	}
@@ -189,30 +222,30 @@ func normalizeEmbedURIs(embed map[string]interface{}) error {
 	// sign the very schema-invalid record this function exists to prevent.
 	sources, ok := rawSources.([]interface{})
 	if !ok {
-		return NewValidationError("embed.external.sources",
+		return newInvalidEmbedError("embed.external.sources",
 			fmt.Sprintf("embed.external.sources must be an array, got %T", rawSources))
 	}
 	if len(sources) > maxEmbedSources {
-		return NewValidationError("embed.external.sources",
+		return newInvalidEmbedError("embed.external.sources",
 			fmt.Sprintf("too many sources: %d (max %d)", len(sources), maxEmbedSources))
 	}
 	for i, entry := range sources {
 		field := fmt.Sprintf("embed.external.sources[%d].uri", i)
 		source, ok := entry.(map[string]interface{})
 		if !ok {
-			return NewValidationError(field,
+			return newInvalidEmbedError(field,
 				fmt.Sprintf("embed.external.sources[%d] must be an object", i))
 		}
 		// uri is required on #source; a source without one is an unusable
 		// dangling entry that would fail schema validation downstream.
 		raw, ok := source["uri"].(string)
 		if !ok || raw == "" {
-			return NewValidationError(field,
+			return newInvalidEmbedError(field,
 				fmt.Sprintf("embed.external.sources[%d] requires a non-empty 'uri' string", i))
 		}
 		normalized, err := validation.NormalizeURI(raw)
 		if err != nil {
-			return NewValidationErrorFrom(field, err)
+			return newInvalidEmbedErrorFrom(field, err)
 		}
 		source["uri"] = normalized
 	}

@@ -74,7 +74,7 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	)
 	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, pds.URL, instanceDID, "", nil, nil, nil,
+		communityRepo, pds.URL, instanceDID, "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pds.URL,

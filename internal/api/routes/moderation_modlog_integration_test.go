@@ -109,7 +109,7 @@ func newModlogFixture(t *testing.T) *modlogFixture {
 			MaxLiveIdempotencyKeys: 1000, CursorSecret: "modlog-integration-cursor-secret",
 			CommunityResolver: communities.NewCommunityService(
 				postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), testkit.Endpoints().PDS.BaseURL,
-				"", "coves.social", nil, nil, nil),
+				"", "coves.social", nil, nil, nil, nil),
 			HandleResolver: f.resolver,
 		},
 	)

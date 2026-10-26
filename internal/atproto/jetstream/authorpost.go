@@ -484,6 +484,9 @@ func parseAuthorPostRecord(record map[string]interface{}) (*AuthorPostRecord, er
 	if parsed.CreatedAt == "" {
 		return nil, fmt.Errorf("%w: postv2 record missing createdAt field", ErrPermanentEvent)
 	}
+	if err := validateEmbedImageCount(parsed.Embed); err != nil {
+		return nil, err
+	}
 
 	return &parsed, nil
 }

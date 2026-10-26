@@ -73,7 +73,7 @@ func TestModerationPostRemovalAcceptance(t *testing.T) {
 	)
 	pdsURL := testkit.Endpoints().PDS.BaseURL
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, pdsURL, instanceDID, "", nil, nil, nil,
+		communityRepo, pdsURL, instanceDID, "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,

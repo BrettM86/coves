@@ -214,7 +214,7 @@ func main() {
 		cfg.Instance.Domain,
 		provisioner,
 		oauthClient,
-		blobService,
+		blobService, nil,
 		communityPDSOptions...,
 	)
 

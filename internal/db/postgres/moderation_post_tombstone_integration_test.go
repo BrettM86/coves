@@ -24,7 +24,7 @@ import (
 func moderationPostGetService(db *sql.DB, repo posts.Repository) posts.Service {
 	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, testkit.Endpoints().PDS.BaseURL, fixtures.InstanceDID(), "", nil, nil, nil,
+		communityRepo, testkit.Endpoints().PDS.BaseURL, fixtures.InstanceDID(), "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 	return posts.NewPostService(repo, communityService, nil, nil, nil, nil, testkit.Endpoints().PDS.BaseURL,

@@ -153,6 +153,13 @@ func (r *countingResolver) resolveCount() int {
 	return r.resolves
 }
 
+func (r *countingResolver) totalCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// ResolveHandle delegates to Resolve, so each call is already counted there.
+	return r.resolves + r.resolveDIDs
+}
+
 func (r *countingResolver) setResolveResult(identity *Identity, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -491,7 +498,7 @@ func TestCachingResolver_ResolveDID(t *testing.T) {
 
 		doc, err := resolver.ResolveDID(context.Background(), fixtureDID)
 		require.NoError(t, err)
-		assert.Equal(t, 1, base.resolves+base.resolveDIDs)
+		assert.Equal(t, 1, base.totalCalls())
 		assert.Equal(t, fixtureDID, doc.DID)
 	})
 

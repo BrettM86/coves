@@ -51,7 +51,7 @@ func TestBuildCommentView_ServesOnlyBlobDerivedMedia(t *testing.T) {
 		{
 			name: "quote view with a stored resolved keeps only its strongRef",
 			embed: map[string]interface{}{
-				"$type": "social.coves.embed.post#view", "post": map[string]interface{}{"uri": quotedURI, "cid": "bafyquoted"},
+				"$type": "social.coves.embed.post#view", "post": map[string]interface{}{"uri": quotedURI, "cid": "bafyquoted", "thumb": authorURL},
 				"resolved": map[string]interface{}{"images": []interface{}{map[string]interface{}{"thumb": authorURL}}},
 			},
 			want: map[string]interface{}{

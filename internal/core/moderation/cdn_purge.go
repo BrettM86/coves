@@ -25,3 +25,31 @@ func ownerCDNPurgeBlobs(blocks []MediaBlock) []imageproxy.BlockedBlob {
 	}
 	return owned
 }
+
+// everyOwnerBlockCIDs returns the CID of each every-owner block, once.
+func everyOwnerBlockCIDs(blocks []MediaBlock) []string {
+	var cids []string
+	seen := make(map[string]bool)
+	for _, block := range blocks {
+		if block.OwnerDID == "" && !seen[block.BlobCID] {
+			seen[block.BlobCID] = true
+			cids = append(cids, block.BlobCID)
+		}
+	}
+	return cids
+}
+
+// appendMissingCDNPurgeBlobs appends each of additional not already in blobs.
+func appendMissingCDNPurgeBlobs(blobs, additional []imageproxy.BlockedBlob) []imageproxy.BlockedBlob {
+	present := make(map[imageproxy.BlockedBlob]bool, len(blobs))
+	for _, blob := range blobs {
+		present[blob] = true
+	}
+	for _, blob := range additional {
+		if !present[blob] {
+			present[blob] = true
+			blobs = append(blobs, blob)
+		}
+	}
+	return blobs
+}

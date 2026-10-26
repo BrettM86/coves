@@ -83,8 +83,8 @@ func TestCommunityRepo_Update(t *testing.T) {
 
 		community.DisplayName = "After"
 		community.Description = "the new description"
-		community.AvatarCID = "bafyreinewavatar"
-		community.BannerCID = "bafyreinewbanner"
+		community.AvatarCID = "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+		community.BannerCID = "bafkreicy44vctf2bgqnn5wwzdern7bc2khwi7ku2r66bozl4x6bsrvuj2q"
 		community.Visibility = "unlisted"
 		community.ModerationType = "sortition"
 		community.ContentWarnings = []string{"spoilers", "politics"}
@@ -98,8 +98,8 @@ func TestCommunityRepo_Update(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "After", got.DisplayName)
 		assert.Equal(t, "the new description", got.Description)
-		assert.Equal(t, "bafyreinewavatar", got.AvatarCID)
-		assert.Equal(t, "bafyreinewbanner", got.BannerCID)
+		assert.Equal(t, "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", got.AvatarCID)
+		assert.Equal(t, "bafkreicy44vctf2bgqnn5wwzdern7bc2khwi7ku2r66bozl4x6bsrvuj2q", got.BannerCID)
 		assert.Equal(t, "unlisted", got.Visibility)
 		assert.Equal(t, "sortition", got.ModerationType)
 		assert.Equal(t, []string{"spoilers", "politics"}, got.ContentWarnings)

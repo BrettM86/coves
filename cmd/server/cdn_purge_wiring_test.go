@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +125,20 @@ func (transaction *cdnWiringTransaction) RecordCDNPurgeTargets(_ context.Context
 	return nil
 }
 
+// RependCDNPurgeTargets returns each distinct recorded target of the CIDs.
+func (transaction *cdnWiringTransaction) RependCDNPurgeTargets(_ context.Context, cids []string) ([]imageproxy.BlockedBlob, error) {
+	var repended []imageproxy.BlockedBlob
+	seen := make(map[imageproxy.BlockedBlob]bool)
+	for _, blob := range transaction.purgeTargets {
+		if !slices.Contains(cids, blob.CID) || seen[blob] {
+			continue
+		}
+		seen[blob] = true
+		repended = append(repended, blob)
+	}
+	return repended, nil
+}
+
 func (store *cdnWiringStore) ReadSubject(_ context.Context, uri string) (*moderation.IndexedRecord, error) {
 	return &moderation.IndexedRecord{URI: uri, CID: store.transaction.comment.CID}, nil
 }
@@ -175,6 +190,10 @@ func (store *cdnWiringPurgeTargetStore) RecordCDNPurgeTargets(_ context.Context,
 		}
 	}
 	return blobs, nil
+}
+
+func (store *cdnWiringPurgeTargetStore) RecordMissingCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error) {
+	return store.RecordCDNPurgeTargets(ctx, blobs)
 }
 
 func (store *cdnWiringPurgeTargetStore) recordedBlobs() []imageproxy.BlockedBlob {

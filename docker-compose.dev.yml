@@ -82,6 +82,7 @@ services:
       PDS_PORT: 3001  # Match external port for correct DID registration
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_BLOB_UPLOAD_LIMIT: 104857600  # 100 MB
       # IMPORTANT: For local E2E testing, this MUST point to local PLC directory
       # Default to local PLC (http://plc-directory:3000) for full local stack
       # The container hostname 'plc-directory' is used for Docker network communication

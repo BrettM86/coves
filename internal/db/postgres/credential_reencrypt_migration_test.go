@@ -27,6 +27,12 @@ func TestMigration046DownRestoresUsableEncryptionKey(t *testing.T) {
 	db := testkit.DB(t)
 	assert.False(t, credentialReencryptKeyTable(t, db).Valid,
 		"migration 046 Up must drop encryption_keys before its Down behavior can be tested")
+	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
+	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
+	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))
+	require.EqualValues(t, 63, testkit.MigrateDownOne(t, db, 63))
+	require.EqualValues(t, 62, testkit.MigrateDownOne(t, db, 62))
+	require.EqualValues(t, 61, testkit.MigrateDownOne(t, db, 61))
 	require.EqualValues(t, 60, testkit.MigrateDownOne(t, db, 60),
 		"060 (users bio renamed to description) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
@@ -417,6 +423,12 @@ func TestCredentialReencryptRejectsLegacyRowsAfterEncryptionKeysDropped(t *testi
 func credentialReencryptVersion45Database(t *testing.T) *sql.DB {
 	t.Helper()
 	db := testkit.DB(t)
+	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
+	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
+	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))
+	require.EqualValues(t, 63, testkit.MigrateDownOne(t, db, 63))
+	require.EqualValues(t, 62, testkit.MigrateDownOne(t, db, 62))
+	require.EqualValues(t, 61, testkit.MigrateDownOne(t, db, 61))
 	require.EqualValues(t, 60, testkit.MigrateDownOne(t, db, 60),
 		"060 (users bio renamed to description) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),

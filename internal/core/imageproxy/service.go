@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	ipfscid "github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multihash"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -51,7 +53,7 @@ func ProcessorBusyRefusalCount() int64 {
 // Service defines the interface for the image proxy service.
 type Service interface {
 	// GetImageResolvingPDS retrieves an image for the given preset, DID, and
-	// CID. It checks moderation before the cache, then the cache; on a miss it
+	// CID. It checks moderation and active references before the cache; on a miss it
 	// resolves the DID's PDS with resolvePDS, fetches the blob, waits for a
 	// processing slot, processes the image according to the preset, and
 	// stores it in the cache. resolvePDS runs only on a cache miss, so a
@@ -67,8 +69,10 @@ type ImageProxyService struct {
 	processor        Processor
 	fetcher          Fetcher
 	blocks           BlockChecker
+	references       ReferenceChecker
 	config           Config
 	cdnPurgeRecorder CDNPurgeRecorder
+	blobOwnerIndex   BlobOwnerIndex
 	// A fixed number of stripes serializes cache publication with purges for
 	// the same CID without retaining locks for every blob ever requested.
 	// Each stripe is a weight-1 semaphore rather than a mutex so a waiter can
@@ -101,7 +105,7 @@ type ImageProxyService struct {
 // NewService creates a new ImageProxyService with the provided dependencies.
 // Returns an error if any required dependency is nil or if the processing
 // budgets the service enforces itself are not positive.
-func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockChecker, config Config, options ...ServiceOption) (*ImageProxyService, error) {
+func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockChecker, references ReferenceChecker, config Config, options ...ServiceOption) (*ImageProxyService, error) {
 	if cache == nil {
 		return nil, fmt.Errorf("%w: cache", ErrNilDependency)
 	}
@@ -113,6 +117,9 @@ func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockC
 	}
 	if blocks == nil {
 		return nil, fmt.Errorf("%w: block checker", ErrNilDependency)
+	}
+	if references == nil {
+		return nil, fmt.Errorf("%w: reference checker", ErrNilDependency)
 	}
 	// A zero-slot semaphore would refuse every request and a zero wait would
 	// refuse any request that did not find a free slot on its first try.
@@ -131,6 +138,7 @@ func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockC
 		processor:          processor,
 		fetcher:            fetcher,
 		blocks:             blocks,
+		references:         references,
 		config:             config,
 		publicationTimeout: defaultPublicationTimeout,
 		admissionSlots:     semaphore.NewWeighted(int64(config.MaxInFlightRequests)),
@@ -153,12 +161,12 @@ const defaultPublicationTimeout = 10 * time.Second
 
 // GetImageResolvingPDS implements Service. The service flow is:
 //  1. Validate preset exists and the owner DID is canonical
-//  2. Check moderation, then cache for (preset, did, cid) - return if hit
+//  2. Check moderation and active references, then cache for (preset, did, cid) - return if hit
 //  3. Resolve the DID's PDS with resolvePDS (misses only)
 //  4. Acquire an admission slot, waiting at most ProcessQueueWait
 //  5. Fetch blob from the PDS
-//  6. Acquire a processing slot, waiting at most ProcessQueueWait
-//  7. Process image with preset
+//  6. Verify the fetched bytes against the requested raw sha2-256 CID
+//  7. Acquire a processing slot, waiting at most ProcessQueueWait, then process
 //  8. Release the processing slot, then under the CID lock recheck
 //     moderation and store in cache, on a context detached from the caller
 //  9. Release the admission slot and return the processed image
@@ -181,16 +189,15 @@ func (s *ImageProxyService) GetImageResolvingPDS(
 		return nil, err
 	}
 
-	// Step 2: Check moderation before reading even a warm cache entry.
-	blocked, err := s.IsBlobBlocked(ctx, did, cid)
-	if err != nil {
-		return nil, err
-	}
-	if blocked {
+	// Step 2: Check servability before reading even a warm cache entry.
+	if err := s.CheckServable(ctx, did, cid); err != nil {
+		if !errors.Is(err, ErrBlobBlocked) {
+			return nil, err
+		}
 		// A purge lost to a crash or a disk error leaves bytes behind; any
 		// request for them removes this entry.
 		s.purgeBlockedEntry(ctx, presetName, did, cid)
-		return nil, ErrBlobBlocked
+		return nil, err
 	}
 
 	// Check cache for (preset, did, cid)
@@ -260,6 +267,36 @@ func (s *ImageProxyService) GetImageResolvingPDS(
 	return processedData, nil
 }
 
+// CIDMismatchReason names why fetched bytes failed verification against the
+// requested CID. It appears in the ErrCIDMismatch error text and the WARN log.
+type CIDMismatchReason string
+
+const (
+	CIDMismatchUndecodableCID     CIDMismatchReason = "undecodable_cid"
+	CIDMismatchUnsupportedVersion CIDMismatchReason = "unsupported_version"
+	CIDMismatchUnsupportedCodec   CIDMismatchReason = "unsupported_codec"
+	CIDMismatchUnsupportedHash    CIDMismatchReason = "unsupported_hash"
+	CIDMismatchDigestMismatch     CIDMismatchReason = "digest_mismatch"
+)
+
+// classifyCIDMismatch names the first property of the requested CID that
+// differs from a CIDv1 raw sha2-256 CID. It only labels a rejection the
+// caller already decided by full-CID equality; it never accepts anything.
+func classifyCIDMismatch(requested ipfscid.Cid, decodeErr error) CIDMismatchReason {
+	switch {
+	case decodeErr != nil:
+		return CIDMismatchUndecodableCID
+	case requested.Version() != 1:
+		return CIDMismatchUnsupportedVersion
+	case requested.Type() != ipfscid.Raw:
+		return CIDMismatchUnsupportedCodec
+	case requested.Prefix().MhType != multihash.SHA2_256:
+		return CIDMismatchUnsupportedHash
+	default:
+		return CIDMismatchDigestMismatch
+	}
+}
+
 // fetchAndProcess runs steps 5 to 7 of GetImageResolvingPDS under the caller's admission
 // slot. The processing slot is released when it returns, so it is not held
 // across the moderation recheck and cache write that follow: those wait on a
@@ -270,6 +307,30 @@ func (s *ImageProxyService) fetchAndProcess(ctx context.Context, preset Preset, 
 	rawData, err := s.fetcher.Fetch(ctx, pdsURL, did, cid)
 	if err != nil {
 		return nil, err
+	}
+
+	// Verify the complete CID (version, codec and multihash), not just its
+	// digest, before decoding or publishing bytes under the requested key.
+	hash, err := multihash.Sum(rawData, multihash.SHA2_256, -1)
+	if err != nil {
+		return nil, fmt.Errorf("%w: hashing fetched blob: %v", ErrProcessingFailed, err)
+	}
+	computedCID := ipfscid.NewCidV1(ipfscid.Raw, hash)
+	requestedCID, decodeErr := ipfscid.Decode(cid)
+	if decodeErr != nil || !computedCID.Equals(requestedCID) {
+		reason := classifyCIDMismatch(requestedCID, decodeErr)
+		// A mismatch can be a PDS serving wrong or truncated bytes, a hostile
+		// PDS, or a real CID shape this proxy does not accept; only the log
+		// tells an operator which.
+		slog.Warn("[IMAGE-PROXY] fetched blob does not match the requested CID",
+			"did", did,
+			"cid", cid,
+			"computed_cid", computedCID.String(),
+			"pds", pdsURL,
+			"bytes", len(rawData),
+			"reason", reason,
+		)
+		return nil, fmt.Errorf("%w: %s (computed %s)", ErrCIDMismatch, reason, computedCID)
 	}
 
 	// Step 6: Acquire a processing slot. This happens AFTER the fetch so a slow
@@ -369,6 +430,11 @@ func (s *ImageProxyService) acquireSlot(ctx context.Context, sem *semaphore.Weig
 	return onBusy(err)
 }
 
+// ReferenceChecker reports whether (ownerDID, cid) has an active blob reference.
+type ReferenceChecker interface {
+	HasActiveReference(ctx context.Context, ownerDID, cid string) (bool, error)
+}
+
 // BlockChecker reports whether moderation blocks serving a blob.
 type BlockChecker interface {
 	IsBlocked(ctx context.Context, ownerDID, cid string) (bool, error)
@@ -385,6 +451,26 @@ func (s *ImageProxyService) IsBlobBlocked(ctx context.Context, did, cid string) 
 		return false, fmt.Errorf("%w: %w", ErrBlockCheckFailed, err)
 	}
 	return blocked, nil
+}
+
+// CheckServable checks moderation first, then requires an active reference for
+// this owner and CID. Callers must pass a canonical CID.
+func (s *ImageProxyService) CheckServable(ctx context.Context, did, cid string) error {
+	blocked, err := s.IsBlobBlocked(ctx, did, cid)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return ErrBlobBlocked
+	}
+	active, err := s.references.HasActiveReference(ctx, did, cid)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrReferenceCheckFailed, err)
+	}
+	if !active {
+		return ErrBlobNotIndexed
+	}
+	return nil
 }
 
 // PurgeOwnerBlob removes the owner's cached copies of a blocked blob. The

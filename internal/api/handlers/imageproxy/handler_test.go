@@ -39,11 +39,31 @@ func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, er
 	return false, nil
 }
 
+type allowAllReferences struct{}
+
+func (allowAllReferences) HasActiveReference(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
 func (m *mockService) IsBlobBlocked(ctx context.Context, did, cid string) (bool, error) {
 	if m.isBlobBlockedFunc != nil {
 		return m.isBlobBlockedFunc(ctx, did, cid)
 	}
 	return false, nil
+}
+
+// CheckServable maps the mock's block decision onto the service's
+// servability errors; the mock has no reference index, so every pair is
+// indexed.
+func (m *mockService) CheckServable(ctx context.Context, did, cid string) error {
+	blocked, err := m.IsBlobBlocked(ctx, did, cid)
+	if err != nil {
+		return fmt.Errorf("%w: %w", imageproxy.ErrBlockCheckFailed, err)
+	}
+	if blocked {
+		return imageproxy.ErrBlobBlocked
+	}
+	return nil
 }
 
 // GetImageResolvingPDS resolves the PDS up front, as a cache miss would, so
@@ -166,7 +186,7 @@ func TestHandler_HandleImage_Success(t *testing.T) {
 
 	// Verify ETag format
 	etag := w.Header().Get("ETag")
-	expectedETag := `"avatar-` + validTestCID + `"`
+	expectedETag := `"r2-avatar-` + validTestCID + `"`
 	if etag != expectedETag {
 		t.Errorf("Expected ETag %q, got %q", expectedETag, etag)
 	}
@@ -202,7 +222,7 @@ func TestHandler_HandleImage_ETagMatch_Returns304(t *testing.T) {
 		"cid":    validTestCID,
 	})
 	// Set If-None-Match header with matching ETag
-	req.Header.Set("If-None-Match", `"avatar-`+validTestCID+`"`)
+	req.Header.Set("If-None-Match", `"r2-avatar-`+validTestCID+`"`)
 
 	w := httptest.NewRecorder()
 	handler.HandleImage(w, req)
@@ -577,7 +597,7 @@ func TestHandler_HandleImage_AllPresets(t *testing.T) {
 
 			// Verify ETag matches preset
 			etag := w.Header().Get("ETag")
-			expectedETag := `"` + preset + `-` + validTestCID + `"`
+			expectedETag := `"r2-` + preset + `-` + validTestCID + `"`
 			if etag != expectedETag {
 				t.Errorf("Expected ETag %q, got %q", expectedETag, etag)
 			}
@@ -1023,4 +1043,69 @@ func TestHandler_HandleImage_SecurityLogging(t *testing.T) {
 			t.Errorf("expected no handler log output for load shedding (the service logs and counts it), got:\n%s", got)
 		}
 	})
+}
+
+// TestHandler_HandleImage_PreRenderVersionETag_GetsFullImage pins the ETag
+// render version. PNG sources and EXIF-oriented JPEGs now render to different
+// bytes than they did under the unversioned "<preset>-<cid>" ETag, so a browser
+// still holding that old validator must get the new render, not a 304 that
+// keeps the old bytes alive forever.
+func TestHandler_HandleImage_PreRenderVersionETag_GetsFullImage(t *testing.T) {
+	expectedImage := []byte{0xFF, 0xD8, 0xFF, 0xE0}
+
+	serviceCalls := 0
+	mockSvc := &mockService{
+		getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+			serviceCalls++
+			return expectedImage, nil
+		},
+	}
+	mockResolver := &mockIdentityResolver{
+		resolveDIDFunc: func(ctx context.Context, did string) (*identity.DIDDocument, error) {
+			return &identity.DIDDocument{
+				DID: did,
+				Service: []identity.Service{{
+					ID:              "#atproto_pds",
+					Type:            "AtprotoPersonalDataServer",
+					ServiceEndpoint: "https://pds.example.com",
+				}},
+			}, nil
+		},
+	}
+	handler := NewHandler(mockSvc, mockResolver)
+
+	request := func(ifNoneMatch string) *httptest.ResponseRecorder {
+		req := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+validTestCID, map[string]string{
+			"preset": "avatar",
+			"did":    validTestDID,
+			"cid":    validTestCID,
+		})
+		req.Header.Set("If-None-Match", ifNoneMatch)
+		w := httptest.NewRecorder()
+		handler.HandleImage(w, req)
+		return w
+	}
+
+	unversioned := request(`"avatar-` + validTestCID + `"`)
+	if unversioned.Code != http.StatusOK {
+		t.Fatalf("an unversioned validator from before the render change must not get a 304: want 200, got %d", unversioned.Code)
+	}
+	if !bytes.Equal(unversioned.Body.Bytes(), expectedImage) {
+		t.Errorf("an unversioned validator must get the current render as the body, got %v", unversioned.Body.Bytes())
+	}
+	if serviceCalls != 1 {
+		t.Errorf("an unversioned validator must fetch the current render: want 1 service call, got %d", serviceCalls)
+	}
+	wantETag := `"r2-avatar-` + validTestCID + `"`
+	if got := unversioned.Header().Get("ETag"); got != wantETag {
+		t.Errorf("served ETag: want %q, got %q", wantETag, got)
+	}
+
+	versioned := request(wantETag)
+	if versioned.Code != http.StatusNotModified {
+		t.Errorf("the current versioned validator must get a 304, got %d", versioned.Code)
+	}
+	if serviceCalls != 1 {
+		t.Errorf("a matching versioned validator must not fetch: want 1 service call total, got %d", serviceCalls)
+	}
 }

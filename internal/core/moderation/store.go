@@ -238,6 +238,13 @@ type Transaction interface {
 	InsertMediaBlocks(ctx context.Context, blocks []MediaBlock) error
 	DeactivateMediaBlocks(ctx context.Context, actionID string) error
 	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error
+	// RependCDNPurgeTargets re-pends every recorded CDN purge target of each
+	// CID, pending or completed, bumping its generation and claim so an
+	// in-flight attempt sent before this transaction commits cannot complete
+	// it. It returns the targets it re-pended. An every-owner block activation
+	// calls it so each already-recorded owner is purged again exactly once per
+	// activation.
+	RependCDNPurgeTargets(ctx context.Context, cids []string) ([]imageproxy.BlockedBlob, error)
 }
 
 // MediaPurger removes cached bytes of newly blocked blobs.

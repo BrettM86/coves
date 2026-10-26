@@ -213,9 +213,9 @@ type AuthorRepo interface {
 	//
 	// It is on THIS interface rather than reached through blobs.Service because
 	// an author authenticates with a DPoP-signed OAuth session, and that cannot
-	// be expressed as the bearer token blobs.BlobOwner carries. The fetch and
-	// the size/MIME guard still come from blobs.Service.FetchImageForURL — only
-	// the upload leg moved.
+	// be expressed as the bearer token blobs.BlobOwner carries. The guarded
+	// fetch still comes from blobs.Service.FetchImageForURL and the bytes are
+	// sanitized by the media pipeline before they reach this upload.
 	UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error)
 
 	// DID is the repo being written — the author's own identity, which is the

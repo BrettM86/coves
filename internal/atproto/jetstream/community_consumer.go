@@ -1097,10 +1097,10 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 
 	// Handle blobs (avatar/banner) if present
 	if avatarCID, ok := extractBlobCID(profile.Avatar); ok {
-		community.AvatarCID = avatarCID
+		community.AvatarCID = canonicalProfileBlobCID(did, "avatar", avatarCID)
 	}
 	if bannerCID, ok := extractBlobCID(profile.Banner); ok {
-		community.BannerCID = bannerCID
+		community.BannerCID = canonicalProfileBlobCID(did, "banner", bannerCID)
 	}
 
 	// Handle description facets (rich text). Sanitized like post/comment facets:
@@ -1127,7 +1127,16 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 			// The DID is already in the table: a genuine idempotent replay.
 			// The connector rewinds its cursor after every reconnect and the
 			// AppView consumes overlapping feeds, so this path is walked
-			// constantly for every community and must stay a silent no-op.
+			// constantly. Restore references from the stored row, never from
+			// the replayed record, which may be older than the row.
+			if rebuildErr := c.repo.RebuildProfileBlobReferences(ctx, did); rebuildErr != nil {
+				if errors.Is(rebuildErr, communities.ErrCommunityNotFound) {
+					// Deleted after the create conflict; delete deactivated references.
+					log.Printf("Community %s was deleted during a create replay; not re-indexing it", did)
+					return nil
+				}
+				return fmt.Errorf("failed to rebuild community profile blob references: %w", rebuildErr)
+			}
 			log.Printf("Community already indexed: %s (%s)", community.Handle, community.DID)
 			return nil
 
@@ -1331,12 +1340,14 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	existing.OriginURL, existing.OriginSoftware, displayOutcome = admitOriginDisplay(commit.Record, admittedOrigin, displayVerdict)
 	logOriginDisplayLoss(did, commit.Record, displayOutcome, storedOriginURL, storedOriginSoftware, existing.OriginURL, existing.OriginSoftware)
 
-	// Update blobs
+	// The profile record replaces both images; absent or invalid refs clear them.
+	existing.AvatarCID = ""
 	if avatarCID, ok := extractBlobCID(profile.Avatar); ok {
-		existing.AvatarCID = avatarCID
+		existing.AvatarCID = canonicalProfileBlobCID(did, "avatar", avatarCID)
 	}
+	existing.BannerCID = ""
 	if bannerCID, ok := extractBlobCID(profile.Banner); ok {
-		existing.BannerCID = bannerCID
+		existing.BannerCID = canonicalProfileBlobCID(did, "banner", bannerCID)
 	}
 
 	// Update description facets (sanitized; see the create path). The incoming

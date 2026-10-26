@@ -33,6 +33,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/media"
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
@@ -71,6 +72,8 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 	// is garbage-collected — which is why it goes through communities.Service
 	// rather than a row insert.
 	handleDomain := endpoints.PDS.HandleDomain
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 2, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		endpoints.PDS.BaseURL,
@@ -78,7 +81,7 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 		handleDomain,
 		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL, communities.PrivateHostOptions(true)...),
 		nil, // no PDS client factory: provisioning uses the password session
-		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...),
+		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...), pipeline,
 		communities.PrivateHostOptions(true)...,
 	)
 

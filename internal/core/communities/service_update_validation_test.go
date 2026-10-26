@@ -26,27 +26,37 @@ import (
 //
 // The PDS here is an httptest server on loopback that counts putRecord calls
 // and answers like a PDS. The community's access token is a JWT that expires
-// in an hour, so EnsureFreshToken never contacts the PDS and the only request
-// the server can see is the record write itself.
+// in an hour, so EnsureFreshToken never contacts the PDS. The server sees the
+// read of the current profile record, which update uses to keep an existing
+// avatar and banner, and the record write itself.
 
 const updateValidationCreatorDID = "did:plc:updatevalidationcreator"
 
-// countingProfilePDS answers putRecord with a fixed uri/cid and counts how many
-// times it was asked.
+// countingProfilePDS answers getRecord with a profile that has no avatar or
+// banner, answers putRecord with a fixed uri/cid, and counts the putRecord calls.
 func countingProfilePDS(t *testing.T) (url string, putRecords *atomic.Int64) {
 	t.Helper()
 	putRecords = &atomic.Int64{}
+	profileURI := "at://" + seededCommunityDID + "/social.coves.community.profile/self"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/xrpc/com.atproto.repo.putRecord" {
+		switch r.URL.Path {
+		case "/xrpc/com.atproto.repo.getRecord":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uri":   profileURI,
+				"cid":   "bafycurrentprofile",
+				"value": map[string]any{"$type": "social.coves.community.profile"},
+			})
+		case "/xrpc/com.atproto.repo.putRecord":
+			putRecords.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"uri": profileURI,
+				"cid": "bafyupdatedprofile",
+			})
+		default:
 			http.Error(w, "unexpected endpoint "+r.URL.Path, http.StatusNotFound)
-			return
 		}
-		putRecords.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"uri": "at://" + seededCommunityDID + "/social.coves.community.profile/self",
-			"cid": "bafyupdatedprofile",
-		})
 	}))
 	t.Cleanup(server.Close)
 	return server.URL, putRecords
@@ -139,7 +149,7 @@ func TestUpdateCommunity_ValidatesFieldsBeforeWritingToThePDS(t *testing.T) {
 				CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			})
 			service := communities.NewCommunityServiceWithPDSFactory(
-				repo, pdsURL, fakeInstanceDID, fakeInstanceDomain, nil, nil, nil,
+				repo, pdsURL, fakeInstanceDID, fakeInstanceDomain, nil, nil, nil, nil,
 				communities.PrivateHostOptions(true)...)
 
 			updated, err := service.UpdateCommunity(context.Background(), communities.UpdateCommunityRequest{

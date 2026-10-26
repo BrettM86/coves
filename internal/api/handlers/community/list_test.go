@@ -137,6 +137,10 @@ func (r *listTestRepo) UpdateHandle(ctx context.Context, did, handle string) err
 	return nil
 }
 
+func (r *listTestRepo) RebuildProfileBlobReferences(ctx context.Context, did string) error {
+	return nil
+}
+
 func (r *listTestRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
 	return nil
 }

@@ -45,7 +45,7 @@ func (cache *parkedPublicationCache) OwnerDirectories(cid string) ([]string, err
 func TestImageProxyService_CDNPurgeAwaitsInFlightPublicationBeforeNamingOwners(t *testing.T) {
 	const ownerB = "did:plc:test123"
 	const preset = "avatar"
-	const cid = moderationTestCID
+	cid := rawCIDForTest(t, []byte("raw"))
 
 	disk, err := NewDiskCache(t.TempDir(), 1, 0)
 	require.NoError(t, err)
@@ -64,7 +64,7 @@ func TestImageProxyService_CDNPurgeAwaitsInFlightPublicationBeforeNamingOwners(t
 		return blocked.Load(), nil
 	})
 	recorder := &observingCDNPurgeRecorder{}
-	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), checker, DefaultConfig(), WithCDNPurgeRecorder(recorder))
+	service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), NewMockFetcher([]byte("raw"), nil), checker, allowAllReferences(), DefaultConfig(), WithCDNPurgeRecorder(recorder))
 	require.NoError(t, err)
 
 	// The writer has already rechecked moderation when it enters Set.

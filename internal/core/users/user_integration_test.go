@@ -17,6 +17,7 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/media"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"Coves/internal/validation"
@@ -42,7 +43,12 @@ func testPDSURL() string {
 // testUserRouteOptions returns route options with a dummy PDS client factory.
 // Use this for tests that register user routes but don't actually call updateProfile.
 func testUserRouteOptions() *routes.UserRouteOptions {
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 4, MaxLongEdge: media.DefaultMaxLongEdge})
+	if err != nil {
+		panic(err)
+	}
 	return &routes.UserRouteOptions{
+		MediaPipeline: pipeline,
 		PDSClientFactory: func(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error) {
 			return nil, errors.New("not implemented - test does not use updateProfile")
 		},

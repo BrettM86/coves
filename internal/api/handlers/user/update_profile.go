@@ -12,6 +12,7 @@ import (
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/media"
 	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -64,28 +65,37 @@ type UpdateProfileResponse struct {
 type UpdateProfileHandler struct {
 	oauthClient      *oauth.ClientApp // For creating authenticated PDS clients (production)
 	pdsClientFactory PDSClientFactory // Optional: custom factory for testing
+	pipeline         *media.Pipeline
 }
 
 // NewUpdateProfileHandler creates a new update profile handler.
-// Panics if oauthClient is nil - use NewUpdateProfileHandlerWithFactory for testing.
-func NewUpdateProfileHandler(oauthClient *oauth.ClientApp) *UpdateProfileHandler {
+// Panics if oauthClient or pipeline is nil - use NewUpdateProfileHandlerWithFactory for testing.
+func NewUpdateProfileHandler(oauthClient *oauth.ClientApp, pipeline *media.Pipeline) *UpdateProfileHandler {
 	if oauthClient == nil {
 		panic("NewUpdateProfileHandler: oauthClient is required")
 	}
+	if pipeline == nil {
+		panic("NewUpdateProfileHandler: pipeline is required")
+	}
 	return &UpdateProfileHandler{
 		oauthClient: oauthClient,
+		pipeline:    pipeline,
 	}
 }
 
 // NewUpdateProfileHandlerWithFactory creates a new update profile handler with a custom PDS client factory.
 // This is primarily for E2E testing with password-based authentication instead of OAuth.
-// Panics if factory is nil.
-func NewUpdateProfileHandlerWithFactory(factory PDSClientFactory) *UpdateProfileHandler {
+// Panics if factory or pipeline is nil.
+func NewUpdateProfileHandlerWithFactory(factory PDSClientFactory, pipeline *media.Pipeline) *UpdateProfileHandler {
 	if factory == nil {
 		panic("NewUpdateProfileHandlerWithFactory: factory is required")
 	}
+	if pipeline == nil {
+		panic("NewUpdateProfileHandlerWithFactory: pipeline is required")
+	}
 	return &UpdateProfileHandler{
 		pdsClientFactory: factory,
+		pipeline:         pipeline,
 	}
 }
 
@@ -158,7 +168,7 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 3. Validate blob sizes and mime types
+	// 3. Validate blob sizes and MIME presence before processing either image.
 	if len(req.AvatarBlob) > 0 {
 		// Validate mime type is provided when blob is provided
 		if req.AvatarMimeType == "" {
@@ -168,10 +178,6 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// Validate size (1MB max for avatar per lexicon)
 		if len(req.AvatarBlob) > MaxAvatarBlobSize {
 			writeUpdateProfileError(w, http.StatusBadRequest, "AvatarTooLarge", "Avatar exceeds 1MB limit")
-			return
-		}
-		if !isValidImageMimeType(req.AvatarMimeType) {
-			writeUpdateProfileError(w, http.StatusBadRequest, "InvalidMimeType", "Invalid avatar mime type")
 			return
 		}
 	}
@@ -187,8 +193,31 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			writeUpdateProfileError(w, http.StatusBadRequest, "BannerTooLarge", "Banner exceeds 2MB limit")
 			return
 		}
-		if !isValidImageMimeType(req.BannerMimeType) {
-			writeUpdateProfileError(w, http.StatusBadRequest, "InvalidMimeType", "Invalid banner mime type")
+	}
+
+	// Validate both before any PDS upload so an invalid banner cannot leave an
+	// already-uploaded avatar behind. The declared MIME is advisory only.
+	var avatar, banner media.Result
+	if len(req.AvatarBlob) > 0 {
+		var ok bool
+		avatar, ok = h.ingestProfileImage(w, ctx, userDID, req.AvatarBlob, req.AvatarMimeType, "avatar")
+		if !ok {
+			return
+		}
+		// A rotated JPEG is re-encoded and can grow past the lexicon maxSize.
+		if len(avatar.Data) > MaxAvatarBlobSize {
+			writeUpdateProfileError(w, http.StatusBadRequest, "AvatarTooLarge", "Avatar exceeds 1MB limit")
+			return
+		}
+	}
+	if len(req.BannerBlob) > 0 {
+		var ok bool
+		banner, ok = h.ingestProfileImage(w, ctx, userDID, req.BannerBlob, req.BannerMimeType, "banner")
+		if !ok {
+			return
+		}
+		if len(banner.Data) > MaxBannerBlobSize {
+			writeUpdateProfileError(w, http.StatusBadRequest, "BannerTooLarge", "Banner exceeds 2MB limit")
 			return
 		}
 	}
@@ -247,7 +276,7 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// 7. Upload avatar blob if provided
 	if len(req.AvatarBlob) > 0 {
-		avatarRef, err := pdsClient.UploadBlob(ctx, req.AvatarBlob, req.AvatarMimeType)
+		avatarRef, err := pdsClient.UploadBlob(ctx, avatar.Data, string(avatar.Format))
 		if err != nil {
 			slog.Error("failed to upload avatar blob",
 				slog.String("did", userDID),
@@ -271,7 +300,7 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// 8. Upload banner blob if provided
 	if len(req.BannerBlob) > 0 {
-		bannerRef, err := pdsClient.UploadBlob(ctx, req.BannerBlob, req.BannerMimeType)
+		bannerRef, err := pdsClient.UploadBlob(ctx, banner.Data, string(banner.Format))
 		if err != nil {
 			slog.Error("failed to upload banner blob",
 				slog.String("did", userDID),
@@ -331,12 +360,29 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// isValidImageMimeType checks if the MIME type is allowed for profile images
-func isValidImageMimeType(mimeType string) bool {
-	switch mimeType {
-	case "image/png", "image/jpeg", "image/webp":
-		return true
-	default:
-		return false
+func (h *UpdateProfileHandler) ingestProfileImage(w http.ResponseWriter, ctx context.Context, userDID string, data []byte, declared, kind string) (media.Result, bool) {
+	result, err := h.pipeline.Ingest(ctx, media.Input{
+		Data:                data,
+		DeclaredContentType: declared,
+		Accept:              []media.Format{media.FormatJPEG, media.FormatPNG, media.FormatWebP},
+	})
+	if err == nil {
+		return result, true
 	}
+	var imageError *media.Error
+	if errors.As(err, &imageError) {
+		if imageError.Code == media.ErrorCodeUnsupportedImageFormat {
+			writeUpdateProfileError(w, http.StatusBadRequest, "InvalidMimeType", "Invalid "+kind+" mime type")
+		} else {
+			writeUpdateProfileError(w, http.StatusBadRequest, string(imageError.Code), "Invalid "+kind+" image")
+		}
+	} else {
+		slog.Error("failed to process profile image",
+			slog.String("did", userDID),
+			slog.String("image_kind", kind),
+			slog.String("error", err.Error()),
+		)
+		writeUpdateProfileError(w, http.StatusInternalServerError, "InternalError", "Failed to process profile image")
+	}
+	return media.Result{}, false
 }

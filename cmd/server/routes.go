@@ -73,7 +73,7 @@ func registerRoutes(r chi.Router, app *application, consumers *consumerSet) {
 // registerXRPCRoutes mounts the atProto XRPC surface.
 func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterUserRoutesWithOptions(r, app.userService, app.authMiddleware,
-		app.oauthClient.ClientApp, &routes.UserRouteOptions{UserBlockRepo: app.userBlockRepo})
+		app.oauthClient.ClientApp, app.userRouteOptions())
 
 	routes.RegisterCommunityRoutes(r, app.communityService, app.communityRepo,
 		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
@@ -115,10 +115,15 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 		app.userService, app.identityResolver,
 		aggregator.PrivateHostOptions(app.allowPrivateHosts())...)
 	routes.RegisterAggregatorAPIKeyRoutes(r, app.authMiddleware, app.apiKeyService, app.aggregatorService)
+	routes.RegisterMediaRoutes(r, app.dualAuth, app.mediaUploads, app.authorRepoFactory, app.apiKeyService)
 
 	registerCommentQueryRoute(r, app)
 
 	slog.Info("XRPC endpoints registered")
+}
+
+func (a *application) userRouteOptions() *routes.UserRouteOptions {
+	return &routes.UserRouteOptions{UserBlockRepo: a.userBlockRepo, MediaPipeline: a.mediaPipeline}
 }
 
 // registerCommentQueryRoute mounts the comment tree query separately because

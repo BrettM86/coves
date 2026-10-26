@@ -21,7 +21,7 @@ func moderationImageRequest(etag bool) *http.Request {
 		"preset": "avatar", "did": validTestDID, "cid": validTestCID,
 	})
 	if etag {
-		request.Header.Set("If-None-Match", `"avatar-`+validTestCID+`"`)
+		request.Header.Set("If-None-Match", `"r2-avatar-`+validTestCID+`"`)
 	}
 	return request
 }
@@ -122,7 +122,7 @@ func TestHandler_CanonicalizesCIDBeforeBlockCheckAndFetch(t *testing.T) {
 			"/img/avatar/plain/"+validTestDID+"/"+alias, map[string]string{"preset": "avatar", "did": validTestDID, "cid": alias}))
 		require.Equal(t, http.StatusOK, response.Code)
 		assert.Equal(t, validTestCID, fetched)
-		assert.Equal(t, `"avatar-`+validTestCID+`"`, response.Header().Get("ETag"))
+		assert.Equal(t, `"r2-avatar-`+validTestCID+`"`, response.Header().Get("ETag"))
 	})
 
 	t.Run("conditional request checks the canonical CID", func(t *testing.T) {
@@ -139,7 +139,7 @@ func TestHandler_CanonicalizesCIDBeforeBlockCheckAndFetch(t *testing.T) {
 		}
 		request := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+alias,
 			map[string]string{"preset": "avatar", "did": validTestDID, "cid": alias})
-		request.Header.Set("If-None-Match", `"avatar-`+validTestCID+`"`)
+		request.Header.Set("If-None-Match", `"r2-avatar-`+validTestCID+`"`)
 		response := httptest.NewRecorder()
 		NewHandler(service, resolverForPDS("https://pds.example.com")).HandleImage(response, request)
 		assert.Equal(t, http.StatusNotFound, response.Code)

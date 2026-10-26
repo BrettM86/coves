@@ -3,6 +3,7 @@
 package imageproxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +25,13 @@ import (
 // re-joins the same full queue it was just turned away from and only adds to
 // the pressure being shed, so the two must never drift apart.
 var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
+
+// renderVersion prefixes every image ETag. The If-None-Match check answers 304
+// before the cache is consulted, so a browser holding a validator from an
+// earlier renderer would keep its old bytes forever. Bump it whenever the
+// rendered bytes for the same preset and CID change. r2: PNG sources stay PNG
+// and EXIF orientation is applied.
+const renderVersion = "r2"
 
 // successCacheControl is the cache policy of a served image and of its 304
 // when the request has no query string and does not qualify for
@@ -70,8 +78,8 @@ type Service interface {
 	// resolvePDS: returns the URL of the user's PDS; called only on a cache
 	// miss, and its error is returned as-is
 	GetImageResolvingPDS(ctx context.Context, preset, did, cid string, resolvePDS func(context.Context) (string, error)) ([]byte, error)
-	// IsBlobBlocked reports whether moderation blocks serving the blob.
-	IsBlobBlocked(ctx context.Context, did, cid string) (bool, error)
+	// CheckServable checks moderation and active references for the owner and CID.
+	CheckServable(ctx context.Context, did, cid string) error
 }
 
 // Handler handles HTTP requests for the image proxy.
@@ -93,7 +101,7 @@ func NewHandler(service Service, resolver identity.Resolver, options ...HandlerO
 	return handler
 }
 
-// HandleImage handles GET /img/{preset}/plain/{did}/{cid}
+// HandleImage handles GET and HEAD /img/{preset}/plain/{did}/{cid}
 // It fetches the image from the user's PDS, transforms it according to the preset,
 // and returns the result with appropriate caching headers.
 func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
@@ -105,17 +113,17 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required parameters
 	if preset == "" || did == "" || cid == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "missing required parameters")
+		writeErrorResponse(w, r, http.StatusBadRequest, "missing required parameters")
 		return
 	}
 
 	// Validate preset exists before proceeding
 	if _, err := imageproxy.GetPreset(preset); err != nil {
 		if errors.Is(err, imageproxy.ErrInvalidPreset) {
-			writeErrorResponse(w, http.StatusBadRequest, "invalid preset: "+preset)
+			writeErrorResponse(w, r, http.StatusBadRequest, "invalid preset: "+preset)
 			return
 		}
-		writeErrorResponse(w, http.StatusBadRequest, "invalid preset")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid preset")
 		return
 	}
 
@@ -123,33 +131,27 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	// is refused here, before the block check, the cache lookup, DID
 	// resolution and the fetch.
 	if err := imageproxy.ValidateOwnerDID(did); err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, "invalid DID format")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid DID format")
 		return
 	}
 
 	// Decode the CID and continue with its canonical form. Every multibase
 	// encoding of one CID names the same blob on the PDS, so the block check,
-	// the ETag, the cache key and the fetch must all see the same string, or a
+	// the reference check, the ETag, the cache key and the fetch must all see the same string, or a
 	// re-encoded CID would bypass a moderation block.
 	cid, err := imageproxy.CanonicalCID(cid)
 	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, "invalid CID format")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid CID format")
 		return
 	}
 
 	// Generate ETag for caching
-	etag := fmt.Sprintf(`"%s-%s"`, preset, cid)
+	etag := fmt.Sprintf(`"%s-%s-%s"`, renderVersion, preset, cid)
 
 	// Check If-None-Match header for 304 response
 	if r.Header.Get("If-None-Match") == etag {
-		blocked, err := h.service.IsBlobBlocked(r.Context(), did, cid)
-		if err != nil {
-			logBlockCheckFailure(err, did, cid)
-			writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
-			return
-		}
-		if blocked {
-			writeErrorResponse(w, http.StatusNotFound, "blob not found")
+		if err := h.service.CheckServable(r.Context(), did, cid); err != nil {
+			handleServiceError(w, r, err, preset, did, cid)
 			return
 		}
 		w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
@@ -161,7 +163,9 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	// Fetch and process the image. The DID is resolved to its PDS only if
 	// the image is not already cached.
 	imageData, err := h.service.GetImageResolvingPDS(r.Context(), preset, did, cid, func(ctx context.Context) (string, error) {
-		didDoc, err := h.identityResolver.ResolveDID(ctx, did)
+		resolveContext, cancel := context.WithTimeout(ctx, identity.ResolveTimeout)
+		defer cancel()
+		didDoc, err := h.identityResolver.ResolveDID(resolveContext, did)
 		if err != nil {
 			return "", fmt.Errorf("%w: %w", errDIDResolution, err)
 		}
@@ -177,26 +181,36 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 			"did", did,
 			"error", err,
 		)
-		writeErrorResponse(w, http.StatusBadGateway, "failed to resolve DID")
+		writeErrorResponse(w, r, http.StatusBadGateway, "failed to resolve DID")
 		return
 	case errors.Is(err, errNoPDSEndpoint):
 		slog.Warn("[IMAGE-PROXY] no PDS endpoint found in DID document",
 			"did", did,
 		)
-		writeErrorResponse(w, http.StatusBadGateway, "no PDS endpoint found")
+		writeErrorResponse(w, r, http.StatusBadGateway, "no PDS endpoint found")
 		return
 	case err != nil:
-		handleServiceError(w, err, preset, did, cid)
+		handleServiceError(w, r, err, preset, did, cid)
 		return
 	}
 
-	// Set response headers
-	w.Header().Set("Content-Type", "image/jpeg")
+	// The cached bytes carry their own format, including across restarts.
+	contentType := "image/jpeg"
+	if bytes.HasPrefix(imageData, []byte("\x89PNG\r\n\x1a\n")) {
+		contentType = "image/png"
+	} else if bytes.HasPrefix(imageData, []byte("GIF87a")) || bytes.HasPrefix(imageData, []byte("GIF89a")) {
+		contentType = "image/gif"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(imageData)))
 	w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
 	w.Header().Set("ETag", etag)
 
 	// Write image data
 	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
 	if _, err := w.Write(imageData); err != nil {
 		slog.Warn("[IMAGE-PROXY] failed to write image response",
 			"preset", preset,
@@ -237,17 +251,28 @@ func getPDSEndpoint(doc *identity.DIDDocument) string {
 // moderation block lookup. An SSRF refusal is logged
 // at WARN because the response deliberately hides it. Load shedding is NOT
 // logged here: the service already logs it once with the counter, and a
-// second line per shed request would be the flood logging itself. The
-// remaining branches are ordinary client errors and stay quiet.
-func handleServiceError(w http.ResponseWriter, err error, preset, did, cid string) {
+// second line per shed request would be the flood logging itself. A CID
+// mismatch is not logged here either: the service logs it at WARN with the
+// PDS, the computed CID and a reason code. The remaining branches are
+// ordinary client errors and stay quiet.
+func handleServiceError(w http.ResponseWriter, r *http.Request, err error, preset, did, cid string) {
 	switch {
-	case errors.Is(err, imageproxy.ErrPDSNotFound), errors.Is(err, imageproxy.ErrBlobBlocked):
-		writeErrorResponse(w, http.StatusNotFound, "blob not found")
+	case errors.Is(err, imageproxy.ErrPDSNotFound), errors.Is(err, imageproxy.ErrBlobBlocked), errors.Is(err, imageproxy.ErrBlobNotIndexed):
+		writeErrorResponse(w, r, http.StatusNotFound, "blob not found")
 	case errors.Is(err, imageproxy.ErrBlockCheckFailed):
 		logBlockCheckFailure(err, did, cid)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "image moderation unavailable")
+	case errors.Is(err, imageproxy.ErrReferenceCheckFailed):
+		if !errors.Is(err, context.Canceled) {
+			slog.Error("[IMAGE-PROXY] blob reference check failed",
+				"did", did,
+				"cid", cid,
+				"error", err,
+			)
+		}
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "image references unavailable")
 	case errors.Is(err, imageproxy.ErrPDSTimeout):
-		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out")
+		writeErrorResponse(w, r, http.StatusGatewayTimeout, "request timed out")
 	// ONE BRANCH FOR BOTH, so the status and the body cannot drift apart. A
 	// guard refusal must be indistinguishable from a PDS that is simply
 	// unreachable: the endpoint comes from a DID document anyone can mint, and
@@ -263,17 +288,19 @@ func handleServiceError(w http.ResponseWriter, err error, preset, did, cid strin
 				"error", err,
 			)
 		}
-		writeErrorResponse(w, http.StatusBadGateway, "failed to fetch blob from PDS")
+		writeErrorResponse(w, r, http.StatusBadGateway, "failed to fetch blob from PDS")
+	case errors.Is(err, imageproxy.ErrCIDMismatch):
+		writeErrorResponse(w, r, http.StatusBadGateway, "fetched blob does not match requested CID")
 	case errors.Is(err, imageproxy.ErrInvalidPreset):
-		writeErrorResponse(w, http.StatusBadRequest, "invalid preset")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid preset")
 	case errors.Is(err, imageproxy.ErrInvalidDID):
-		writeErrorResponse(w, http.StatusBadRequest, "invalid DID format")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid DID format")
 	case errors.Is(err, imageproxy.ErrInvalidCID):
-		writeErrorResponse(w, http.StatusBadRequest, "invalid CID format")
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid CID format")
 	case errors.Is(err, imageproxy.ErrUnsupportedFormat):
-		writeErrorResponse(w, http.StatusBadRequest, "unsupported image format")
+		writeErrorResponse(w, r, http.StatusBadRequest, "unsupported image format")
 	case errors.Is(err, imageproxy.ErrImageTooLarge):
-		writeErrorResponse(w, http.StatusBadRequest, "image too large")
+		writeErrorResponse(w, r, http.StatusBadRequest, "image too large")
 	// Same body as the byte cap on purpose: the log line, not the response,
 	// is what tells the two apart. There is no oracle concern, the dimensions
 	// are the caller's own bytes.
@@ -284,7 +311,7 @@ func handleServiceError(w http.ResponseWriter, err error, preset, did, cid strin
 			"cid", cid,
 			"error", err,
 		)
-		writeErrorResponse(w, http.StatusBadRequest, "image too large")
+		writeErrorResponse(w, r, http.StatusBadRequest, "image too large")
 	case errors.Is(err, imageproxy.ErrProcessingFailed):
 		slog.Error("[IMAGE-PROXY] image processing failed",
 			"preset", preset,
@@ -292,18 +319,18 @@ func handleServiceError(w http.ResponseWriter, err error, preset, did, cid strin
 			"cid", cid,
 			"error", err,
 		)
-		writeErrorResponse(w, http.StatusInternalServerError, "image processing failed")
+		writeErrorResponse(w, r, http.StatusInternalServerError, "image processing failed")
 	// Load shedding is expected behaviour under a burst, not a fault, so it is
 	// not logged as an error and must never be cached. The header must be set
 	// before writeErrorResponse commits the status line.
 	case errors.Is(err, imageproxy.ErrProcessorBusy):
 		w.Header().Set("Retry-After", processorBusyRetryAfterSeconds)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "image processor busy, retry later")
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "image processor busy, retry later")
 	default:
 		slog.Error("[IMAGE-PROXY] unhandled service error",
 			"error", err,
 		)
-		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal server error")
 	}
 }
 
@@ -328,10 +355,14 @@ func logBlockCheckFailure(err error, did, cid string) {
 // Errors and blocked responses are no-store: a cached error or block would
 // outlive its cause, still refusing the image after the PDS recovers or the
 // block is lifted.
-func writeErrorResponse(w http.ResponseWriter, status int, message string) {
+func writeErrorResponse(w http.ResponseWriter, r *http.Request, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(message)))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
+	if r.Method == http.MethodHead {
+		return
+	}
 	if _, err := w.Write([]byte(message)); err != nil {
 		slog.Warn("[IMAGE-PROXY] failed to write error response",
 			"status", status,

@@ -12,6 +12,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
+	"Coves/internal/core/media"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 
@@ -49,12 +50,9 @@ type UserRouteOptions struct {
 	// UserBlockRepo provides access to user block data for profile viewer state hydration.
 	// When set, GetProfile includes viewer.blocking in the response for authenticated viewers.
 	UserBlockRepo userblocks.Repository
-}
 
-// RegisterUserRoutes registers user-related XRPC endpoints on the router
-// Implements social.coves.actor.* lexicon endpoints
-func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, oauthClient *oauth.ClientApp) {
-	RegisterUserRoutesWithOptions(r, service, authMiddleware, oauthClient, nil)
+	// MediaPipeline is required for profile image uploads.
+	MediaPipeline *media.Pipeline
 }
 
 // RegisterUserRoutesWithOptions registers user-related XRPC endpoints with optional configuration.
@@ -105,12 +103,16 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, description).
 	// This writes directly to the user's PDS and the Jetstream consumer will index the change.
 	var updateProfileHandler *user.UpdateProfileHandler
+	var mediaPipeline *media.Pipeline
+	if opts != nil {
+		mediaPipeline = opts.MediaPipeline
+	}
 	if opts != nil && opts.PDSClientFactory != nil {
 		// Use custom factory (for E2E tests with password auth)
-		updateProfileHandler = user.NewUpdateProfileHandlerWithFactory(opts.PDSClientFactory)
+		updateProfileHandler = user.NewUpdateProfileHandlerWithFactory(opts.PDSClientFactory, mediaPipeline)
 	} else {
 		// Use OAuth client for DPoP-authenticated PDS requests (production)
-		updateProfileHandler = user.NewUpdateProfileHandler(oauthClient)
+		updateProfileHandler = user.NewUpdateProfileHandler(oauthClient, mediaPipeline)
 	}
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
 }

@@ -12,6 +12,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/userblocks"
 
@@ -174,6 +175,9 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.actor.requestSignupToken", authNone, 5, false},
 	{http.MethodPost, "/xrpc/social.coves.actor.deleteAccount", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.actor.updateProfile", authRequired, 0, false},
+
+	// RegisterMediaRoutes — social.coves.media.*
+	{http.MethodPost, "/xrpc/social.coves.media.uploadImage", authRequired, 0, false},
 
 	// RegisterCommunityRoutes — social.coves.community.*
 	{http.MethodGet, "/xrpc/social.coves.community.get", authOptional, 0, false},
@@ -346,6 +350,7 @@ var declaredRoutes = []declaredRoute{
 
 	// RegisterImageProxyRoutes
 	{http.MethodGet, "/img/{preset}/plain/{did}/{cid}", authNone, 0, false},
+	{http.MethodHead, "/img/{preset}/plain/{did}/{cid}", authNone, 0, false},
 }
 
 // routeKey identifies a route the way both the table and chi's walk see it.
@@ -426,15 +431,19 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	// assertion ever did reach one, it would panic rather than quietly assert
 	// something about a stub.
 	//
-	// The OAuth client app is the exception, because RegisterUserRoutes takes
-	// the no-options path and NewUpdateProfileHandler refuses a nil one at
+	// The OAuth client app is the exception, because RegisterUserRoutesWithOptions
+	// takes the production OAuth path and NewUpdateProfileHandler refuses a nil one at
 	// construction (update_profile.go:72) rather than at the first request —
 	// the same fail-fast wiring guard RegisterPostRoutes has. Building a real
 	// one keeps this on the production branch instead of the
 	// PDSClientFactory test seam. Nothing dials: the client app resolves
 	// identities only when a request reaches it, and none does.
 	clientConfig := indigooauth.NewLocalhostConfig("http://127.0.0.1:0/oauth/callback", []string{"atproto"})
-	RegisterUserRoutes(mux, nil, auth, indigooauth.NewClientApp(&clientConfig, nil))
+	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 4, MaxLongEdge: media.DefaultMaxLongEdge})
+	if err != nil {
+		panic(err)
+	}
+	RegisterUserRoutesWithOptions(mux, nil, auth, indigooauth.NewClientApp(&clientConfig, nil), &UserRouteOptions{MediaPipeline: pipeline})
 	RegisterCommunityRoutes(mux, nil, nil, auth, nil)
 	RegisterPostRoutes(mux, nil, nil, nil, auth, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterVoteRoutes(mux, nil, auth)
@@ -454,6 +463,11 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterWellKnownRoutes(mux)
 	RegisterWebRoutes(mux, nil, nil, "")
 	RegisterImageProxyRoutes(mux, nil)
+	uploadLimiter, err := media.NewUploadLimiter(media.UploadLimitConfig{UploadsPerTenMinutes: media.DefaultUploadsPerTenMinutes, BytesPerDay: 500000000, WarnFraction: 0.8})
+	if err != nil {
+		panic(err)
+	}
+	RegisterMediaRoutes(mux, middleware.NewDualAuthMiddleware(unsealer, nil, nil, nil), media.NewUploadService(pipeline, uploadLimiter), nil, nil)
 
 	return builtRouter{mux: mux, unsealer: unsealer}
 })

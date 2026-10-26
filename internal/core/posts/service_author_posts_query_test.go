@@ -95,7 +95,7 @@ func newAuthorPostsFixture(t *testing.T) *authorPostsFixture {
 	// the post service consults this one only to resolve an identifier to a DID
 	// and to check the community exists.
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, pdsURL, fixtures.InstanceDID(), "", nil, nil, nil,
+		communityRepo, pdsURL, fixtures.InstanceDID(), "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...)
 	// The optional post collaborators (aggregators, blobs, unfurl, bluesky) are
 	// all write-path concerns and stay nil.

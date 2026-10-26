@@ -29,10 +29,26 @@ var errorMapper = xrpc.NewMapper("comments",
 		"ContentTooLong", "Comment content exceeds 10000 graphemes"),
 	xrpc.Sentinel(comments.ErrContentEmpty, http.StatusBadRequest,
 		"ContentEmpty", "Comment content is required"),
+	// Ahead of InvalidFacets so an #image facet that breaks a placement rule is
+	// its own 400. The message names the facet and the rule it breaks, which is
+	// client-actionable and carries no internal state.
+	xrpc.SentinelDetail(comments.ErrInvalidImageFacet, http.StatusBadRequest,
+		"InvalidImageFacet"),
 	// The error names which facet and which field, which is client-actionable
 	// and carries no internal state.
 	xrpc.SentinelDetail(comments.ErrInvalidFacets, http.StatusBadRequest,
 		"InvalidFacets"),
+	// The message names the failing part of the embed (non-object, $type
+	// missing or not allowed on a comment, an image that is not a well-formed
+	// image blob ref, or the lexicon failure).
+	xrpc.SentinelDetail(comments.ErrInvalidEmbed, http.StatusBadRequest,
+		"InvalidEmbed"),
+	// Fixed message: the error repeats the embedimages cause's text.
+	xrpc.Sentinel(comments.ErrTooManyImages, http.StatusBadRequest,
+		"TooManyImages", "The comment's embed carries more than 8 images"),
+	// The lexicon failure of the record about to be written, outside its embed.
+	xrpc.SentinelDetail(comments.ErrInvalidRecord, http.StatusBadRequest,
+		"InvalidRequest"),
 	// Fixed message: the repository layer wraps this one with detail the client
 	// has no use for.
 	xrpc.Sentinel(comments.ErrInvalidCursor, http.StatusBadRequest,

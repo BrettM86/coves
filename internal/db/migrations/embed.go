@@ -25,3 +25,8 @@ import "embed"
 //
 //go:embed *.sql
 var FS embed.FS
+
+// GoSourceFS holds Go migration sources separately so goose sees only SQL in FS.
+//
+//go:embed *.go
+var GoSourceFS embed.FS

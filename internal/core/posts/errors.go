@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	coreerrors "Coves/internal/core/errors"
+	"Coves/internal/core/richtext"
 )
 
 // Sentinel errors for common post operations
@@ -78,6 +79,20 @@ var (
 	// longer stands — silently re-reading and re-applying would let a second
 	// device's edit be overwritten by a first device that never saw it.
 	ErrConcurrentModification = errors.New("the post was modified concurrently")
+
+	// ErrInvalidEmbed marks a post refused because its embed breaks the
+	// record lexicon or the embed write rules (XRPC InvalidEmbed, 400).
+	ErrInvalidEmbed = errors.New("invalid embed")
+
+	// ErrTooManyImages marks a post refused because its embed carries more
+	// than eight images (XRPC TooManyImages, 400). It does not match
+	// ErrInvalidEmbed.
+	ErrTooManyImages = errors.New("too many images")
+
+	// ErrInvalidImageFacet marks a post refused because an #image facet breaks
+	// a write rule (XRPC InvalidImageFacet, 400). It is richtext's sentinel, so
+	// the rule check's own error matches it without re-wrapping.
+	ErrInvalidImageFacet = richtext.ErrInvalidImageFacet
 )
 
 // ValidationError is the shared validation error type. It is aliased rather

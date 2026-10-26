@@ -69,6 +69,26 @@ func TestConcurrentModificationIs409(t *testing.T) {
 	assertXRPCError(t, rec, http.StatusConflict, "ConcurrentModification")
 }
 
+// A comment embed the lexicon rejects is the client's mistake, so it must
+// answer 400 with a code the client can act on rather than a 500.
+func TestInvalidEmbedIs400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("%w: embed.images[0]: required field missing: image", comments.ErrInvalidEmbed))
+	assertXRPCError(t, rec, http.StatusBadRequest, "InvalidEmbed")
+}
+
+func TestTooManyImagesIs400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("%w: embed has 9 images, at most 8 allowed", comments.ErrTooManyImages))
+	assertXRPCError(t, rec, http.StatusBadRequest, "TooManyImages")
+}
+
+func TestInvalidImageFacetIs400(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("%w: facet 0: index 5 does not name an image of the embed (2 images)", comments.ErrInvalidImageFacet))
+	assertXRPCError(t, rec, http.StatusBadRequest, "InvalidImageFacet")
+}
+
 // The comment error codes are a client contract; this pins them.
 func TestCommentErrorCodesUnchanged(t *testing.T) {
 	tests := []struct {

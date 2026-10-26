@@ -214,7 +214,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
-		nil,
+		nil, nil,
 		communities.PrivateHostOptions(true)...,
 	)
 

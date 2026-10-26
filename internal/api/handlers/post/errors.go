@@ -1,6 +1,7 @@
 package post
 
 import (
+	"errors"
 	"net/http"
 
 	"Coves/internal/api/xrpc"
@@ -31,6 +32,22 @@ var errorMapper = xrpc.NewMapper("post",
 
 	xrpc.Sentinel(posts.ErrNotFound, http.StatusNotFound,
 		"NotFound", "Post not found"),
+
+	// An embed the record lexicon or the embed write rules refuse is its own
+	// 400, so a client can point the author at the attachment. It is also a
+	// ValidationError, so it must come before the shared InvalidRequest rule.
+	invalidEmbedRule,
+
+	// More images than an embed may carry is its own 400, so a client can tell
+	// the author to remove some rather than fix an attachment. It is also a
+	// ValidationError, so it too must come before the shared InvalidRequest
+	// rule.
+	tooManyImagesRule,
+
+	// An #image facet that breaks a placement rule is its own 400, so a client
+	// can point the author at the misplaced image. It is also a ValidationError,
+	// so it must come before the shared InvalidRequest rule.
+	invalidImageFacetRule,
 
 	// The AppView holds nothing to authenticate as the author with. It is NOT
 	// the shared re-auth rule's 401: that one means the CALLER's session is
@@ -65,6 +82,32 @@ var errorMapper = xrpc.NewMapper("post",
 	xrpc.Sentinel(posts.ErrRateLimitExceeded, http.StatusTooManyRequests,
 		"RateLimitExceeded", "Rate limit exceeded. Please try again later."),
 )
+
+// invalidEmbedRule answers posts.ErrInvalidEmbed with 400 InvalidEmbed.
+var invalidEmbedRule = validationRule(posts.ErrInvalidEmbed, "InvalidEmbed", "The post's embed is invalid")
+
+// tooManyImagesRule answers posts.ErrTooManyImages with 400 TooManyImages.
+var tooManyImagesRule = validationRule(posts.ErrTooManyImages, "TooManyImages", "The post's embed carries too many images")
+
+// invalidImageFacetRule answers posts.ErrInvalidImageFacet with 400 InvalidImageFacet.
+var invalidImageFacetRule = validationRule(posts.ErrInvalidImageFacet, "InvalidImageFacet", "An #image facet in the post is invalid")
+
+// validationRule answers sentinel with 400 code. The message is the typed
+// ValidationError's own text, so wrapper context added upstream cannot reach
+// the client; without one it is fallback.
+func validationRule(sentinel error, code, fallback string) xrpc.Rule {
+	return func(err error) (xrpc.Mapping, bool) {
+		if !errors.Is(err, sentinel) {
+			return xrpc.Mapping{}, false
+		}
+		message := fallback
+		var validationErr *posts.ValidationError
+		if errors.As(err, &validationErr) {
+			message = validationErr.Error()
+		}
+		return xrpc.Mapping{Status: http.StatusBadRequest, Code: code, Message: message}, true
+	}
+}
 
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {

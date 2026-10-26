@@ -2,21 +2,24 @@ package imageproxy
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
 
-	"github.com/disintegration/imaging"
 	_ "golang.org/x/image/webp" // Register WebP decoder
+
+	"Coves/internal/core/media"
 )
 
 // Processor defines the interface for image processing operations.
 type Processor interface {
 	// Process transforms image data according to the preset configuration.
-	// Returns the processed image as JPEG bytes, or an error if processing fails.
+	// Returns the processed image bytes, or an error if processing fails.
 	Process(data []byte, preset Preset) ([]byte, error)
 }
 
@@ -36,7 +39,7 @@ const MaxSourceMegapixelsCeiling = 1000
 // raw pixel count the processor compares declared dimensions against.
 const pixelsPerMegapixel int64 = 1_000_000
 
-// ImageProcessor implements the Processor interface using the imaging library.
+// ImageProcessor implements the Processor interface.
 type ImageProcessor struct {
 	// maxSourceMegapixels is the budget as the operator stated it, kept for
 	// error messages so a refusal reads in the same unit the config uses.
@@ -65,7 +68,8 @@ func NewProcessor(maxSourceMegapixels int) (Processor, error) {
 
 // Process transforms the input image data according to the preset configuration.
 // It handles both cover fit (crops to exact dimensions) and contain fit (preserves
-// aspect ratio within bounds). Output is always JPEG format.
+// aspect ratio within bounds). PNG inputs produce PNG; GIF content_full retains
+// its original bytes; other inputs produce JPEG.
 func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	// Check for empty or nil data
 	if len(data) == 0 {
@@ -81,14 +85,19 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	// on the header, never on the decoded result.
 	header, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
+		// image/gif registers the magic "GIF8?a", so any GIF8xa header reaches
+		// its DecodeConfig; its errors are malformed input, never our failure.
+		if len(data) >= 6 && bytes.HasPrefix(data, []byte("GIF8")) && data[5] == 'a' {
+			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
+		}
 		return nil, classifyDecodeError(err)
 	}
 
 	// Any package in the binary that imports image/gif (or another decoder)
 	// registers it process-wide, so this allowlist is what keeps the proxy to
-	// the three formats it budgets for. Decode below sees the same registry, so
+	// the four formats it budgets for. Decode below sees the same registry, so
 	// one check covers both calls.
-	if format != "jpeg" && format != "png" && format != "webp" {
+	if format != "jpeg" && format != "png" && format != "webp" && format != "gif" {
 		return nil, fmt.Errorf("%w: format %s", ErrUnsupportedFormat, format)
 	}
 
@@ -99,39 +108,103 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 		return nil, fmt.Errorf("%w: declared dimensions %dx%d", ErrUnsupportedFormat, header.Width, header.Height)
 	}
 
-	// Cost model the budget is sized against. The worst case is a progressive
-	// 4:4:4 JPEG at ~19 B/px: image/jpeg holds three int32 coefficient buffers
-	// (3 × 4 B/px) alongside the 3 B/px YCbCr frame until EOI, and cover fit
-	// then pays a further 4 B/px when imaging copies the frame for its crop
-	// (contain fit allocates only the destination). At the 50 MP default that
-	// is ~950 MB per request and ~3.8 GB across the default 4 slots; that is
-	// the number the slot count must be read against. int64 arithmetic so two
-	// 16-bit sides cannot overflow the comparison.
+	// Live bytes per processor slot, in source pixels (px) at the budget:
+	//   - Decode: a progressive 4:4:4 JPEG holds three 4 B/px coefficient
+	//     buffers alongside its 3 B/px frame, 15 B/px (750 MB at 50 MP). A
+	//     16-bit PNG frame is 8 B/px.
+	//   - Scale (media.ScaleImage): the decoded frame (≤ 8 B/px), box pre-reduction
+	//     RGBA intermediates (the first ≤ 2 B/px, the next ≤ 1 B/px), the
+	//     CatmullRom float buffer (≤ the 256 MiB kernel cap), and the
+	//     4 B/px RGBA destination. A Height:0 contain of a source just wider
+	//     than the preset is not reduced and its destination is up to about
+	//     budget × 4 B (200 MB); that case is over the kernel cap, so it scales
+	//     with ApproxBiLinear and allocates no float buffer. Its worst case, a
+	//     16-bit PNG, is 12 B/px (600 MB); a pre-reduced source peaks near
+	//     8 + 3 B/px plus the kernel cap (about 820 MB).
+	//   - Orientation (JPEG only, 3 B/px frame) adds one destination-sized
+	//     buffer to the scale phase.
+	// So one slot peaks under about 850 MB at 50 MP, and the 4 default slots
+	// under about 3.4 GB. int64 avoids header overflow.
 	declaredPixels := int64(header.Width) * int64(header.Height)
 	if declaredPixels > p.maxSourcePixels {
 		return nil, fmt.Errorf("%w: %dx%d exceeds the %d-megapixel budget",
 			ErrImageTooManyPixels, header.Width, header.Height, p.maxSourceMegapixels)
 	}
 
+	if format == "gif" {
+		frames, err := countGIFFrames(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
+		}
+		if int64(frames) > p.maxSourcePixels/declaredPixels {
+			return nil, fmt.Errorf("%w: %d GIF frames of %dx%d exceed the %d-megapixel budget",
+				ErrImageTooManyPixels, frames, header.Width, header.Height, p.maxSourceMegapixels)
+		}
+		// content_full serves the source bytes without inflating their LZW
+		// data. gif.DecodeAll is not a safe check here: it retains a palette
+		// per frame (a 4 KB clone of a 256-entry global table whenever a frame
+		// sets a transparent index), so a 1×1 screen with hundreds of
+		// thousands of frames passes the pixel budget yet holds gigabytes.
+		if preset.Name == "content_full" {
+			return data, nil
+		}
+	}
+
 	// Decode the source image from a fresh reader; DecodeConfig consumed the header.
-	img, _, err := image.Decode(bytes.NewReader(data))
+	var img image.Image
+	if format == "gif" {
+		img, err = gif.Decode(bytes.NewReader(data))
+	} else {
+		img, _, err = image.Decode(bytes.NewReader(data))
+	}
 	if err != nil {
+		if format == "gif" {
+			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
+		}
 		return nil, classifyDecodeError(err)
+	}
+	orientation := 1
+	if format == "jpeg" {
+		orientation = media.JPEGOrientation(data)
+	}
+	displayWidth, displayHeight := img.Bounds().Dx(), img.Bounds().Dy()
+	if orientation >= 5 {
+		displayWidth, displayHeight = displayHeight, displayWidth
 	}
 
 	// Process the image based on fit mode
 	var processed image.Image
 	switch preset.Fit {
 	case FitCover:
-		processed = processCover(img, preset.Width, preset.Height)
+		width, height := preset.Width, preset.Height
+		if orientation >= 5 {
+			width, height = height, width
+		}
+		processed = processCover(img, width, height)
 	case FitContain:
-		processed = processContain(img, preset.Width, preset.Height)
+		width, height := containSize(displayWidth, displayHeight, preset.Width, preset.Height)
+		if width == displayWidth && height == displayHeight {
+			processed = img
+		} else {
+			if orientation >= 5 {
+				width, height = height, width
+			}
+			processed = resizeImage(img, width, height)
+		}
 	default:
 		return nil, fmt.Errorf("%w: unknown fit mode", ErrProcessingFailed)
 	}
+	if orientation != 1 {
+		processed = media.OrientImage(processed, orientation)
+	}
 
-	// Encode as JPEG
 	var buf bytes.Buffer
+	if format == "png" {
+		if err := png.Encode(&buf, processed); err != nil {
+			return nil, fmt.Errorf("%w: failed to encode PNG: %v", ErrProcessingFailed, err)
+		}
+		return buf.Bytes(), nil
+	}
 	if err := jpeg.Encode(&buf, processed, &jpeg.Options{Quality: preset.Quality}); err != nil {
 		return nil, fmt.Errorf("%w: failed to encode JPEG: %v", ErrProcessingFailed, err)
 	}
@@ -139,38 +212,120 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// processCover scales and crops the image to exactly fill the target dimensions.
-// The image is scaled to cover the entire target area, then cropped to exact size.
-func processCover(img image.Image, width, height int) image.Image {
-	// Use imaging.Fill which scales to cover and crops to exact dimensions
-	return imaging.Fill(img, width, height, imaging.Center, imaging.Lanczos)
+// countGIFFrames walks the entire GIF container without inflating its LZW
+// streams. Each image descriptor is a frame; extensions and image data consist
+// of length-prefixed sub-blocks terminated by a zero-length block. Like
+// image/gif, it rejects a frame that does not fit inside the logical screen,
+// so frames × screen pixels bounds every frame's area.
+func countGIFFrames(data []byte) (int, error) {
+	if len(data) < 13 || (!bytes.HasPrefix(data, []byte("GIF87a")) && !bytes.HasPrefix(data, []byte("GIF89a"))) {
+		return 0, fmt.Errorf("invalid GIF header")
+	}
+	screenWidth := int(binary.LittleEndian.Uint16(data[6:8]))
+	screenHeight := int(binary.LittleEndian.Uint16(data[8:10]))
+	position := 13 // header and logical screen descriptor
+	skip := func(length int) bool {
+		if length > len(data)-position {
+			return false
+		}
+		position += length
+		return true
+	}
+	skipSubBlocks := func() bool {
+		for position < len(data) {
+			length := int(data[position])
+			position++
+			if length == 0 {
+				return true
+			}
+			if !skip(length) {
+				return false
+			}
+		}
+		return false
+	}
+	if data[10]&0x80 != 0 && !skip(6<<(data[10]&0x07)) {
+		return 0, fmt.Errorf("truncated GIF global colour table")
+	}
+	frames := 0
+	for position < len(data) {
+		switch data[position] {
+		case 0x3b: // trailer
+			if frames == 0 || position != len(data)-1 {
+				return 0, fmt.Errorf("invalid GIF trailer")
+			}
+			return frames, nil
+		case 0x21: // extension introducer and label
+			position++
+			if !skip(1) || !skipSubBlocks() {
+				return 0, fmt.Errorf("truncated GIF extension")
+			}
+		case 0x2c: // image descriptor, optional local colour table, LZW data
+			position++
+			if !skip(9) {
+				return 0, fmt.Errorf("truncated GIF image descriptor")
+			}
+			descriptor := data[position-9 : position]
+			left := int(binary.LittleEndian.Uint16(descriptor[0:2]))
+			top := int(binary.LittleEndian.Uint16(descriptor[2:4]))
+			width := int(binary.LittleEndian.Uint16(descriptor[4:6]))
+			height := int(binary.LittleEndian.Uint16(descriptor[6:8]))
+			if left+width > screenWidth || top+height > screenHeight {
+				return 0, fmt.Errorf("GIF frame bounds larger than logical screen")
+			}
+			packed := descriptor[8]
+			if packed&0x80 != 0 && !skip(6<<(packed&0x07)) {
+				return 0, fmt.Errorf("truncated GIF local colour table")
+			}
+			if !skip(1) || !skipSubBlocks() {
+				return 0, fmt.Errorf("truncated GIF image data")
+			}
+			frames++
+		default:
+			return 0, fmt.Errorf("invalid GIF block")
+		}
+	}
+	return 0, fmt.Errorf("missing GIF trailer")
 }
 
-// processContain scales the image to fit within the target width while preserving
-// aspect ratio. If the source image is smaller than the target, it is not upscaled.
-// Height of 0 means scale proportionally based on width only.
-func processContain(img image.Image, maxWidth, maxHeight int) image.Image {
+// processCover crops the source before scaling, avoiding a large intermediate
+// image for extreme aspect ratios.
+func processCover(img image.Image, width, height int) image.Image {
 	bounds := img.Bounds()
-	srcWidth := bounds.Dx()
-	srcHeight := bounds.Dy()
+	srcWidth, srcHeight := bounds.Dx(), bounds.Dy()
+	cropWidth, cropHeight := srcWidth, srcHeight
+	if int64(srcWidth)*int64(height) > int64(srcHeight)*int64(width) {
+		cropWidth = max(1, int(int64(srcHeight)*int64(width)/int64(height)))
+	} else {
+		cropHeight = max(1, int(int64(srcWidth)*int64(height)/int64(width)))
+	}
+	crop := image.Rect(bounds.Min.X+(srcWidth-cropWidth)/2, bounds.Min.Y+(srcHeight-cropHeight)/2,
+		bounds.Min.X+(srcWidth+cropWidth)/2, bounds.Min.Y+(srcHeight+cropHeight)/2)
+	return media.ScaleImage(img, crop, width, height)
+}
 
-	// Don't upscale images smaller than target
-	if srcWidth <= maxWidth {
-		return img
+// containSize uses display dimensions, even when the JPEG pixels are rotated.
+func containSize(srcWidth, srcHeight, maxWidth, maxHeight int) (int, int) {
+	// Don't upscale images already within both bounds.
+	if srcWidth <= maxWidth && (maxHeight <= 0 || srcHeight <= maxHeight) {
+		return srcWidth, srcHeight
 	}
 
-	// Calculate new dimensions preserving aspect ratio
-	newWidth := maxWidth
-	newHeight := int(float64(srcHeight) * (float64(maxWidth) / float64(srcWidth)))
+	newWidth := min(srcWidth, maxWidth)
+	newHeight := max(1, int((int64(srcHeight)*int64(newWidth)+int64(srcWidth)/2)/int64(srcWidth)))
 
 	// If maxHeight is specified and calculated height exceeds it,
 	// scale based on height instead
 	if maxHeight > 0 && newHeight > maxHeight {
 		newHeight = maxHeight
-		newWidth = int(float64(srcWidth) * (float64(maxHeight) / float64(srcHeight)))
+		newWidth = max(1, int((int64(srcWidth)*int64(maxHeight)+int64(srcHeight)/2)/int64(srcHeight)))
 	}
 
-	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
+	return newWidth, newHeight
+}
+
+func resizeImage(img image.Image, width, height int) image.Image {
+	return media.ScaleImage(img, img.Bounds(), width, height)
 }
 
 // classifyDecodeError maps an error from image.DecodeConfig or image.Decode

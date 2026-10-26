@@ -205,6 +205,10 @@ func (f *fakeCommunityRepo) Update(_ context.Context, community *communities.Com
 	return f.seed(community), nil
 }
 
+func (f *fakeCommunityRepo) RebuildProfileBlobReferences(_ context.Context, did string) error {
+	return nil
+}
+
 func (f *fakeCommunityRepo) Delete(_ context.Context, did string) error {
 	f.record("Delete", did)
 	return f.err

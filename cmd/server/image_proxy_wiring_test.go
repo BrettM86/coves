@@ -11,6 +11,7 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/config"
+	"Coves/internal/core/blobreferences"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 	"Coves/tests/testkit"
@@ -40,10 +41,38 @@ func (cdnWiringUnblocked) IsBlocked(context.Context, string, string) (bool, erro
 	return false, nil
 }
 
+type cdnWiringAllowAllReferences struct{}
+
+func (cdnWiringAllowAllReferences) HasActiveReference(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
 type cdnWiringOwnerlessLister struct{ cid string }
 
 func (lister cdnWiringOwnerlessLister) ListActiveBlockedBlobs(context.Context) ([]imageproxy.BlockedBlob, error) {
 	return []imageproxy.BlockedBlob{{OwnerDID: "", CID: lister.cid}}, nil
+}
+
+type cdnWiringBlobOwners struct {
+	cid   string
+	owner string
+}
+
+type cdnWiringBlobReferenceRepo struct{ blobreferences.Repository }
+
+func (index cdnWiringBlobOwners) ListBlobOwners(_ context.Context, cid string) ([]string, error) {
+	if cid == index.cid {
+		return []string{index.owner}, nil
+	}
+	return nil, nil
+}
+
+func TestImageProxyServiceDependenciesUseBlobReferenceIndex(t *testing.T) {
+	repository := &cdnWiringBlobReferenceRepo{}
+	a := &application{cfg: &config.Config{}, blobReferenceRepo: repository}
+
+	dependencies := a.imageProxyServiceDependencies(imageproxy.Config{}, nil, nil)
+	assert.Same(t, repository, dependencies.blobOwners)
 }
 
 type cdnWiringFailResolver struct {
@@ -111,16 +140,18 @@ func TestBuildImageProxyServiceStartupSweepAndCacheHeaders(t *testing.T) {
 
 			var queue *moderation.CDNPurgeQueue
 			var targets *cdnWiringPurgeTargetStore
+			var blobOwners imageproxy.BlobOwnerIndex
 			if test.purge.Enabled() {
 				targets = &cdnWiringPurgeTargetStore{recordedSignal: make(chan struct{}, 1)}
 				queue = moderation.NewCDNPurgeQueue(targets, cdnWiringFakePurger{}, moderation.CDNPurgeQueueConfig{WriteTimeout: 77 * time.Second})
 				t.Cleanup(queue.Close)
+				blobOwners = cdnWiringBlobOwners{cid: blockedCID, owner: ownerDID}
 			}
 
 			service, handler, cancel, err := buildImageProxyService(cfg, test.purge, queue, imageProxyDependencies{
 				cache: observedCache, processor: cdnWiringFailProcessor{t}, fetcher: cdnWiringFailFetcher{t},
-				blocks: cdnWiringUnblocked{}, lister: cdnWiringOwnerlessLister{cid: blockedCID},
-				resolver: cdnWiringFailResolver{t: t},
+				blocks: cdnWiringUnblocked{}, references: cdnWiringAllowAllReferences{}, lister: cdnWiringOwnerlessLister{cid: blockedCID},
+				resolver: cdnWiringFailResolver{t: t}, blobOwners: blobOwners,
 			})
 			if cancel != nil {
 				t.Cleanup(cancel)
@@ -160,6 +191,59 @@ func TestBuildImageProxyServiceStartupSweepAndCacheHeaders(t *testing.T) {
 	}
 }
 
+func TestBuildImageProxyServiceCDNPurgeRequiresAndUsesOwnerIndex(t *testing.T) {
+	const (
+		ownerDID   = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
+		blockedCID = "bafkreicdmtgb7deaakqrghapqrdjva63vqcieyzzi66q2pokcwyotdermy"
+	)
+	for _, test := range []struct {
+		name   string
+		owners imageproxy.BlobOwnerIndex
+	}{
+		{name: "configured with owner index", owners: cdnWiringBlobOwners{cid: blockedCID, owner: ownerDID}},
+		{name: "configured without owner index"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cache, err := imageproxy.NewDiskCache(t.TempDir(), 1, 0)
+			require.NoError(t, err)
+			cfg := imageproxy.DefaultConfig()
+			cfg.CachePath = t.TempDir()
+			cfg.CleanupInterval = 0
+			purge := config.CDNPurgeConfig{
+				ZoneID: "zone-cdn-wiring", APIToken: "token-cdn-wiring",
+				BaseURLs: []string{"https://img.example.test"},
+			}
+			targets := &cdnWiringPurgeTargetStore{recordedSignal: make(chan struct{}, 1)}
+			queue := moderation.NewCDNPurgeQueue(targets, cdnWiringFakePurger{}, moderation.CDNPurgeQueueConfig{WriteTimeout: 77 * time.Second})
+			t.Cleanup(queue.Close)
+			service, handler, stop, err := buildImageProxyService(cfg, purge, queue, imageProxyDependencies{
+				cache: cache, processor: cdnWiringFailProcessor{t}, fetcher: cdnWiringFailFetcher{t},
+				blocks: cdnWiringUnblocked{}, references: cdnWiringAllowAllReferences{}, lister: cdnWiringOwnerlessLister{cid: blockedCID},
+				resolver: cdnWiringFailResolver{t: t}, blobOwners: test.owners,
+			})
+			if stop != nil {
+				t.Cleanup(stop)
+			}
+			if test.owners == nil {
+				require.Error(t, err)
+				assert.Nil(t, service)
+				assert.Nil(t, handler)
+				assert.Nil(t, stop)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, service)
+			require.NotNil(t, handler)
+			select {
+			case <-targets.recordedSignal:
+			case <-time.After(10 * time.Second):
+				t.Fatal("startup sweep did not record the index owner for an uncached block")
+			}
+			assert.Equal(t, []imageproxy.BlockedBlob{{OwnerDID: ownerDID, CID: blockedCID}}, targets.recordedBlobs())
+		})
+	}
+}
+
 type cdnWiringPanickingLister struct{ calls, withoutDeadline atomic.Int64 }
 
 func (lister *cdnWiringPanickingLister) ListActiveBlockedBlobs(ctx context.Context) ([]imageproxy.BlockedBlob, error) {
@@ -184,7 +268,7 @@ func TestBuildImageProxyServiceBlockedMediaPurgeSurvivesAPanickingCycle(t *testi
 
 	_, _, stop, err := buildImageProxyService(cfg, config.CDNPurgeConfig{}, nil, imageProxyDependencies{
 		cache: cache, processor: cdnWiringFailProcessor{t}, fetcher: cdnWiringFailFetcher{t},
-		blocks: cdnWiringUnblocked{}, lister: lister, resolver: cdnWiringFailResolver{t: t},
+		blocks: cdnWiringUnblocked{}, references: cdnWiringAllowAllReferences{}, lister: lister, resolver: cdnWiringFailResolver{t: t},
 	})
 	require.NoError(t, err)
 	t.Cleanup(stop)

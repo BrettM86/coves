@@ -274,27 +274,12 @@ func TestProcessor_Process_SupportsPNG(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// Verify output is valid JPEG (always output JPEG)
+	// Verify PNG input produces PNG output.
 	img, format, err := image.Decode(bytes.NewReader(result))
 	require.NoError(t, err)
-	assert.Equal(t, "jpeg", format)
+	assert.Equal(t, "png", format)
 	assert.Equal(t, 1000, img.Bounds().Dx())
 	assert.Equal(t, 1000, img.Bounds().Dy())
-}
-
-func TestProcessor_Process_AlwaysOutputsJPEG(t *testing.T) {
-	proc := newTestProcessor(t)
-	preset, _ := GetPreset("avatar")
-
-	// Test with PNG input
-	pngData := createTestPNG(t, 300, 300)
-	result, err := proc.Process(pngData, preset)
-	require.NoError(t, err)
-
-	// Verify output is JPEG even when input is PNG
-	_, format, err := image.Decode(bytes.NewReader(result))
-	require.NoError(t, err)
-	assert.Equal(t, "jpeg", format, "output should always be JPEG")
 }
 
 func TestProcessor_Interface(t *testing.T) {
@@ -330,9 +315,8 @@ func TestNewProcessor_AcceptsSmallestPositiveBudget(t *testing.T) {
 
 func TestDefaultMaxSourceMegapixels(t *testing.T) {
 	// The audit asked for "a few tens of megapixels"; 50 is the value chosen
-	// here. At the 12 B/px worst case (16-bit RGBA PNG plus imaging's NRGBA
-	// clone) it is ~600 MB per request, which the concurrency cap in Config
-	// is what keeps survivable.
+	// here. The per-request worst case is documented in Process (processor.go);
+	// the concurrency cap in Config is what keeps it survivable.
 	assert.Equal(t, 50, DefaultMaxSourceMegapixels)
 }
 

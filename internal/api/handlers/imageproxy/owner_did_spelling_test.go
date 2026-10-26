@@ -71,7 +71,7 @@ func TestHandlerRefusesNoncanonicalOwnerDIDBeforeService(t *testing.T) {
 					require.Contains(t, request.URL.RawPath, "%65")
 				}
 				if conditional {
-					request.Header.Set("If-None-Match", `"`+preset+`-`+validTestCID+`"`)
+					request.Header.Set("If-None-Match", `"r2-`+preset+`-`+validTestCID+`"`)
 				}
 				response := httptest.NewRecorder()
 				router.ServeHTTP(response, request)
