@@ -386,11 +386,24 @@ img.coves.social {
     encode gzip zstd
 }
 
+# Tidepool's /admin API is bearer-authenticated, but nothing public needs it:
+# operators call it on the box at 127.0.0.1:8091, which skips this Caddy.
+# Refuse it at the edge on every tdpl.io host so the bearer check is not the
+# only barrier. `path` matching is case-insensitive and runs on the cleaned,
+# unescaped path, so /ADMIN, //admin and /admin%2F... are caught too.
+# Checked end to end by scripts/caddy-edge-test.sh.
+(tidepool_no_public_admin) {
+    @tidepool_admin path /admin*
+    respond @tidepool_admin 404
+}
+
 # Tidepool bridge (ActivityPub → atproto). The bridge container lives in the
 # /opt/tidepool stack and joins coves-prod-network so this Caddy can reach it.
 # Apex: AP inbox/actor/webfinger/nodeinfo + the com.atproto.sync.* surface
 # (subscribeRepos WebSocket upgrades are automatic in Caddy v2).
 tdpl.io {
+    import tidepool_no_public_admin
+
     # AP activities are small JSON; nothing legitimately POSTs large bodies
     # here (media is fetched outbound by the bridge, never uploaded).
     request_body {
@@ -526,6 +539,8 @@ tdpl.io {
         }
     }
 
+    import tidepool_no_public_admin
+
     reverse_proxy tidepool:80 {
         header_up X-Real-IP {remote_host}
     }
@@ -551,6 +566,8 @@ tdpl.io {
     tls {
         on_demand
     }
+
+    import tidepool_no_public_admin
 
     reverse_proxy tidepool:80 {
         header_up X-Real-IP {remote_host}
