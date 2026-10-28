@@ -62,6 +62,6 @@ For tests: `python3 -m venv venv && . venv/bin/activate && pip install -r requir
 
 ## Operations
 
-`/var/log/cron.log` is not on a volume. Before recreating `kagi-news-aggregator`, save `docker logs kagi-news-aggregator` and `docker exec kagi-news-aggregator cat /var/log/cron.log`. After recreation, empty logs mean no history, not no errors.
+`/var/log/cron.log` is not on a volume, but the container tails it to stdout and stdout goes to the host journal, which survives recreation. `docker logs kagi-news-aggregator` shows only the current container; for runs before the last recreate use `journalctl CONTAINER_NAME=kagi-news-aggregator --since <time>`.
 
 A manual `docker exec ... python -m src.main` proves the container environment, not cron's. Confirm authentication from a log line written by a real cron run. To reproduce cron's environment in a shell, use `set -a; . /etc/environment; set +a`.

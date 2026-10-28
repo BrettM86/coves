@@ -16,6 +16,15 @@
 #   3. /opt/coves/.env with secrets (read by Compose, not in the repository)
 #   4. .well-known/did.json deployed to coves.social
 
+# journald keeps container logs across recreates (json-file logs are deleted
+# with the container); rotation is journald's SystemMaxUse. `docker logs`
+# shows only the current container; for history across recreates use
+# `journalctl CONTAINER_NAME=<name>`.
+x-logging: &journald-logging
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+
 services:
   # PostgreSQL Database for AppView
   postgres:
@@ -29,6 +38,7 @@ services:
     # bump it. This digest is 15.19, running in prod since 2026-08-26.
     image: postgres:15@sha256:926f8799aef36e00001cfe15fba7abbd37d3c5224ea57e4c858e4bb670f10561
     container_name: coves-prod-postgres
+    logging: *journald-logging
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -62,6 +72,7 @@ services:
     # tag on the box says exactly which commit is running (docs/PRODUCTION_DEPLOY.md).
     image: coves/appview:${VERSION:-latest}
     container_name: coves-prod-appview
+    logging: *journald-logging
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"  # Only expose to localhost (Caddy proxies)
@@ -246,6 +257,7 @@ services:
     # the next `up -d caddy` unless --no-deps is used.
     image: ghcr.io/bluesky-social/pds:0.4.5044@sha256:26ac2c219014bed23e68db7fd37df10766bf6733cb2269e457f9a57d2d5b1fbc
     container_name: coves-prod-pds
+    logging: *journald-logging
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"  # Only expose to localhost (Caddy proxies)
@@ -332,6 +344,7 @@ services:
       dockerfile: Dockerfile
     image: coves/caddy:${CADDY_VERSION:-2.11.7}
     container_name: coves-prod-caddy
+    logging: *journald-logging
     restart: unless-stopped
     ports:
       - "80:80"

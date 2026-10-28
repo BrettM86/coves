@@ -25,11 +25,13 @@ services:
     env_file:
       - .env
 
+    # journald keeps logs across recreates; json-file logs are deleted with
+    # the container. `docker logs` shows only the current container; for
+    # history use `journalctl CONTAINER_NAME=<name>`.
     logging:
-      driver: "json-file"
+      driver: journald
       options:
-        max-size: "10m"
-        max-file: "3"
+        tag: "{{.Name}}"
 
     healthcheck:
       test: ["CMD", "pgrep", "cron"]

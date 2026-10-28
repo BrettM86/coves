@@ -70,6 +70,6 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-`/var/log/cron.log` is not on a volume. Save `docker logs` and the cron log before recreating the container. The `Using API key authentication` log line appears after the jitter and shows the run reached authentication, not that it finished.
+`/var/log/cron.log` is not on a volume, but the container tails it to stdout and stdout goes to the host journal, which survives recreation. `docker logs` shows only the current container; for runs before the last recreate use `journalctl CONTAINER_NAME=reddit-highlights-aggregator --since <time>`. The `Using API key authentication` log line appears after the jitter and shows the run reached authentication, not that it finished.
 
 For tests: `python -m venv venv && . venv/bin/activate && pip install -r requirements-dev.txt && pytest`.
