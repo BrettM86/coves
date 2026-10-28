@@ -11,6 +11,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/media"
 	"Coves/internal/core/users"
@@ -27,6 +28,11 @@ const CovesProfileCollection = users.ProfileCollection
 // PDSClientFactory creates PDS clients from session data.
 // Used to allow injection of different auth mechanisms (OAuth for production, password for E2E tests).
 type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error)
+
+// ProfileIndexer writes a profile change into the AppView's users table.
+type ProfileIndexer interface {
+	UpdateProfile(ctx context.Context, did string, input users.UpdateProfileInput) (*users.User, error)
+}
 
 const (
 	// MaxDisplayNameGraphemes is the maximum display name length in graphemes (per atProto lexicon)
@@ -66,6 +72,7 @@ type UpdateProfileHandler struct {
 	oauthClient      *oauth.ClientApp // For creating authenticated PDS clients (production)
 	pdsClientFactory PDSClientFactory // Optional: custom factory for testing
 	pipeline         *media.Pipeline
+	profileIndexer   ProfileIndexer // Optional: writes the saved profile through to the users table
 }
 
 // NewUpdateProfileHandler creates a new update profile handler.
@@ -97,6 +104,15 @@ func NewUpdateProfileHandlerWithFactory(factory PDSClientFactory, pipeline *medi
 		pdsClientFactory: factory,
 		pipeline:         pipeline,
 	}
+}
+
+// WithProfileIndexer makes the handler write each saved profile through to
+// the users table. Without it, the change is only visible once Jetstream
+// indexes the record, so a client that refetches its profile straight after
+// saving reads the old values.
+func (h *UpdateProfileHandler) WithProfileIndexer(indexer ProfileIndexer) *UpdateProfileHandler {
+	h.profileIndexer = indexer
+	return h
 }
 
 // getPDSClient creates a PDS client from an OAuth session.
@@ -336,7 +352,22 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 10. Return success response
+	// 10. Write the committed record through to the users table so the user's
+	// next read sees it. Jetstream may re-apply the record or skip it as already
+	// applied (its recency guard compares against users.updated_at), so the
+	// write-through mirrors the whole record the way the consumer does. A
+	// failure is logged and not returned: the record is already on the PDS, and
+	// Jetstream will index it.
+	if h.profileIndexer != nil {
+		if _, indexErr := h.profileIndexer.UpdateProfile(ctx, userDID, profileIndexInput(profile)); indexErr != nil {
+			slog.Warn("failed to write profile update through to the users table; Jetstream will index it",
+				slog.String("did", userDID),
+				slog.String("error", indexErr.Error()),
+			)
+		}
+	}
+
+	// 11. Return success response
 	resp := UpdateProfileResponse{URI: commit.URI, CID: commit.CID}
 
 	// Marshal to bytes first to catch encoding errors before writing headers
@@ -385,4 +416,49 @@ func (h *UpdateProfileHandler) ingestProfileImage(w http.ResponseWriter, ctx con
 		writeUpdateProfileError(w, http.StatusInternalServerError, "InternalError", "Failed to process profile image")
 	}
 	return media.Result{}, false
+}
+
+// profileIndexInput maps a committed profile record onto the users-table
+// update the Jetstream consumer would make for it: the record is a complete
+// snapshot, so a missing or unusable image clears the stored CID. Origin
+// fields are left unchanged; a user edit carries them over from the existing
+// record, and only the consumer decides whether to trust them.
+func profileIndexInput(record map[string]interface{}) users.UpdateProfileInput {
+	avatarCID := profileBlobCID(record["avatar"])
+	bannerCID := profileBlobCID(record["banner"])
+	input := users.UpdateProfileInput{AvatarCID: &avatarCID, BannerCID: &bannerCID}
+	if displayName, ok := record["displayName"].(string); ok {
+		input.DisplayName = &displayName
+	}
+	if description, ok := record["description"].(string); ok {
+		input.Description = &description
+	}
+	return input
+}
+
+// profileBlobCID returns the canonical CID of a profile image blob in the form
+// the Jetstream consumer stores, or "" when the blob is missing or unusable.
+// The ref is a map[string]string for a blob uploaded in this request and a
+// decoded JSON object for one carried over from the existing record.
+func profileBlobCID(blob interface{}) string {
+	var link string
+	switch value := blob.(type) {
+	case map[string]interface{}:
+		if value["$type"] != "blob" {
+			return ""
+		}
+		switch ref := value["ref"].(type) {
+		case map[string]string:
+			link = ref["$link"]
+		case map[string]interface{}:
+			link, _ = ref["$link"].(string)
+		}
+	default:
+		return ""
+	}
+	cid, ok := embedblobs.CanonicalBlobCID(link)
+	if !ok {
+		return ""
+	}
+	return cid
 }

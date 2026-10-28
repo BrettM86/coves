@@ -101,7 +101,8 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 
 	// social.coves.actor.updateProfile - procedure endpoint (authenticated)
 	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, description).
-	// This writes directly to the user's PDS and the Jetstream consumer will index the change.
+	// This writes to the user's PDS and through to the users table, so the user's next read
+	// sees the change; the Jetstream consumer later re-applies the record or skips it as applied.
 	var updateProfileHandler *user.UpdateProfileHandler
 	var mediaPipeline *media.Pipeline
 	if opts != nil {
@@ -114,6 +115,7 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 		// Use OAuth client for DPoP-authenticated PDS requests (production)
 		updateProfileHandler = user.NewUpdateProfileHandler(oauthClient, mediaPipeline)
 	}
+	updateProfileHandler.WithProfileIndexer(service)
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
 }
 
