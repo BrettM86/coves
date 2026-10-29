@@ -6,7 +6,7 @@ Cloudflare's CSAM Scanning Tool can only match images that cross its edge. Coves
 
 ## Choke point
 
-While the proxy is enabled, the AppView never builds `com.atproto.sync.getBlob` URLs for images. All image URLs come from `internal/core/embeds` (`HydrateView`) and the `blobs` URL helpers, which use `IMAGE_PROXY_CDN_URL` when set and `IMAGE_PROXY_BASE_URL` otherwise. The proxy route is `GET /img/{preset}/plain/{did}/{cid}`, and the DID is the repo that holds the blob.
+While the proxy is enabled, the AppView never builds `com.atproto.sync.getBlob` URLs for images. All image URLs come from `internal/core/embeds` (`HydrateView`) and the `blobs` URL helpers, which use `IMAGE_PROXY_CDN_URL` when set and `IMAGE_PROXY_BASE_URL` otherwise. The proxy route is `/img/{preset}/plain/{did}/{cid}` (GET and HEAD), and the DID is the repo that holds the blob.
 
 A non-dev config with `IMAGE_PROXY_ENABLED=false` refuses to start unless `ALLOW_UNPROXIED_MEDIA=true`. That flag is the deliberate opt-out for a self-hoster with no scanning CDN, and it also means widening the Caddyfile `img-src`. With the proxy on, a missing or localhost base URL is rejected: the mobile app cannot resolve a relative URL.
 
@@ -39,9 +39,11 @@ The proxy is unauthenticated and decodes blobs from any PDS, so an attacker can 
 | Purge configured, host is a purge base host, canonical DID and CID, no `Origin` header | `public, max-age=86400, s-maxage=31536000` |
 | Every other 200 or 304 | `public, max-age=86400` |
 
-A purge names only the bare URL, so query-string variants must never be shared-cacheable. A request with `Origin` gets one day because a CDN cache key may include Origin, which the bare-URL purge would miss. No response carries `immutable`.
+A purge names only the bare URL, so query-string variants must never be shared-cacheable. A request with `Origin` gets one day because a CDN cache key may include Origin, which the bare-URL purge would miss. No proxied image response carries `immutable`.
 
-To check a host, use `curl -sD- -o /dev/null https://img.coves.social/img/avatar/plain/<did>/<cid>`. Do not use `curl -I`: the route is GET-only, chi does not map HEAD to it, and you get a 405 with none of the cache headers. `https://img.coves.social/` must 404.
+`/img/default-avatars/` does not use this table. Every 200 or 304 from it sends `public, max-age=31536000, immutable`, whatever the query string or `Origin`, because the path is versioned (`v1`), the files never change, and moderation never removes them. Any other path under the route (an unknown version, an unknown slug, or a name not ending in `.webp`) gets `404` with `no-store`.
+
+To check a host, use `curl -sD- -o /dev/null https://img.coves.social/img/avatar/plain/<did>/<cid>`. `curl -I` also works: both `/img` routes answer HEAD with the same status and headers as GET and no body. `https://img.coves.social/` must 404.
 
 ## Cloudflare zone
 

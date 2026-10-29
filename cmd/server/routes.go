@@ -11,6 +11,7 @@ import (
 	"Coves/internal/api/routes"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
+	defaultavatarhandlers "Coves/internal/api/handlers/defaultavatars"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -63,6 +64,14 @@ func registerRoutes(r chi.Router, app *application, consumers *consumerSet) {
 	registerOAuthRoutes(r, app)
 	registerWebRoutes(r, app)
 	registerHealthRoutes(r, app, consumers)
+
+	registerImageRoutes(r, app)
+}
+
+// registerImageRoutes mounts the default avatar route and, when enabled, the
+// image proxy route.
+func registerImageRoutes(r chi.Router, app *application) {
+	routes.RegisterDefaultAvatarRoutes(r, defaultavatarhandlers.NewHandler())
 
 	if app.imageProxyHandler != nil {
 		routes.RegisterImageProxyRoutes(r, app.imageProxyHandler)

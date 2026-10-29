@@ -85,3 +85,8 @@ scripts/.env.lexicon
 # getUpdates. The real home for this value is /opt/coves/.env on the production
 # host — delete the local copy once the deploy is done.
 coves_admin_api.txt
+
+# Default-avatar 1254px PNG masters stay out of git (PRD_DEFAULT_AVATARS D11).
+scripts/default-avatars/selected/
+scripts/default-avatars/**/*.png
+__pycache__/
