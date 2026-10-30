@@ -22,13 +22,16 @@ type FeedPostProvider interface {
 // This is a no-op if voteService is nil or the request is unauthenticated.
 //
 // Parameters:
-//   - ctx: Request context for PDS calls
-//   - r: HTTP request (used to extract OAuth session)
-//   - voteService: Vote service for cache lookup (may be nil)
+//   - ctx: Request context for the vote lookup
+//   - r: HTTP request (used to identify the viewer)
+//   - voteService: Vote service that resolves the viewer's votes (may be nil)
 //   - feedPosts: Posts to enrich with viewer state (must implement FeedPostProvider)
 //
-// Vote fields are merged into an existing viewer state; other viewer fields are kept.
-// The function logs but does not fail on errors - viewer state is optional enrichment.
+// Every post is resolved in one ViewerVotes call. A post the viewer voted on
+// gets vote and voteUri; one without a vote gets neither. Vote fields are
+// merged into an existing viewer state; other viewer fields are kept. If the
+// lookup fails, the error is logged and no post gets vote state: a failed
+// lookup must not render as "not voted".
 func PopulateViewerVoteState[T FeedPostProvider](
 	ctx context.Context,
 	r *http.Request,
@@ -39,29 +42,27 @@ func PopulateViewerVoteState[T FeedPostProvider](
 		return
 	}
 
-	session := middleware.GetOAuthSession(r)
-	if session == nil {
-		return
-	}
-
 	userDID := middleware.GetUserDID(r)
-
-	// Ensure vote cache is populated from PDS
-	if err := voteService.EnsureCachePopulated(ctx, session); err != nil {
-		log.Printf("Warning: failed to populate vote cache: %v", err)
+	if userDID == "" {
 		return
 	}
 
-	// Collect post URIs to batch lookup
-	postURIs := make([]string, 0, len(feedPosts))
+	subjectURIs := make([]string, 0, len(feedPosts))
 	for _, feedPost := range feedPosts {
 		if post := feedPost.GetPost(); post != nil {
-			postURIs = append(postURIs, post.URI)
+			subjectURIs = append(subjectURIs, post.URI)
 		}
 	}
+	if len(subjectURIs) == 0 {
+		return
+	}
 
-	// Get viewer votes for all posts
-	viewerVotes := voteService.GetViewerVotesForSubjects(userDID, postURIs)
+	viewerVotes, err := voteService.ViewerVotes(ctx, userDID, subjectURIs)
+	if err != nil {
+		log.Printf("Warning: failed to resolve viewer votes for user %s (%d posts): %v",
+			userDID, len(subjectURIs), err)
+		return
+	}
 
 	// Populate viewer state on each post
 	for _, feedPost := range feedPosts {

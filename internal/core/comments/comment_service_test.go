@@ -27,7 +27,6 @@ type mockCommentRepo struct {
 	activeRemovalsErrFor          map[string]error // fails a lookup that includes the key URI
 	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error)
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
-	getVoteStateForCommentsFunc   func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
 	listByCommenterWithCursorFunc func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 	getByRootAndRkeyFunc          func(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error)
 }
@@ -179,13 +178,6 @@ func (m *mockCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []strin
 		}
 	}
 	return result, nil
-}
-
-func (m *mockCommentRepo) GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error) {
-	if m.getVoteStateForCommentsFunc != nil {
-		return m.getVoteStateForCommentsFunc(ctx, viewerDID, commentURIs)
-	}
-	return make(map[string]interface{}), nil
 }
 
 func (m *mockCommentRepo) ListByParentsBatch(
@@ -825,76 +817,6 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.Len(t, resp.Comments, 0)
 	assert.NotNil(t, resp.Post)
-}
-
-func TestCommentService_GetComments_WithViewerVotes(t *testing.T) {
-	// Setup
-	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
-	authorDID := "did:plc:author123"
-	communityDID := "did:plc:community123"
-	commenterDID := "did:plc:commenter123"
-	viewerDID := "did:plc:viewer123"
-
-	commentRepo := newMockCommentRepo()
-	userRepo := newMockUserRepo()
-	postRepo := newMockPostRepo()
-	communityRepo := newMockCommunityRepo()
-
-	// Setup test data
-	post := createTestPost(postURI, authorDID, communityDID)
-	_ = postRepo.Create(context.Background(), post)
-
-	author := createTestUser(authorDID, "author.test")
-	_, _ = userRepo.Create(context.Background(), author)
-
-	community := createTestCommunity(communityDID, "c-test.coves.social")
-	_, _ = communityRepo.Create(context.Background(), community)
-
-	comment1URI := "at://did:plc:commenter123/comment/1"
-	comment1 := createTestComment(comment1URI, commenterDID, "commenter.test", postURI, postURI, 0)
-
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
-		if parentURI == postURI {
-			return []*Comment{comment1}, nil, nil
-		}
-		return []*Comment{}, nil, nil
-	}
-
-	// Mock vote state
-	commentRepo.getVoteStateForCommentsFunc = func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error) {
-		voteURI := "at://did:plc:viewer123/vote/1"
-		return map[string]interface{}{
-			comment1URI: map[string]interface{}{
-				"direction": "up",
-				"uri":       voteURI,
-			},
-		}, nil
-	}
-
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
-
-	// Execute
-	req := &GetCommentsRequest{
-		PostURI:   postURI,
-		ViewerDID: &viewerDID,
-		Sort:      "hot",
-		Depth:     10,
-		Limit:     50,
-	}
-
-	resp, err := service.GetComments(context.Background(), req)
-
-	// Verify
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Len(t, resp.Comments, 1)
-
-	// Check viewer state
-	commentView := resp.Comments[0].Comment
-	assert.NotNil(t, commentView.Viewer)
-	assert.NotNil(t, commentView.Viewer.Vote)
-	assert.Equal(t, "up", *commentView.Viewer.Vote)
-	assert.NotNil(t, commentView.Viewer.VoteURI)
 }
 
 func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
@@ -1597,7 +1519,7 @@ func TestCommentService_buildCommentView_BasicFields(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	// Verify basic fields
 	assert.Equal(t, commentURI, result.URI)
@@ -1638,7 +1560,7 @@ func TestCommentService_buildCommentView_HydratesAuthorProfile(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil, usersByDID)
+	result := service.buildCommentView(comment, usersByDID)
 
 	// Verify author profile hydration
 	require.NotNil(t, result.Author)
@@ -1705,7 +1627,7 @@ func TestCommentService_buildCommentView_NoProfileLeavesAuthorBare(t *testing.T)
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil, usersByDID)
+	result := service.buildCommentView(comment, usersByDID)
 
 	// Verify: no fabricated profile data
 	require.NotNil(t, result.Author)
@@ -1729,7 +1651,7 @@ func TestCommentService_buildCommentView_TopLevelComment(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	// Verify - parent should be nil for top-level comments
 	assert.NotNil(t, result.Post)
@@ -1754,75 +1676,13 @@ func TestCommentService_buildCommentView_NestedComment(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	// Verify - both post and parent should be present
 	assert.NotNil(t, result.Post)
 	assert.Equal(t, postURI, result.Post.URI)
 	assert.NotNil(t, result.Parent)
 	assert.Equal(t, parentCommentURI, result.Parent.URI)
-}
-
-func TestCommentService_buildCommentView_WithViewerVote(t *testing.T) {
-	// Setup
-	commentRepo := newMockCommentRepo()
-	userRepo := newMockUserRepo()
-	postRepo := newMockPostRepo()
-	communityRepo := newMockCommunityRepo()
-
-	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
-	commentURI := "at://did:plc:commenter123/comment/1"
-	viewerDID := "did:plc:viewer123"
-	voteURI := "at://did:plc:viewer123/vote/1"
-
-	comment := createTestComment(commentURI, "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
-
-	// Mock vote state
-	voteStates := map[string]interface{}{
-		commentURI: map[string]interface{}{
-			"direction": "down",
-			"uri":       voteURI,
-		},
-	}
-
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
-
-	// Execute
-	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
-
-	// Verify viewer state
-	assert.NotNil(t, result.Viewer)
-	assert.NotNil(t, result.Viewer.Vote)
-	assert.Equal(t, "down", *result.Viewer.Vote)
-	assert.NotNil(t, result.Viewer.VoteURI)
-	assert.Equal(t, voteURI, *result.Viewer.VoteURI)
-}
-
-func TestCommentService_buildCommentView_NoViewerVote(t *testing.T) {
-	// Setup
-	commentRepo := newMockCommentRepo()
-	userRepo := newMockUserRepo()
-	postRepo := newMockPostRepo()
-	communityRepo := newMockCommunityRepo()
-
-	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
-	commentURI := "at://did:plc:commenter123/comment/1"
-	viewerDID := "did:plc:viewer123"
-
-	comment := createTestComment(commentURI, "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
-
-	// Empty vote states
-	voteStates := map[string]interface{}{}
-
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
-
-	// Execute
-	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
-
-	// Verify viewer state exists but has no votes
-	assert.NotNil(t, result.Viewer)
-	assert.Nil(t, result.Viewer.Vote)
-	assert.Nil(t, result.Viewer.VoteURI)
 }
 
 // Test suite for validateGetCommentsRequest
@@ -2049,7 +1909,7 @@ func TestBuildCommentView_ValidFacetsDeserialization(t *testing.T) {
 
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	// Facets are accessed via record.Facets (following Bluesky pattern)
 	assert.NotNil(t, result.Record)
@@ -2072,7 +1932,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	assert.NotNil(t, result.Embed)
 	embedMap, ok := result.Embed.(map[string]interface{})
@@ -2114,7 +1974,7 @@ func TestBuildCommentView_MalformedJSONLogsWarning(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Should not panic, should log warning and return view with nil facets in record
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	assert.NotNil(t, result)
 	// Facets are accessed via record.Facets - malformed JSON results in nil
@@ -2177,7 +2037,7 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 
 			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
-			result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+			result := service.buildCommentView(comment, make(map[string]*users.User))
 
 			// Facets are accessed via record.Facets (following Bluesky pattern)
 			record := result.Record.(*CommentRecord)
@@ -2600,7 +2460,7 @@ func TestBuildCommentView_HydratesImageEmbedFromTheAuthorRepo(t *testing.T) {
 	usersByDID := map[string]*users.User{
 		commenterDID: {DID: commenterDID, Handle: "commenter.test", PDSURL: "https://pds.example.com"},
 	}
-	result := service.buildCommentView(comment, nil, nil, usersByDID)
+	result := service.buildCommentView(comment, usersByDID)
 
 	embedMap, ok := result.Embed.(map[string]interface{})
 	require.True(t, ok)
@@ -2649,7 +2509,7 @@ func TestBuildCommentView_HydratesEmbedForAnUnindexedAuthor(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// No entry in usersByDID: the author has not been indexed, so no PDS URL.
-	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+	result := service.buildCommentView(comment, make(map[string]*users.User))
 
 	embedMap := result.Embed.(map[string]interface{})
 	image := embedMap["images"].([]interface{})[0].(map[string]interface{})

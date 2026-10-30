@@ -48,8 +48,8 @@ import (
 //     running server is vote_consumer.go's transaction (plus the bridged_*
 //     columns, which the aggregator path owns and which this contract does not
 //     touch).
-//   - votes.cache is a read-through cache of the PDS for VIEWER state, not a
-//     count source, and nothing in this contract reads viewer state.
+//   - votes.voteService's recent-write overlay is in-memory VIEWER state, not
+//     a count source, and nothing in this contract reads viewer state.
 //
 // So a single write → observe is honest here, with none of the arming the
 // actor.profile contract needs.
@@ -430,11 +430,8 @@ func TestVoteBeforeSubjectIsCountedOnceSubjectIndexed(t *testing.T) {
 // count, which the ingestion contract above already reads through
 // social.coves.community.post.get. Viewer state (did I vote, and which way) is
 // the part a client asks about by identity; it is behind OptionalAuth, so it
-// needs a signed-in viewer. When this was written T2 could not sign in;
-// testkit.AppView.SignIn (§3.4b) now makes a signed-in contract possible, and
-// it is not yet written. It is covered at T1 instead, in
-// internal/core/comments/comment_vote_test.go for comments and
-// internal/db/postgres/vote_repo_test.go for posts.
+// needs a signed-in viewer. TestViewerVoteStateContract
+// (viewer_vote_contract_test.go) owns it, for posts and comments.
 //
 // So what is left, and what nothing else can see, is the auth boundary of the
 // shipped router.

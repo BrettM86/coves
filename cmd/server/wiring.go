@@ -73,12 +73,6 @@ const (
 	// post's engagement counts go stale faster than a link's title does.
 	blueskyCacheTTL = time.Hour
 
-	// voteCacheTTL is how long a user's votes read from their PDS are reused.
-	// It papers over PDS eventual consistency between casting a vote and the
-	// firehose delivering it back; the cache is also written through on
-	// create and delete.
-	voteCacheTTL = 10 * time.Minute
-
 	// unfurlUserAgent identifies Coves to the sites it fetches previews from.
 	unfurlUserAgent = "CovesBot/1.0 (+https://coves.social)"
 )
@@ -621,8 +615,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	// the user's own PDS regardless, and the Jetstream consumer only updates
 	// counts for subjects that still exist. Checking here would trade a
 	// harmless orphan vote for a race against eventual consistency.
-	voteCache := votes.NewVoteCache(voteCacheTTL, nil)
-	a.voteService = votes.NewService(a.voteRepo, a.oauthClient, a.oauthStore, voteCache, nil)
+	a.voteService = votes.NewService(a.voteRepo, a.oauthClient, a.oauthStore, nil)
 
 	a.commentService = comments.NewCommentService(
 		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,

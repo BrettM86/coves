@@ -13,8 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The three batch reads: GetByURIsBatch, ListByParentsBatch and
-// GetVoteStateForComments.
+// The two batch reads: GetByURIsBatch and ListByParentsBatch.
 //
 // These exist for one reason — rendering a comment tree of N nodes must not
 // cost N queries — and they are the only methods in the repository that return
@@ -26,34 +25,7 @@ import (
 // one of those is invisible until a thread renders with the wrong author's text
 // under the wrong node.
 //
-// GetVoteStateForComments is different again: it is the only per-viewer state
-// in this file. Everything else here answers the same for everybody, so a
-// scoping mistake in the other two shows up as missing content. A scoping
-// mistake in this one shows one person's votes to another, which is a privacy
-// leak that renders as a perfectly plausible UI.
-//
 // See comment_repo_write_test.go for commentEnv and the seeding helpers.
-
-// commentSeedVote indexes a vote the way the vote consumer would.
-//
-// Written as raw SQL rather than through NewVoteRepository because what is
-// under test is the reading query; going through the writing repository would
-// make these assertions fail whenever vote_repo.go broke.
-func commentSeedVote(env *commentEnv, voterDID, subjectURI, direction, rkey string, deleted bool) {
-	env.t.Helper()
-
-	var deletedAt interface{}
-	if deleted {
-		deletedAt = time.Now().UTC()
-	}
-	_, err := env.db.ExecContext(env.ctx, `
-		INSERT INTO votes (uri, cid, rkey, voter_did, subject_uri, subject_cid, direction, created_at, deleted_at)
-		VALUES ($1, $2, $3, $4, $5, 'bafysubject', $6, $7, $8)
-	`,
-		"at://"+voterDID+"/social.coves.interaction.vote/"+rkey,
-		"bafyvote"+rkey, rkey, voterDID, subjectURI, direction, commentBaseTime, deletedAt)
-	require.NoErrorf(env.t, err, "indexing %s's %s vote on %s", voterDID, direction, subjectURI)
-}
 
 func TestCommentRepo_GetByURIsBatch(t *testing.T) {
 	t.Parallel()
@@ -438,124 +410,5 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		assert.Equal(t, stranger, byURI[unknown].CommenterHandle,
 			"a comment whose author the firehose has not delivered yet must still render; the LEFT "+
 				"JOIN with COALESCE is what stops an INNER JOIN from silently dropping it")
-	})
-}
-
-func TestCommentRepo_GetVoteStateForComments(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns only the asking viewer's own votes", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		first := env.seed(commentSpec{rkey: "v1"})
-		second := env.seed(commentSpec{rkey: "v2"})
-		third := env.seed(commentSpec{rkey: "v3"})
-		viewer := "did:plc:cmtvoter" + env.id
-		other := "did:plc:cmtother" + env.id
-
-		commentSeedVote(env, viewer, first, "up", "va", false)
-		commentSeedVote(env, other, second, "down", "vb", false)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, viewer, []string{first, second, third})
-		require.NoError(t, err)
-		require.Len(t, state, 1, "another user's vote appeared in this viewer's state: the arrows in "+
-			"the UI would show a stranger's opinion as the reader's own, and a second tap would try "+
-			"to undo a vote the reader never cast")
-		require.Contains(t, state, first)
-		assert.NotContains(t, state, second)
-		assert.NotContains(t, state, third, "a comment the viewer has not voted on must be absent, "+
-			"not present with an empty direction")
-
-		vote, ok := state[first].(map[string]interface{})
-		require.True(t, ok, "the map value is what the view model reads the direction out of")
-		assert.Equal(t, "up", vote["direction"],
-			"the direction decides which arrow lights up; up rendered as down is a vote the reader "+
-				"cannot see they cast")
-		assert.Equal(t, "at://"+viewer+"/social.coves.interaction.vote/va", vote["uri"],
-			"the vote's own URI is what the client deletes to retract; without it the arrow is "+
-				"lit and unclickable")
-	})
-
-	// An anonymous reader has no votes, and the query is skipped entirely rather
-	// than run with an empty voter_did — which would match nothing today but
-	// would match every vote from a caller that passed a wildcard.
-	t.Run("an anonymous viewer gets no state at all", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		uri := env.seed(commentSpec{rkey: "anon"})
-		commentSeedVote(env, "did:plc:cmtsomeone"+env.id, uri, "up", "vc", false)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, "", []string{uri})
-		require.NoError(t, err)
-		require.NotNil(t, state, "the caller indexes this map without checking it")
-		assert.Empty(t, state, "an empty viewer DID must mean 'nobody', never 'everybody'")
-	})
-
-	t.Run("an empty subject list is an empty map", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		viewer := "did:plc:cmtempty" + env.id
-		uri := env.seed(commentSpec{rkey: "unasked"})
-		commentSeedVote(env, viewer, uri, "up", "vd", false)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, viewer, nil)
-		require.NoError(t, err)
-		require.NotNil(t, state)
-		assert.Empty(t, state, "asking about no comments must not return every vote the viewer "+
-			"has ever cast")
-	})
-
-	// A retracted vote is a soft delete, and the partial unique index lets a
-	// user vote again on the same subject afterwards. Serving the tombstone
-	// would light the arrow for a vote that no longer exists, and re-tapping it
-	// would try to delete an already-deleted record.
-	t.Run("ignores a retracted vote", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		uri := env.seed(commentSpec{rkey: "retracted"})
-		viewer := "did:plc:cmtretract" + env.id
-		commentSeedVote(env, viewer, uri, "up", "ve", true)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, viewer, []string{uri})
-		require.NoError(t, err)
-		assert.Empty(t, state, "a retracted vote must not keep the arrow lit")
-
-		commentSeedVote(env, viewer, uri, "down", "vf", false)
-		state, err = env.repo.GetVoteStateForComments(env.ctx, viewer, []string{uri})
-		require.NoError(t, err)
-		require.Contains(t, state, uri, "and the replacement vote must be the one that shows")
-		assert.Equal(t, "down", state[uri].(map[string]interface{})["direction"])
-	})
-
-	t.Run("scopes to the comments asked about", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		asked := env.seed(commentSpec{rkey: "asked"})
-		unasked := env.seed(commentSpec{rkey: "notasked"})
-		viewer := "did:plc:cmtscope" + env.id
-		commentSeedVote(env, viewer, asked, "up", "vg", false)
-		commentSeedVote(env, viewer, unasked, "down", "vh", false)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, viewer, []string{asked})
-		require.NoError(t, err)
-		assert.Len(t, state, 1, "the ANY($2) filter is what keeps a one-comment page from paying "+
-			"for the viewer's entire voting history")
-		assert.Contains(t, state, asked)
-	})
-
-	// Votes carry no foreign key to comments (migration 014 removed the one to
-	// users for the same reason), so a vote can be indexed before its subject.
-	// The lookup is by URI string and must survive that.
-	t.Run("survives a vote whose subject is not a comment this AppView holds", func(t *testing.T) {
-		t.Parallel()
-		env := commentEnvFor(t)
-		viewer := "did:plc:cmtorphan" + env.id
-		orphan := "at://" + env.author + "/social.coves.community.comment/notindexedyet"
-		commentSeedVote(env, viewer, orphan, "up", "vi", false)
-
-		state, err := env.repo.GetVoteStateForComments(env.ctx, viewer, []string{orphan})
-		require.NoError(t, err, "the query joins nothing, so an out-of-order vote must not fail it")
-		assert.Contains(t, state, orphan,
-			"and the state must still be reported: the vote is real even if the comment row is late")
 	})
 }

@@ -368,9 +368,9 @@ func (s *commentService) getCommentSubtree(
 //
 // The tree is walked breadth-first: every comment at one depth is hydrated
 // together and every reply at the next depth is fetched together, so a thread
-// costs a fixed three queries per level (replies, viewer votes, authors) no
+// costs a fixed number of queries per level (replies, removals, authors) no
 // matter how many comments it holds. Walking it per parent instead issues
-// those three queries for every comment that has replies — hundreds of serial
+// those queries for every comment that has replies — hundreds of serial
 // round trips on a busy thread at the default depth of 10.
 //
 // Returns an error if loading a reply batch or a level's active removals
@@ -384,7 +384,7 @@ func (s *commentService) buildThreadViews(
 	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
-	result, err := s.buildLevelViews(ctx, comments, remainingDepth, viewerDID)
+	result, err := s.buildLevelViews(ctx, comments, remainingDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +433,7 @@ func (s *commentService) buildThreadViews(
 			// Update HasMore based on actual reply count vs loaded count
 			levelViews[i].HasMore = comment.ReplyCount > len(replies)
 		}
-		nextViews, err := s.buildLevelViews(ctx, nextLevel, depth-1, viewerDID)
+		nextViews, err := s.buildLevelViews(ctx, nextLevel, depth-1)
 		if err != nil {
 			return nil, err
 		}
@@ -455,7 +455,7 @@ func (s *commentService) buildThreadViews(
 }
 
 // buildLevelViews hydrates one depth of a comment thread: active moderation
-// removals, viewer vote state and author profiles for every comment, each in a
+// removals and author profiles for every comment, each in a
 // single batched query. Replies
 // are left for buildThreadViews to attach. remainingDepth is the depth still
 // available BELOW these comments, which decides whether a comment with replies
@@ -469,7 +469,6 @@ func (s *commentService) buildLevelViews(
 	ctx context.Context,
 	comments []*Comment,
 	remainingDepth int,
-	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	if len(comments) == 0 {
@@ -482,26 +481,6 @@ func (s *commentService) buildLevelViews(
 	removals, err := s.commentRepo.ActiveRemovalsByURIs(ctx, commentURIs)
 	if err != nil {
 		return nil, fmt.Errorf("checking active comment removals: %w", err)
-	}
-
-	// Batch fetch vote states for all comments at this level
-	var voteStates map[string]interface{}
-	if viewerDID != nil {
-		commentURIs := make([]string, 0, len(comments))
-		for _, comment := range comments {
-			if comment.DeletedAt == nil {
-				commentURIs = append(commentURIs, comment.URI)
-			}
-		}
-
-		if len(commentURIs) > 0 {
-			var err error
-			voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *viewerDID, commentURIs)
-			if err != nil {
-				// Log error but don't fail the request - vote state is optional
-				slog.Warn("failed to fetch vote states for comments", "error", err)
-			}
-		}
 	}
 
 	// Batch fetch user data for all comment authors
@@ -554,7 +533,7 @@ func (s *commentService) buildLevelViews(
 			}
 		} else {
 			// Active comment - build full view with author info and stats
-			commentView = s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
+			commentView = s.buildCommentView(comment, usersByDID)
 		}
 
 		threadViews = append(threadViews, &ThreadViewComment{
@@ -591,12 +570,11 @@ func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
 
 // buildCommentView converts a Comment entity to a CommentView with full metadata
 // Constructs author view, stats, and references to parent post/comment
-// voteStates map contains viewer's vote state for comments (from GetVoteStateForComments)
-// usersByDID map contains pre-loaded user data for batch author hydration
+// usersByDID map contains pre-loaded user data for batch author hydration.
+// The view carries no viewer state: the comment handlers fill the viewer's
+// vote (docs/PRD_VOTE_STATE_FROM_INDEX.md §4).
 func (s *commentService) buildCommentView(
 	comment *Comment,
-	viewerDID *string,
-	voteStates map[string]interface{},
 	usersByDID map[string]*users.User,
 ) *CommentView {
 	// Build author view from comment data with full user hydration
@@ -634,34 +612,6 @@ func (s *commentService) buildCommentView(
 		parentRef = &CommentRef{
 			URI: comment.ParentURI,
 			CID: comment.ParentCID,
-		}
-	}
-
-	// Build viewer state - populate from vote states map
-	var viewer *CommentViewerState
-	if viewerDID != nil {
-		viewer = &CommentViewerState{
-			Vote:    nil,
-			VoteURI: nil,
-		}
-
-		// Check if viewer has voted on this comment
-		if voteStates != nil {
-			if voteData, ok := voteStates[comment.URI]; ok {
-				voteMap, isMap := voteData.(map[string]interface{})
-				if isMap {
-					// Extract vote direction and URI
-					// Create copies before taking addresses to avoid pointer to loop variable issues
-					if direction, hasDirection := voteMap["direction"].(string); hasDirection {
-						directionCopy := direction
-						viewer.Vote = &directionCopy
-					}
-					if voteURI, hasVoteURI := voteMap["uri"].(string); hasVoteURI {
-						voteURICopy := voteURI
-						viewer.VoteURI = &voteURICopy
-					}
-				}
-			}
 		}
 	}
 
@@ -719,7 +669,6 @@ func (s *commentService) buildCommentView(
 		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
 		IndexedAt: comment.IndexedAt.Format(time.RFC3339),
 		Stats:     stats,
-		Viewer:    viewer,
 	}
 }
 
@@ -1465,22 +1414,6 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 	}
 
 	// 4. Build CommentViews for each comment
-	// Batch fetch vote states if viewer is authenticated
-	var voteStates map[string]interface{}
-	if req.ViewerDID != nil && len(dbComments) > 0 {
-		commentURIs := make([]string, 0, len(dbComments))
-		for _, comment := range dbComments {
-			commentURIs = append(commentURIs, comment.URI)
-		}
-
-		var err error
-		voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *req.ViewerDID, commentURIs)
-		if err != nil {
-			// Log error but don't fail the request - vote state is optional
-			slog.Warn("failed to fetch vote states for actor comments", "error", err)
-		}
-	}
-
 	// Batch fetch user data for comment authors (should all be the same user, but handle consistently)
 	usersByDID := make(map[string]*users.User)
 	if len(dbComments) > 0 {
@@ -1498,7 +1431,7 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 	// Build comment views
 	commentViews := make([]*CommentView, 0, len(dbComments))
 	for _, comment := range dbComments {
-		commentView := s.buildCommentView(comment, req.ViewerDID, voteStates, usersByDID)
+		commentView := s.buildCommentView(comment, usersByDID)
 		commentViews = append(commentViews, commentView)
 	}
 

@@ -1,20 +1,19 @@
 //go:build integration
 
 // Votes cast on comments: the counters the vote consumer maintains on a comment
-// row, and the per-viewer vote state a comment thread is served with.
+// row.
 //
-// This is the one place either is proved against real SQL. The counter half
-// (upvote_count, downvote_count, score) is maintained by the vote consumer
-// inside the same transaction as the vote row, so no fake can stand in for it.
-// The viewer half runs GetComments with a ViewerDID, which resolves the
-// caller's own votes across a whole page of comments in one query — the batch
-// lookup that a per-comment fake would never exercise.
+// This is the one place they are proved against real SQL. The counters
+// (upvote_count, downvote_count, score) are maintained by the vote consumer
+// inside the same transaction as the vote row, so no fake can stand in for
+// them. The viewer's own vote state is filled by the comment handlers, not the
+// comment service (docs/PRD_VOTE_STATE_FROM_INDEX.md §4).
 //
 // It lives beside the comments domain rather than beside votes because what is
 // asserted is the state of a COMMENT: the vote record is the input, the comment
-// row and its viewer state are the output under test.
+// row is the output under test.
 //
-// Both halves are driven by feeding synthetic Jetstream events to the comment
+// The counters are driven by feeding synthetic Jetstream events to the comment
 // and vote consumers, which is how those rows are written in production; see
 // comment_consumer_test.go for why the consumer is fed directly rather than
 // over a websocket.
@@ -28,14 +27,10 @@ import (
 	"time"
 
 	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/comments"
 	"Coves/internal/core/users"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-
-	"github.com/stretchr/testify/require"
 )
 
 // TestCommentVote_CreateAndUpdate tests voting on comments and vote count updates
@@ -340,258 +335,6 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 		}
 		if commentAfterDelete.Score != 0 {
 			t.Errorf("Expected score = 0 after delete, got %d", commentAfterDelete.Score)
-		}
-	})
-}
-
-// TestCommentVote_ViewerState tests viewer vote state in comment query responses
-func TestCommentVote_ViewerState(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	ctx := context.Background()
-	commentRepo := postgres.NewCommentRepository(db)
-	voteRepo := postgres.NewVoteRepository(db)
-	postRepo := postgres.NewPostRepository(db)
-	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
-	userService := users.NewUserService(userRepo, nil, testkit.Endpoints().PDS.BaseURL, nil, "")
-
-	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
-	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
-
-	// Use fixed timestamp to prevent flaky tests
-	fixedTime := time.Date(2025, 11, 6, 12, 0, 0, 0, time.UTC)
-
-	// Setup test data
-	testUser := fixtures.User(t, db, "viewer.test", "did:plc:viewer123")
-	testCommunity, err := fixtures.Community(ctx, db, "testcommunity", "owner.test")
-	if err != nil {
-		t.Fatalf("Failed to create test community: %v", err)
-	}
-	testPostURI := fixtures.Post(t, db, testCommunity, testUser.DID, "Test Post", 0, fixedTime)
-
-	t.Run("Viewer with vote sees vote state", func(t *testing.T) {
-		// Create comment
-		commentRKey := testkit.TID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
-		commentCID := "bafycomment111"
-
-		commentEvent := &jetstream.JetstreamEvent{
-			Did:  testUser.DID,
-			Kind: "commit",
-			Commit: &jetstream.CommitEvent{
-				Rev:        "test-rev",
-				Operation:  "create",
-				Collection: "social.coves.community.comment",
-				RKey:       commentRKey,
-				CID:        commentCID,
-				Record: map[string]interface{}{
-					"$type":   "social.coves.community.comment",
-					"content": "Comment with viewer vote",
-					"reply": map[string]interface{}{
-						"root": map[string]interface{}{
-							"uri": testPostURI,
-							"cid": "bafypost",
-						},
-						"parent": map[string]interface{}{
-							"uri": testPostURI,
-							"cid": "bafypost",
-						},
-					},
-					"createdAt": fixedTime.Format(time.RFC3339),
-				},
-			},
-		}
-
-		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
-			t.Fatalf("Failed to create comment: %v", err)
-		}
-
-		// Create vote
-		voteRKey := testkit.TID()
-		voteURI := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", testUser.DID, voteRKey)
-
-		voteEvent := &jetstream.JetstreamEvent{
-			Did:  testUser.DID,
-			Kind: "commit",
-			Commit: &jetstream.CommitEvent{
-				Rev:        "test-rev",
-				Operation:  "create",
-				Collection: "social.coves.feed.vote",
-				RKey:       voteRKey,
-				CID:        "bafyvote111",
-				Record: map[string]interface{}{
-					"$type": "social.coves.feed.vote",
-					"subject": map[string]interface{}{
-						"uri": commentURI,
-						"cid": commentCID,
-					},
-					"direction": "up",
-					"createdAt": fixedTime.Format(time.RFC3339),
-				},
-			},
-		}
-
-		if err := voteConsumer.HandleEvent(ctx, voteEvent); err != nil {
-			t.Fatalf("Failed to create vote: %v", err)
-		}
-
-		// Query comments with viewer authentication
-		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
-		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
-		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
-			PostURI:   testPostURI,
-			Sort:      "new",
-			Depth:     10,
-			Limit:     100,
-			ViewerDID: &testUser.DID,
-		})
-		if err != nil {
-			t.Fatalf("Failed to get comments: %v", err)
-		}
-
-		if len(response.Comments) == 0 {
-			t.Fatal("Expected at least one comment in response")
-		}
-
-		// Find our comment
-		var foundComment *comments.CommentView
-		for _, threadView := range response.Comments {
-			if threadView.Comment.URI == commentURI {
-				foundComment = threadView.Comment
-				break
-			}
-		}
-
-		if foundComment == nil {
-			t.Fatal("Expected to find test comment in response")
-		}
-
-		// Verify viewer state
-		if foundComment.Viewer == nil {
-			t.Fatal("Expected viewer state for authenticated request")
-		}
-		if foundComment.Viewer.Vote == nil {
-			t.Error("Expected viewer.vote to be populated")
-		} else if *foundComment.Viewer.Vote != "up" {
-			t.Errorf("Expected viewer.vote = 'up', got %s", *foundComment.Viewer.Vote)
-		}
-		if foundComment.Viewer.VoteURI == nil {
-			t.Error("Expected viewer.voteUri to be populated")
-		} else if *foundComment.Viewer.VoteURI != voteURI {
-			t.Errorf("Expected viewer.voteUri = %s, got %s", voteURI, *foundComment.Viewer.VoteURI)
-		}
-	})
-
-	t.Run("Viewer without vote sees empty state", func(t *testing.T) {
-		// Create comment (no vote)
-		commentRKey := testkit.TID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
-
-		commentEvent := &jetstream.JetstreamEvent{
-			Did:  testUser.DID,
-			Kind: "commit",
-			Commit: &jetstream.CommitEvent{
-				Rev:        "test-rev",
-				Operation:  "create",
-				Collection: "social.coves.community.comment",
-				RKey:       commentRKey,
-				CID:        "bafycomment222",
-				Record: map[string]interface{}{
-					"$type":   "social.coves.community.comment",
-					"content": "Comment without viewer vote",
-					"reply": map[string]interface{}{
-						"root": map[string]interface{}{
-							"uri": testPostURI,
-							"cid": "bafypost",
-						},
-						"parent": map[string]interface{}{
-							"uri": testPostURI,
-							"cid": "bafypost",
-						},
-					},
-					"createdAt": fixedTime.Format(time.RFC3339),
-				},
-			},
-		}
-
-		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
-			t.Fatalf("Failed to create comment: %v", err)
-		}
-
-		// Query with authentication but no vote
-		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
-		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
-		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
-			PostURI:   testPostURI,
-			Sort:      "new",
-			Depth:     10,
-			Limit:     100,
-			ViewerDID: &testUser.DID,
-		})
-		if err != nil {
-			t.Fatalf("Failed to get comments: %v", err)
-		}
-
-		if len(response.Comments) == 0 {
-			t.Fatal("Expected at least one comment in response")
-		}
-
-		// Find our comment
-		var foundComment *comments.CommentView
-		for _, threadView := range response.Comments {
-			if threadView.Comment.URI == commentURI {
-				foundComment = threadView.Comment
-				break
-			}
-		}
-
-		if foundComment == nil {
-			t.Fatal("Expected to find test comment in response")
-		}
-
-		// Verify viewer state exists but no vote
-		if foundComment.Viewer == nil {
-			t.Fatal("Expected viewer state for authenticated request")
-		}
-		if foundComment.Viewer.Vote != nil {
-			t.Errorf("Expected viewer.vote = nil (no vote), got %v", *foundComment.Viewer.Vote)
-		}
-		if foundComment.Viewer.VoteURI != nil {
-			t.Errorf("Expected viewer.voteUri = nil (no vote), got %v", *foundComment.Viewer.VoteURI)
-		}
-	})
-
-	t.Run("Unauthenticated request has no viewer state", func(t *testing.T) {
-		// Query without authentication.
-		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
-		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
-		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
-			PostURI:   testPostURI,
-			Sort:      "new",
-			Depth:     10,
-			Limit:     100,
-			ViewerDID: nil, // No authentication
-		})
-		if err != nil {
-			t.Fatalf("Failed to get comments: %v", err)
-		}
-
-		// The assertion used to be wrapped in `if len(response.Comments) > 0`,
-		// which made it vacuous whenever the thread was empty — and it was only
-		// ever non-empty because the sibling subtests above happened to run
-		// first and seed this post. A guard that turns "the thread was empty"
-		// into a silent pass hides exactly the regression it was written for, so
-		// the emptiness is now the failure.
-		require.NotEmpty(t, response.Comments,
-			"the sibling subtests seed this post's thread; an empty thread here means the "+
-				"assertion below would have checked nothing")
-		for _, node := range response.Comments {
-			require.Nilf(t, node.Comment.Viewer,
-				"comment %s carried viewer state for a caller with no identity: viewer state is "+
-					"per-actor, so serving it unauthenticated leaks one user's votes to everyone",
-				node.Comment.URI)
 		}
 	})
 }

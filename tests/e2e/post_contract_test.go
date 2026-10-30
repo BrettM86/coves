@@ -42,6 +42,8 @@ type postView struct {
 	CreatedAt time.Time      `json:"createdAt"`
 	IndexedAt time.Time      `json:"indexedAt"`
 	EditedAt  *time.Time     `json:"editedAt,omitempty"`
+	// Viewer is present only for a signed-in reader; see viewerVoteState.
+	Viewer *viewerVoteState `json:"viewer"`
 
 	// NotFound is the discriminator of the notFoundPost union member, which
 	// shares the array with postView. The endpoint answers 200 either way (a

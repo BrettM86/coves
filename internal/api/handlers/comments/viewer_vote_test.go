@@ -3,14 +3,11 @@ package comments
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"Coves/internal/api/middleware"
-	"Coves/internal/atproto/pds"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/votes"
 
@@ -18,155 +15,76 @@ import (
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type commentVoteReader struct {
+// viewerVotesCall is one recorded ViewerVotes call.
+type viewerVotesCall struct {
+	viewerDID   string
+	subjectURIs []string
+}
+
+// recordingVoteService answers ViewerVotes from a configured map and records
+// every call. The embedded nil votes.Service makes any write method panic: a
+// read handler must never write.
+type recordingVoteService struct {
 	votes.Service
-	populationError error
-	populationCalls int
-	lookupCalls     int
-	subjects        []string
-	viewer          string
+	result map[string]votes.ViewerVote
+	calls  []viewerVotesCall
 }
 
-func (s *commentVoteReader) EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error {
-	s.populationCalls++
-	if s.populationError != nil {
-		return s.populationError
-	}
-	return s.Service.EnsureCachePopulated(ctx, session)
+func (s *recordingVoteService) ViewerVotes(_ context.Context, viewerDID string, subjectURIs []string) (map[string]votes.ViewerVote, error) {
+	s.calls = append(s.calls, viewerVotesCall{viewerDID: viewerDID, subjectURIs: append([]string(nil), subjectURIs...)})
+	return s.result, nil
 }
 
-func (s *commentVoteReader) GetViewerVotesForSubjects(viewer string, subjects []string) map[string]*votes.CachedVote {
-	s.lookupCalls++
-	s.viewer = viewer
-	s.subjects = subjects
-	return s.Service.GetViewerVotesForSubjects(viewer, subjects)
-}
-
-func TestGetComments_CachedViewerVotes(t *testing.T) {
+func TestGetComments_ResolvesViewerVotesOncePerResponse(t *testing.T) {
 	const viewer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
-	const rootURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/root"
-	const replyURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/reply"
-	const nestedURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/nested"
-	for _, scenario := range []struct {
-		name            string
-		anonymous       bool
-		noSession       bool
-		noCache         bool
-		loneVote        bool
-		fetch           bool
-		populationError error
-		preserve        bool
-	}{
-		{name: "cached directions and toggle off override stale index"},
-		{name: "lone write and failed fetch preserves indexed votes", loneVote: true, preserve: true},
-		{name: "empty cache fetches PDS votes", fetch: true},
-		{name: "anonymous", anonymous: true, preserve: true},
-		{name: "DID without OAuth session", noSession: true, preserve: true},
-		{name: "cache disabled", noCache: true, preserve: true},
-		{name: "cache population failed", populationError: errors.New("PDS unavailable"), preserve: true},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			up, oldURI := "up", "at://"+viewer+"/social.coves.feed.vote/old"
-			stale := func(uri string) *core.CommentView {
-				return &core.CommentView{URI: uri, Viewer: &core.CommentViewerState{Vote: &up, VoteURI: &oldURI}, Stats: &core.CommentStats{Upvotes: 7, Downvotes: 2, Score: 5}}
-			}
-			root, reply, nested := stale(rootURI), stale(replyURI), &core.CommentView{URI: nestedURI}
-			cursor := "next-page"
-			response := &core.GetCommentsResponse{Post: map[string]string{"uri": testPostURI}, Cursor: &cursor, Comments: []*core.ThreadViewComment{
-				{Comment: root, HasMore: true, Replies: []*core.ThreadViewComment{
-					nil, {Comment: reply, Replies: []*core.ThreadViewComment{{Comment: nil, Replies: []*core.ThreadViewComment{{Comment: nested}}}}},
+	const topLevelURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/toplevel"
+	const nestedReplyURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/nested"
+	const removedURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/removed"
+	const deletedURI = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/deleted"
+	const topLevelVoteURI = "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/social.coves.feed.vote/toplevel"
+	const nestedReplyVoteURI = "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/social.coves.feed.vote/nested"
+	const removedVoteURI = "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/social.coves.feed.vote/removed"
+
+	response := &core.GetCommentsResponse{
+		Post: map[string]string{"uri": testPostURI},
+		Comments: []*core.ThreadViewComment{
+			{Comment: &core.CommentView{URI: topLevelURI}, Replies: []*core.ThreadViewComment{
+				nil,
+				{Comment: &core.CommentView{URI: removedURI, Moderation: &core.ModerationView{State: "removed"}}, Replies: []*core.ThreadViewComment{
+					{Comment: nil, Replies: []*core.ThreadViewComment{{Comment: &core.CommentView{URI: nestedReplyURI}}}},
 				}},
-			}}
-			cache := votes.NewVoteCache(time.Hour, nil)
-			seed := map[string]*votes.CachedVote{
-				rootURI:   {Direction: "down", URI: "at://" + viewer + "/social.coves.feed.vote/new"},
-				nestedURI: {Direction: "up", URI: "at://" + viewer + "/social.coves.feed.vote/nested"},
-			}
-			if !scenario.fetch && !scenario.loneVote {
-				cache.SetVotesForUser(viewer, seed)
-			}
-			if scenario.loneVote {
-				cache.SetVote(viewer, rootURI, seed[rootURI])
-			}
-			if scenario.noCache {
-				cache = nil
-			}
-			client := &commentVotePDS{viewer: viewer, seed: seed}
-			if scenario.loneVote {
-				client.err = errors.New("PDS unavailable")
-			}
-			factory := func(context.Context, *oauthlib.ClientSessionData) (votes.PDSClient, error) { return client, nil }
-			reader := &commentVoteReader{Service: votes.NewServiceWithPDSFactory(nil, cache, nil, factory), populationError: scenario.populationError}
-			request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.comment.getComments?post="+testPostURI+"&parentRkey=root&viewerDID=did:plc:other", nil)
-			if !scenario.anonymous {
-				ctx := middleware.SetTestUserDID(request.Context(), viewer)
-				if !scenario.noSession {
-					ctx = middleware.SetTestOAuthSession(ctx, &oauthlib.ClientSessionData{AccountDID: syntax.DID(viewer)})
-				}
-				request = request.WithContext(ctx)
-			}
-			recorder := httptest.NewRecorder()
-			NewGetCommentsHandler(&fakeCommentService{resp: response}, reader, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance").HandleGetComments(recorder, request)
-			require.Equal(t, http.StatusOK, recorder.Code)
-			var got core.GetCommentsResponse
-			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
-			gotRoot := got.Comments[0].Comment
-			gotReply := got.Comments[0].Replies[1].Comment
-			gotNested := got.Comments[0].Replies[1].Replies[0].Replies[0].Comment
-			require.Equal(t, &cursor, got.Cursor)
-			require.True(t, got.Comments[0].HasMore)
-			require.Equal(t, &core.CommentStats{Upvotes: 7, Downvotes: 2, Score: 5}, gotRoot.Stats)
-			if scenario.preserve {
-				require.Equal(t, &up, gotRoot.Viewer.Vote)
-				require.Equal(t, &oldURI, gotReply.Viewer.VoteURI)
-				require.Nil(t, gotNested.Viewer)
-			} else {
-				require.NotNil(t, gotRoot.Viewer)
-				require.Equal(t, "down", *gotRoot.Viewer.Vote)
-				require.Equal(t, "at://"+viewer+"/social.coves.feed.vote/new", *gotRoot.Viewer.VoteURI)
-				require.Nil(t, gotReply.Viewer, "confirmed absence omits empty viewer state")
-				require.NotNil(t, gotNested.Viewer)
-				require.Equal(t, "up", *gotNested.Viewer.Vote)
-				require.Equal(t, viewer, reader.viewer)
-				require.ElementsMatch(t, []string{rootURI, replyURI, nestedURI}, reader.subjects)
-				require.Equal(t, 1, reader.populationCalls)
-				require.Equal(t, 1, reader.lookupCalls)
-			}
-			if scenario.fetch || scenario.loneVote {
-				require.Equal(t, 1, client.calls)
-			}
-			if scenario.anonymous || scenario.noSession {
-				require.Zero(t, reader.populationCalls)
-			}
-			if scenario.populationError != nil {
-				require.Zero(t, reader.lookupCalls)
-			}
-		})
+			}},
+			{Comment: &core.CommentView{URI: deletedURI, IsDeleted: true}},
+		},
 	}
-}
+	service := &recordingVoteService{result: map[string]votes.ViewerVote{
+		topLevelURI:    {Direction: "up", URI: topLevelVoteURI},
+		nestedReplyURI: {Direction: "down", URI: nestedReplyVoteURI},
+		removedURI:     {Direction: "up", URI: removedVoteURI},
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.comment.getComments?post="+testPostURI, nil)
+	request = request.WithContext(middleware.SetTestOAuthSession(middleware.SetTestUserDID(request.Context(), viewer),
+		&oauthlib.ClientSessionData{AccountDID: syntax.DID(viewer)}))
+	recorder := httptest.NewRecorder()
 
-// Only ListRecords is used by this read handler; embedded methods fail if called.
-type commentVotePDS struct {
-	votes.PDSClient
-	viewer string
-	seed   map[string]*votes.CachedVote
-	err    error
-	calls  int
-}
+	NewGetCommentsHandler(&fakeCommentService{resp: response}, service, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance").
+		HandleGetComments(recorder, request)
 
-func (p *commentVotePDS) DID() string     { return p.viewer }
-func (p *commentVotePDS) HostURL() string { return "https://pds.invalid" }
-func (p *commentVotePDS) ListRecords(context.Context, string, int, string) (*pds.ListRecordsResponse, error) {
-	p.calls++
-	if p.err != nil {
-		return nil, p.err
+	require.Equal(t, http.StatusOK, recorder.Code)
+	if assert.Len(t, service.calls, 1, "ViewerVotes calls per response") {
+		assert.Equal(t, viewer, service.calls[0].viewerDID)
+		assert.ElementsMatch(t, []string{topLevelURI, nestedReplyURI, removedURI, deletedURI}, service.calls[0].subjectURIs)
 	}
-	result := &pds.ListRecordsResponse{}
-	for subject, vote := range p.seed {
-		result.Records = append(result.Records, pds.RecordEntry{URI: vote.URI, Value: map[string]any{"subject": map[string]any{"uri": subject}, "direction": vote.Direction}})
-	}
-	return result, nil
+	var got core.GetCommentsResponse
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
+	up, down := "up", "down"
+	topLevelVote, nestedReplyVote, removedVote := topLevelVoteURI, nestedReplyVoteURI, removedVoteURI
+	assert.Equal(t, &core.CommentViewerState{Vote: &up, VoteURI: &topLevelVote}, got.Comments[0].Comment.Viewer, "top-level comment")
+	assert.Equal(t, &core.CommentViewerState{Vote: &up, VoteURI: &removedVote}, got.Comments[0].Replies[1].Comment.Viewer, "removed placeholder")
+	assert.Equal(t, &core.CommentViewerState{Vote: &down, VoteURI: &nestedReplyVote}, got.Comments[0].Replies[1].Replies[0].Replies[0].Comment.Viewer, "nested reply")
+	assert.Nil(t, got.Comments[1].Comment.Viewer, "deleted placeholder without a vote")
 }

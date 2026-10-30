@@ -4,70 +4,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/votes"
 
-	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/require"
 )
 
 const viewerModerationInstanceDID = "did:web:coves.example"
-
-// cachedVoteRequest returns the authenticated did:plc:viewer request and a vote
-// service whose cache is complete for that viewer and holds only the given votes.
-func cachedVoteRequest(seed map[string]*votes.CachedVote) (*http.Request, votes.Service) {
-	request := authenticatedRequest()
-	request = request.WithContext(middleware.SetTestOAuthSession(request.Context(),
-		&oauthlib.ClientSessionData{AccountDID: syntax.DID("did:plc:viewer")}))
-	cache := votes.NewVoteCache(time.Hour, nil)
-	cache.SetVotesForUser("did:plc:viewer", seed)
-	return request, votes.NewServiceWithPDSFactory(nil, cache, nil, nil)
-}
-
-func TestPopulateViewerVoteState_PreservesViewerModeration(t *testing.T) {
-	const votedURI = "at://did:plc:author/social.coves.community.postv2/voted"
-	const unvotedURI = "at://did:plc:author/social.coves.community.postv2/unvoted"
-	request, service := cachedVoteRequest(map[string]*votes.CachedVote{
-		votedURI: {Direction: "up", URI: "at://did:plc:viewer/social.coves.feed.vote/voted"},
-	})
-	voted := &posts.PostView{URI: votedURI, Viewer: &posts.ViewerState{Moderation: []string{"remove", "label"}}}
-	unvoted := &posts.PostView{URI: unvotedURI, Viewer: &posts.ViewerState{Moderation: []string{"remove", "label"}}}
-
-	PopulateViewerVoteState(request.Context(), request, service, []voteFeedPost{{voted}, {unvoted}})
-
-	t.Run("confirmed vote", func(t *testing.T) {
-		require.NotNil(t, voted.Viewer)
-		require.NotNil(t, voted.Viewer.Vote)
-		require.Equal(t, "up", *voted.Viewer.Vote)
-		require.Equal(t, []string{"remove", "label"}, voted.Viewer.Moderation, "vote hydration erased viewer.moderation")
-	})
-	t.Run("no vote", func(t *testing.T) {
-		require.NotNil(t, unvoted.Viewer)
-		require.Equal(t, []string{"remove", "label"}, unvoted.Viewer.Moderation, "vote hydration erased viewer.moderation")
-	})
-}
-
-func TestPopulateCommentViewerVoteState_NoVoteKeepsModerationClearsStaleVote(t *testing.T) {
-	const commentURI = "at://did:plc:commenter/social.coves.community.comment/unvoted"
-	request, service := cachedVoteRequest(map[string]*votes.CachedVote{})
-	staleDirection, staleURI := "up", "at://did:plc:viewer/social.coves.feed.vote/stale"
-	view := &comments.CommentView{URI: commentURI, Viewer: &comments.CommentViewerState{
-		Vote: &staleDirection, VoteURI: &staleURI, Moderation: []string{"remove"},
-	}}
-
-	PopulateCommentViewerVoteState(request, service, []*comments.CommentView{view})
-
-	require.NotNil(t, view.Viewer, "confirmed vote absence erased viewer.moderation")
-	require.Equal(t, []string{"remove"}, view.Viewer.Moderation)
-	require.Nil(t, view.Viewer.Vote, "confirmed vote absence must clear the stale vote")
-	require.Nil(t, view.Viewer.VoteURI, "confirmed vote absence must clear the stale vote URI")
-}
 
 func TestPopulateViewerModeration_PreservesVoteState(t *testing.T) {
 	authority := moderation.NewAllowlistAuthority([]string{"did:plc:viewer"})

@@ -33,4 +33,21 @@ type Repository interface {
 	// ListByVoter retrieves all votes by a specific user
 	// Future: Used for user voting history
 	ListByVoter(ctx context.Context, voterDID string, limit, offset int) ([]*Vote, error)
+
+	// GetActiveVotesForSubjects returns the voter's active votes on any of the subjects.
+	GetActiveVotesForSubjects(ctx context.Context, voterDID string, subjectURIs []string) ([]*Vote, error)
+
+	// GetIndexedStatesByURIs reports whether each vote URI is indexed as active or
+	// soft-deleted. A URI with no row is absent from the map.
+	GetIndexedStatesByURIs(ctx context.Context, uris []string) (map[string]IndexedVoteState, error)
 }
+
+// IndexedVoteState is the index state of one vote row.
+type IndexedVoteState int
+
+const (
+	// IndexedVoteActive means the vote's row exists and is not soft-deleted.
+	IndexedVoteActive IndexedVoteState = iota + 1
+	// IndexedVoteDeleted means the vote's row exists and is soft-deleted.
+	IndexedVoteDeleted
+)

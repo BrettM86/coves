@@ -67,7 +67,7 @@ func TestBuildCommentView_ServesOnlyBlobDerivedMedia(t *testing.T) {
 			comment.Embed = &embedJSON
 			service := NewCommentService(newMockCommentRepo(), newMockUserRepo(), newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil).(*commentService)
 
-			view := service.buildCommentView(comment, nil, nil, map[string]*users.User{
+			view := service.buildCommentView(comment, map[string]*users.User{
 				commenterDID: {DID: commenterDID, Handle: "commenter.test", PDSURL: "https://pds.example.com"},
 			})
 

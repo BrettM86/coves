@@ -42,11 +42,13 @@ type voteService struct {
 	oauthStore       oauth.ClientAuthStore
 	logger           *slog.Logger
 	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
-	cache            *VoteCache       // In-memory cache of user votes from PDS
+	now              func() time.Time
+	overlay          *recentWriteOverlay
+	writeLocks       *viewerSubjectLocks
 }
 
 // NewService creates a new vote service instance
-func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, cache *VoteCache, logger *slog.Logger) Service {
+func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -54,20 +56,24 @@ func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStor
 		repo:        repo,
 		oauthClient: oauthClient,
 		oauthStore:  oauthStore,
-		cache:       cache,
+		now:         time.Now,
+		overlay:     newRecentWriteOverlay(),
+		writeLocks:  newViewerSubjectLocks(),
 		logger:      logger,
 	}
 }
 
 // NewServiceWithPDSFactory creates a vote service with a custom PDS client factory.
 // This is primarily for testing with password-based authentication.
-func NewServiceWithPDSFactory(repo Repository, cache *VoteCache, logger *slog.Logger, factory PDSClientFactory) Service {
+func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSClientFactory) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &voteService{
 		repo:             repo,
-		cache:            cache,
+		now:              time.Now,
+		overlay:          newRecentWriteOverlay(),
+		writeLocks:       newViewerSubjectLocks(),
 		logger:           logger,
 		pdsClientFactory: factory,
 	}
@@ -139,15 +145,42 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	// TestVoteBeforeSubjectIsCountedOnceSubjectIndexed
 	// (tests/e2e/vote_contract_test.go).
 
-	// Check for existing vote using cache with PDS fallback
-	// First check populates cache from PDS, subsequent checks are O(1) lookups
-	existing, err := s.findExistingVoteWithCache(ctx, pdsClient, session.AccountDID.String(), req.Subject.URI)
+	// Lookup, PDS write and overlay update run under one lock per viewer and
+	// subject, so two taps can never both create a record.
+	key := viewerSubjectKey{viewerDID: session.AccountDID.String(), subjectURI: req.Subject.URI}
+	release, err := s.writeLocks.acquire(ctx, key)
 	if err != nil {
-		s.logger.Error("failed to check existing vote on PDS",
+		return nil, fmt.Errorf("waiting for the vote write lock: %w", err)
+	}
+	defer release()
+
+	existing, ambiguous, err := s.findExistingVote(ctx, pdsClient, key)
+	if err != nil {
+		s.logger.Error("failed to check existing vote",
 			"error", err,
 			"voter", session.AccountDID,
 			"subject", req.Subject.URI)
 		return nil, fmt.Errorf("failed to check existing vote: %w", err)
+	}
+
+	// A retry of an ambiguous CreateVote in the same direction repeats it
+	// (D6): if the PDS already holds its result, return that and write nothing.
+	if ambiguous.direction == req.Direction {
+		if ambiguous.operation == ambiguousOperationCast && existing != nil && existing.Direction == req.Direction {
+			s.logger.Info("vote retry found the ambiguous vote cast",
+				"voter", session.AccountDID,
+				"subject", req.Subject.URI,
+				"uri", existing.URI)
+			s.overlay.record(key, recentWrite{state: recentWriteVoted, uri: existing.URI, direction: existing.Direction, rkey: existing.RKey}, s.now())
+			return &CreateVoteResponse{URI: existing.URI, CID: existing.CID}, nil
+		}
+		if ambiguous.operation == ambiguousOperationToggleOff && existing == nil {
+			s.logger.Info("vote retry found the ambiguous toggle-off applied",
+				"voter", session.AccountDID,
+				"subject", req.Subject.URI)
+			s.overlay.record(key, recentWrite{state: recentWriteRemoved, uri: ambiguous.removedURI}, s.now())
+			return &CreateVoteResponse{URI: "", CID: ""}, nil
+		}
 	}
 
 	// Toggle logic
@@ -160,6 +193,11 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 					"error", err,
 					"voter", session.AccountDID,
 					"rkey", existing.RKey)
+				s.recordAmbiguousWrite(key, ambiguousRequest{
+					operation:  ambiguousOperationToggleOff,
+					direction:  req.Direction,
+					removedURI: existing.URI,
+				}, err)
 				if pds.IsAuthError(err) {
 					return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 				}
@@ -171,10 +209,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 				"subject", req.Subject.URI,
 				"direction", req.Direction)
 
-			// Update cache - remove the vote
-			if s.cache != nil {
-				s.cache.RemoveVote(session.AccountDID.String(), req.Subject.URI)
-			}
+			s.overlay.record(key, recentWrite{state: recentWriteRemoved, uri: existing.URI}, s.now())
 
 			// Return empty response to indicate deletion
 			return &CreateVoteResponse{
@@ -185,7 +220,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// Write a first vote or atomically replace an opposite-direction vote.
-	uri, cid, err := s.writeVoteRecord(ctx, pdsClient, req, existing)
+	uri, cid, rkey, err := s.writeVoteRecord(ctx, pdsClient, key, req, existing, ambiguous.createRKey)
 	if err != nil {
 		s.logger.Error("failed to create vote on PDS",
 			"error", err,
@@ -205,14 +240,12 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		"uri", uri,
 		"cid", cid)
 
-	// Update cache - add the new vote
-	if s.cache != nil {
-		s.cache.SetVote(session.AccountDID.String(), req.Subject.URI, &CachedVote{
-			Direction: req.Direction,
-			URI:       uri,
-			RKey:      extractRKeyFromURI(uri),
-		})
-	}
+	s.overlay.record(key, recentWrite{
+		state:     recentWriteVoted,
+		uri:       uri,
+		direction: req.Direction,
+		rkey:      rkey,
+	}, s.now())
 
 	return &CreateVoteResponse{
 		URI: uri,
@@ -239,17 +272,30 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 		return fmt.Errorf("failed to create PDS client: %w", err)
 	}
 
-	// Find existing vote using cache with PDS fallback
-	// First check populates cache from PDS, subsequent checks are O(1) lookups
-	existing, err := s.findExistingVoteWithCache(ctx, pdsClient, session.AccountDID.String(), req.Subject.URI)
+	key := viewerSubjectKey{viewerDID: session.AccountDID.String(), subjectURI: req.Subject.URI}
+	release, err := s.writeLocks.acquire(ctx, key)
 	if err != nil {
-		s.logger.Error("failed to find vote on PDS",
+		return fmt.Errorf("waiting for the vote write lock: %w", err)
+	}
+	defer release()
+
+	existing, ambiguous, err := s.findExistingVote(ctx, pdsClient, key)
+	if err != nil {
+		s.logger.Error("failed to find existing vote",
 			"error", err,
 			"voter", session.AccountDID,
 			"subject", req.Subject.URI)
 		return fmt.Errorf("failed to find vote: %w", err)
 	}
 	if existing == nil {
+		// A retry of an ambiguous DeleteVote repeats it (D6): the vote is gone.
+		if ambiguous.operation == ambiguousOperationDelete {
+			s.logger.Info("vote retry found the ambiguous delete applied",
+				"voter", session.AccountDID,
+				"subject", req.Subject.URI)
+			s.overlay.record(key, recentWrite{state: recentWriteRemoved, uri: ambiguous.removedURI}, s.now())
+			return nil
+		}
 		return ErrVoteNotFound
 	}
 
@@ -259,6 +305,7 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 			"error", err,
 			"voter", session.AccountDID,
 			"rkey", existing.RKey)
+		s.recordAmbiguousWrite(key, ambiguousRequest{operation: ambiguousOperationDelete, removedURI: existing.URI}, err)
 		if pds.IsAuthError(err) {
 			return fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
@@ -270,16 +317,30 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 		"subject", req.Subject.URI,
 		"uri", existing.URI)
 
-	// Update cache - remove the vote
-	if s.cache != nil {
-		s.cache.RemoveVote(session.AccountDID.String(), req.Subject.URI)
-	}
+	s.overlay.record(key, recentWrite{state: recentWriteRemoved, uri: existing.URI}, s.now())
 
 	return nil
 }
 
-// writeVoteRecord writes a vote, replacing an existing direction in one commit.
-func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient PDSClient, req CreateVoteRequest, existing *existingVote) (string, string, error) {
+// recordAmbiguousWrite marks the key Unverified with the failed request,
+// unless the PDS definitively refused it (D5). A refused write cannot have
+// committed, so the overlay keeps what it knew.
+func (s *voteService) recordAmbiguousWrite(key viewerSubjectKey, request ambiguousRequest, err error) {
+	if !definitiveVoteRefusal(err) {
+		s.recordUnverified(key, request)
+	}
+}
+
+// recordUnverified marks the key's last write as having an unknown outcome.
+// request is the write, or the zero value when no retry should repeat it.
+func (s *voteService) recordUnverified(key viewerSubjectKey, request ambiguousRequest) {
+	s.overlay.record(key, recentWrite{state: recentWriteUnverified, request: request}, s.now())
+}
+
+// writeVoteRecord writes a vote, replacing an existing direction in one commit,
+// and returns the new vote's URI, CID and record key. A plain create reuses
+// createRKey when an earlier ambiguous create left one.
+func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient PDSClient, key viewerSubjectKey, req CreateVoteRequest, existing *existingVote, createRKey string) (string, string, string, error) {
 	// Generate TID for the record key
 	tid := syntax.NewTIDNow(0)
 
@@ -295,18 +356,29 @@ func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient PDSClient, 
 	}
 
 	if existing != nil {
-		return s.replaceVoteRecord(ctx, pdsClient, existing.RKey, tid.String(), record)
+		uri, cid, err := s.replaceVoteRecord(ctx, pdsClient, key, existing.RKey, tid.String(), record)
+		return uri, cid, tid.String(), err
 	}
 
-	uri, cid, err := pdsClient.CreateRecord(ctx, voteCollection, tid.String(), record)
+	if createRKey == "" {
+		createRKey = tid.String()
+	}
+	request := ambiguousRequest{operation: ambiguousOperationCast, direction: req.Direction, createRKey: createRKey}
+	uri, cid, err := pdsClient.CreateRecord(ctx, voteCollection, createRKey, record)
 	if err != nil {
-		return "", "", fmt.Errorf("createRecord failed: %w", err)
+		s.recordAmbiguousWrite(key, request, err)
+		return "", "", "", fmt.Errorf("createRecord failed: %w", err)
+	}
+	// A success naming another record is an unknown write outcome.
+	if uri != "at://"+pdsClient.DID()+"/"+voteCollection+"/"+createRKey {
+		s.recordUnverified(key, request)
+		return "", "", "", fmt.Errorf("PDS returned a vote create result naming another record")
 	}
 
-	return uri, cid, nil
+	return uri, cid, createRKey, nil
 }
 
-func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, oldRKey, newRKey string, record VoteRecord) (string, string, error) {
+func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, key viewerSubjectKey, oldRKey, newRKey string, record VoteRecord) (string, string, error) {
 	// Votes remain immutable: the consumer indexes create/delete events, not
 	// updates. A single batch prevents a refused create from deleting the vote.
 	result, err := client.ApplyWrites(ctx, []pds.Write{
@@ -324,11 +396,11 @@ func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, o
 	}
 
 	if definitiveVoteRefusal(err) {
-		// State conflicts can expose a stale key. Other refusals leave the
-		// snapshot usable and must not add reads to an unauthorized/limited PDS.
-		if s.cache != nil && (errors.Is(err, pds.ErrNotFound) ||
-			errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict)) {
-			s.cache.Invalidate(client.DID())
+		// State conflicts can expose a stale key, so the next write reads the
+		// PDS. Other refusals leave the overlay usable and must not add reads
+		// to an unauthorized/limited PDS.
+		if errors.Is(err, pds.ErrNotFound) || errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict) {
+			s.recordUnverified(key, ambiguousRequest{})
 		}
 		return "", "", fmt.Errorf("atomic vote replacement refused: %w", err)
 	}
@@ -371,10 +443,9 @@ func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, o
 	}
 
 	// The bounded read cannot rule out a still-running commit. The next
-	// request must reload state instead of serving the old cached vote.
-	if s.cache != nil {
-		s.cache.Invalidate(client.DID())
-	}
+	// write must read the PDS instead of trusting the overlay or the index,
+	// and a retry of this switch returns the switched vote if it committed.
+	s.recordUnverified(key, ambiguousRequest{operation: ambiguousOperationCast, direction: record.Direction})
 	s.logger.Warn("failed to reconcile vote replacement",
 		"old_rkey", oldRKey, "new_rkey", newRKey, "batch_error", err,
 		"reason", reason, "error", readErr)
@@ -385,7 +456,8 @@ func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, o
 func definitiveVoteRefusal(err error) bool {
 	if pds.IsAuthError(err) || errors.Is(err, pds.ErrBadRequest) ||
 		errors.Is(err, pds.ErrRateLimited) || errors.Is(err, pds.ErrPayloadTooLarge) ||
-		errors.Is(err, pds.ErrNotFound) || errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict) {
+		errors.Is(err, pds.ErrNotFound) || errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict) ||
+		errors.Is(err, pds.ErrSessionBusy) {
 		return true
 	}
 	// Unclassified API errors retain their original status in the PDS wrapper.
@@ -435,56 +507,30 @@ type existingVote struct {
 	Direction string
 }
 
-// findExistingVoteWithCache uses the vote cache for O(1) lookups when available.
-// Falls back to direct PDS pagination if cache is unavailable or cannot be populated.
-func (s *voteService) findExistingVoteWithCache(ctx context.Context, pdsClient pds.Client, userDID, subjectURI string) (*existingVote, error) {
-	if s.cache != nil {
-		if !s.cache.IsCached(userDID) {
-			// Populate cache first (fetches all votes via pagination, then cached for subsequent O(1) lookups)
-			if err := s.cache.FetchAndCacheFromPDS(ctx, pdsClient); err != nil {
-				// Auth errors won't succeed on fallback either - propagate immediately
-				if errors.Is(err, ErrNotAuthorized) {
-					return nil, err
-				}
-				// Log warning for other errors and fall back to direct PDS query
-				s.logger.Warn("failed to populate vote cache, falling back to PDS pagination",
-					"error", err,
-					"user", userDID,
-					"subject", subjectURI)
-			}
-		}
-
-		if s.cache.IsCached(userDID) {
-			cached := s.cache.GetVote(userDID, subjectURI)
-			if cached == nil {
-				s.logger.Debug("vote existence check via cache: not found",
-					"user", userDID,
-					"subject", subjectURI)
-				return nil, nil // No vote exists
-			}
-			s.logger.Debug("vote existence check via cache: found",
-				"user", userDID,
-				"subject", subjectURI,
-				"direction", cached.Direction)
-			return &existingVote{
-				URI:       cached.URI,
-				RKey:      cached.RKey,
-				Direction: cached.Direction,
-				// CID not cached - not needed for toggle/delete operations
-			}, nil
-		}
+// findExistingVote finds the viewer's vote on the key's subject for a write
+// (PRD §5.3). It resolves through the index and overlay, and scans the PDS
+// only when the key's last write had an unknown outcome (§5.4). Any error
+// fails the write; it never falls back to "no vote". After an ambiguous write
+// it also returns that write's request, for a retry to repeat (D6) and a
+// create to reuse its record key; otherwise the zero request.
+func (s *voteService) findExistingVote(ctx context.Context, pdsClient pds.Client, key viewerSubjectKey) (*existingVote, ambiguousRequest, error) {
+	resolved, err := s.resolveViewerVotes(ctx, key.viewerDID, []string{key.subjectURI})
+	if err != nil {
+		return nil, ambiguousRequest{}, err
+	}
+	resolution := resolved[key.subjectURI]
+	if !resolution.unverified {
+		return resolution.vote, ambiguousRequest{}, nil
 	}
 
-	// Fallback: query PDS directly via pagination
-	s.logger.Debug("vote existence check via PDS pagination (cache unavailable)",
-		"user", userDID,
-		"subject", subjectURI)
-	return s.findExistingVoteFromPDS(ctx, pdsClient, subjectURI)
+	s.logger.Info("vote lookup scanning the PDS after an ambiguous write",
+		"voter", key.viewerDID)
+	existing, err := s.findExistingVoteFromPDS(ctx, pdsClient, key.subjectURI)
+	return existing, resolution.request, err
 }
 
 // findExistingVoteFromPDS queries the user's PDS directly to find an existing vote for a subject.
-// This is the slow fallback path that paginates through all vote records.
-// Prefer findExistingVoteWithCache for production use.
+// It pages until the first match, and runs only after an ambiguous write.
 // Returns the vote record with rkey, or nil if no vote exists for the subject.
 func (s *voteService) findExistingVoteFromPDS(ctx context.Context, pdsClient pds.Client, subjectURI string) (*existingVote, error) {
 	cursor := ""
@@ -543,51 +589,4 @@ func (s *voteService) findExistingVoteFromPDS(ctx context.Context, pdsClient pds
 
 	// No vote found for this subject after checking all pages
 	return nil, nil
-}
-
-// EnsureCachePopulated fetches the user's votes from their PDS if not already cached.
-func (s *voteService) EnsureCachePopulated(ctx context.Context, session *oauth.ClientSessionData) error {
-	if s.cache == nil {
-		return nil // No cache configured
-	}
-
-	// Check if already cached
-	if s.cache.IsCached(session.AccountDID.String()) {
-		return nil
-	}
-
-	// Create PDS client for this session
-	pdsClient, err := s.getPDSClient(ctx, session)
-	if err != nil {
-		s.logger.Error("failed to create PDS client for cache population",
-			"error", err,
-			"user", session.AccountDID)
-		return fmt.Errorf("failed to create PDS client: %w", err)
-	}
-
-	// Fetch and cache votes from PDS
-	if err := s.cache.FetchAndCacheFromPDS(ctx, pdsClient); err != nil {
-		s.logger.Error("failed to populate vote cache from PDS",
-			"error", err,
-			"user", session.AccountDID)
-		return fmt.Errorf("failed to populate vote cache: %w", err)
-	}
-
-	return nil
-}
-
-// GetViewerVote returns the viewer's vote for a specific subject, or nil if not voted.
-func (s *voteService) GetViewerVote(userDID, subjectURI string) *CachedVote {
-	if s.cache == nil {
-		return nil
-	}
-	return s.cache.GetVote(userDID, subjectURI)
-}
-
-// GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
-func (s *voteService) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote {
-	if s.cache == nil {
-		return nil
-	}
-	return s.cache.getVotesForSubjects(userDID, subjectURIs)
 }

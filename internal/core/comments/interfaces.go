@@ -91,11 +91,6 @@ type Repository interface {
 	// each URI that has at least one.
 	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)
 
-	// GetVoteStateForComments retrieves the viewer's votes on a batch of comments
-	// Returns map[commentURI]*Vote for efficient lookups
-	// Future: Used when votes table is implemented
-	GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
-
 	// ListByParentsBatch retrieves direct replies to multiple parents in a single query
 	// Returns map[parentURI][]*Comment grouped by parent
 	// Used to prevent N+1 queries when loading nested replies

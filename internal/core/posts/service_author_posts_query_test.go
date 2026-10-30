@@ -101,7 +101,7 @@ func newAuthorPostsFixture(t *testing.T) *authorPostsFixture {
 	// all write-path concerns and stay nil.
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,
 		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))
-	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, fixtures.PasswordAuthPDSClientFactory())
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, fixtures.PasswordAuthPDSClientFactory())
 
 	auth := fixtures.NewOAuthMiddleware()
 	router := chi.NewRouter()

@@ -1417,64 +1417,6 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 	return result, nil
 }
 
-// GetVoteStateForComments retrieves the viewer's votes on a batch of comments
-// Returns map[commentURI]*Vote for efficient lookups
-// Note: This implementation is prepared for when the votes table indexing is implemented
-// Currently returns an empty map as votes may not be fully indexed yet
-func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error) {
-	if len(commentURIs) == 0 || viewerDID == "" {
-		return make(map[string]interface{}), nil
-	}
-
-	// Query votes table for viewer's votes on these comments
-	// Note: This assumes votes table exists and is being indexed
-	// If votes table doesn't exist yet, this query will fail gracefully
-	query := `
-		SELECT subject_uri, direction, uri
-		FROM votes
-		WHERE voter_did = $1 AND subject_uri = ANY($2) AND deleted_at IS NULL
-	`
-
-	rows, err := r.db.QueryContext(ctx, query, viewerDID, pq.Array(commentURIs))
-	if err != nil {
-		// If votes table doesn't exist yet, return empty map instead of error
-		// This allows the API to work before votes indexing is fully implemented
-		if strings.Contains(err.Error(), "does not exist") {
-			log.Printf("WARN: Votes table does not exist, returning empty vote state for %d comments", len(commentURIs))
-			return make(map[string]interface{}), nil
-		}
-		return nil, fmt.Errorf("failed to get vote state for comments: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("Failed to close rows: %v", err)
-		}
-	}()
-
-	// Build result map with vote information
-	result := make(map[string]interface{})
-	for rows.Next() {
-		var subjectURI, direction, uri string
-
-		err := rows.Scan(&subjectURI, &direction, &uri)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan vote: %w", err)
-		}
-
-		// Store vote info as a simple map (can be enhanced later with proper Vote struct)
-		result[subjectURI] = map[string]interface{}{
-			"direction": direction,
-			"uri":       uri,
-		}
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating votes: %w", err)
-	}
-
-	return result, nil
-}
-
 // ActiveRemovalsByURIs returns the active removal sources of each URI.
 func (r *postgresCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]comments.RemovalSource, error) {
 	removals := make(map[string][]comments.RemovalSource)

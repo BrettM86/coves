@@ -41,7 +41,7 @@ func TestBuildCommentViewFiltersImagePlacementsAgainstServedGallery(t *testing.T
 			if test.embed != "" {
 				comment.Embed = &storedEmbed
 			}
-			view := (&commentService{}).buildCommentView(comment, nil, nil, map[string]*users.User{})
+			view := (&commentService{}).buildCommentView(comment, map[string]*users.User{})
 			record, ok := view.Record.(*CommentRecord)
 			require.True(t, ok)
 			expected := `[` + otherFacets + `]`

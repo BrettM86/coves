@@ -143,6 +143,8 @@ type commentView struct {
 	IsDeleted      bool         `json:"isDeleted"`
 	DeletionReason *string      `json:"deletionReason"`
 	DeletedAt      *string      `json:"deletedAt"`
+	// Viewer is present only for a signed-in reader; see viewerVoteState.
+	Viewer *viewerVoteState `json:"viewer"`
 }
 
 // strongRef is the uri+cid pair the lexicon uses for threading references.

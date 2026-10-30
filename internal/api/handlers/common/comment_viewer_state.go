@@ -9,17 +9,18 @@ import (
 	"Coves/internal/core/votes"
 )
 
-// PopulateCommentViewerVoteState overlays cached votes on indexed comment views.
-// Indexed state is preserved when the cache is unavailable; confirmed absence
-// clears both the selected direction and the old vote record URI. Other viewer
-// fields are preserved; a viewer state left empty is omitted.
+// PopulateCommentViewerVoteState resolves the viewer's votes on every comment
+// view in one ViewerVotes call. A comment the viewer voted on gets vote and
+// voteUri; one without a vote gets neither. Other viewer fields are preserved;
+// a viewer state left empty is omitted. If the lookup fails, the error is
+// logged and no comment gets vote state: a failed lookup must not render as
+// "not voted".
 func PopulateCommentViewerVoteState(r *http.Request, voteService votes.Service, views []*comments.CommentView) {
 	if voteService == nil || len(views) == 0 {
 		return
 	}
-	session := middleware.GetOAuthSession(r)
 	viewerDID := middleware.GetUserDID(r)
-	if session == nil || viewerDID == "" {
+	if viewerDID == "" {
 		return
 	}
 
@@ -32,33 +33,27 @@ func PopulateCommentViewerVoteState(r *http.Request, voteService votes.Service, 
 	if len(subjects) == 0 {
 		return
 	}
-	if err := voteService.EnsureCachePopulated(r.Context(), session); err != nil {
-		log.Printf("Warning: failed to populate comment vote cache: %v", err)
-		return
-	}
-	viewerVotes := voteService.GetViewerVotesForSubjects(viewerDID, subjects)
-	if viewerVotes == nil {
-		return
+
+	viewerVotes, err := voteService.ViewerVotes(r.Context(), viewerDID, subjects)
+	if err != nil {
+		log.Printf("Warning: failed to resolve comment viewer votes for user %s (%d comments): %v",
+			viewerDID, len(subjects), err)
+		viewerVotes = nil
 	}
 	for _, view := range views {
 		if view == nil {
 			continue
 		}
-		vote := viewerVotes[view.URI]
-		if vote == nil {
-			if view.Viewer != nil {
-				view.Viewer.Vote = nil
-				view.Viewer.VoteURI = nil
-				if view.Viewer.IsEmpty() {
-					view.Viewer = nil
-				}
+		if vote, exists := viewerVotes[view.URI]; exists {
+			if view.Viewer == nil {
+				view.Viewer = &comments.CommentViewerState{}
 			}
+			view.Viewer.Vote = &vote.Direction
+			view.Viewer.VoteURI = &vote.URI
 			continue
 		}
-		if view.Viewer == nil {
-			view.Viewer = &comments.CommentViewerState{}
+		if view.Viewer != nil && view.Viewer.IsEmpty() {
+			view.Viewer = nil
 		}
-		view.Viewer.Vote = &vote.Direction
-		view.Viewer.VoteURI = &vote.URI
 	}
 }

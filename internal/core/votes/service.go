@@ -11,8 +11,11 @@ import (
 //
 // Architecture:
 //   - Service validates input and checks authorization
-//   - Queries user's PDS directly via com.atproto.repo.listRecords to check existing votes
-//     (avoids eventual consistency issues with AppView database)
+//   - Reads the viewer's existing votes from the AppView votes index, overlaid by
+//     this AppView's own recent writes until Jetstream indexes them; scans the
+//     user's PDS only after a write whose outcome is unknown
+//   - Serializes writes per viewer and subject, so concurrent taps cannot create
+//     two records
 //   - Creates/deletes vote records via com.atproto.repo.createRecord/deleteRecord
 //   - Replaces directions atomically via com.atproto.repo.applyWrites
 //   - AppView indexes resulting records from Jetstream firehose for aggregate counts
@@ -46,22 +49,15 @@ type Service interface {
 	// - AppView will soft-delete via Jetstream consumer
 	DeleteVote(ctx context.Context, session *oauthlib.ClientSessionData, req DeleteVoteRequest) error
 
-	// EnsureCachePopulated fetches the user's votes from their PDS if not already cached.
-	// This should be called before rendering feeds to ensure vote state is available.
-	// If cache is already populated and not expired, this is a no-op.
-	EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error
+	// ViewerVotes returns the viewer's votes on the subjects. Subjects without a
+	// vote are absent from the map.
+	ViewerVotes(ctx context.Context, viewerDID string, subjectURIs []string) (map[string]ViewerVote, error)
+}
 
-	// GetViewerVote returns the viewer's vote for a specific subject, or nil if not voted.
-	// Nil does not distinguish an unavailable cache from a confirmed absent vote.
-	// Returns from cache if available, otherwise returns nil (caller should ensure cache is populated).
-	GetViewerVote(userDID, subjectURI string) *CachedVote
-
-	// GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
-	// Returns a map of subjectURI -> CachedVote for subjects the user has voted on.
-	// Nil means the cache is unavailable (missing, expired, or disabled).
-	// A non-nil map confirms absence for subjects without an entry.
-	// The returned map and votes are an independent snapshot.
-	GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote
+// ViewerVote is the viewer's vote on one subject.
+type ViewerVote struct {
+	Direction string
+	URI       string
 }
 
 // CreateVoteRequest contains the parameters for creating a vote

@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/votes"
@@ -48,8 +47,7 @@ func TestVoteDirectionReplacementOnRealPDS(t *testing.T) {
 	commitClient, ok := client.(pds.CommitClient)
 	require.True(t, ok, "the real PDS client must expose atomic commits")
 	proxy := &faultingVotePDS{CommitClient: commitClient}
-	cache := votes.NewVoteCache(time.Hour, nil)
-	service := votes.NewServiceWithPDSFactory(nil, cache, nil, func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return proxy, nil })
+	service := votes.NewServiceWithPDSFactory(newFakeVoteRepository(t), nil, func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return proxy, nil })
 	did, err := syntax.ParseDID(account.DID)
 	require.NoError(t, err)
 	session := &oauth.ClientSessionData{AccountDID: did, AccessToken: account.AccessToken}
@@ -78,7 +76,6 @@ func TestVoteDirectionReplacementOnRealPDS(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records.Records, 1)
 	require.Equal(t, down.URI, records.Records[0].URI)
-	require.Equal(t, "down", cache.GetVote(account.DID, request.Subject.URI).Direction)
 	proxy.loseReply = false
 	off, err := service.CreateVote(ctx, session, request)
 	require.NoError(t, err)

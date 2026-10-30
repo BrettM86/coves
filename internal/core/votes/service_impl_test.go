@@ -3,8 +3,10 @@ package votes_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"Coves/internal/atproto/pds"
@@ -51,9 +53,13 @@ import (
 // the interface and fail loudly if the service starts using them, because a new
 // call to the real PDS from this path is exactly the kind of change these tests
 // should notice.
+//
+// Its methods are safe for concurrent use. Hooks run without the lock held.
+// Tests read the recorded state and set knobs directly between service calls.
 type fakePDS struct {
-	t   *testing.T
-	did string
+	mutex sync.Mutex
+	t     *testing.T
+	did   string
 
 	// records is the repo's contents, keyed by rkey.
 	records map[string]votes.VoteRecord
@@ -75,18 +81,39 @@ type fakePDS struct {
 	getHook           func(context.Context, string) error
 	batchResult       func(*pds.ApplyWritesResult) *pds.ApplyWritesResult
 
+	// commitBeforeError applies to CreateRecord and DeleteRecord as well: a
+	// failing plain write commits and then returns its error, a lost reply.
+	//
+	// writeHook runs when CreateRecord or DeleteRecord is entered, before the
+	// write is applied; operation is "create" or "delete". A non-nil error is
+	// returned without committing.
+	writeHook func(ctx context.Context, operation, rkey string) error
+
+	// createAttempts records every CreateRecord that got past writeHook,
+	// committed or not, so a test can see the record key a failed create
+	// used. A create at a record key the repo already holds fails the way a
+	// real PDS does (HTTP 500) and commits nothing.
+	createAttempts []createAttempt
+
+	// createAnswer, when set, makes a CreateRecord that would succeed commit
+	// nothing and answer success with the URI and CID it returns.
+	createAnswer func(rkey string) (uri, cid string)
+
+	// afterList runs after ListRecords builds its response, without the lock
+	// held, so a test can change the repo between a scan and the write that
+	// follows it.
+	afterList func()
+
 	// pageSize splits ListRecords into pages of this many records when it is
-	// positive. Both the cache's populate loop and the service's pagination
-	// fallback keep asking for the next page until the PDS stops returning a
-	// cursor, and a fake that only ever answers one page cannot tell a
+	// positive. The service's PDS scan keeps asking for the next page until
+	// the PDS stops returning a cursor, and a fake that only ever answers one page cannot tell a
 	// correctly-paginating reader from one that reads the first hundred votes
 	// and gives up. Zero keeps the original single-page behaviour, which the
 	// tests that are not about pagination rely on to catch a stray cursor.
 	pageSize int
 
-	// listCalls counts ListRecords round trips, which is how the cache's whole
-	// reason for existing is asserted: a second vote by the same user must not
-	// walk the repo again.
+	// listCalls counts ListRecords round trips: the PDS scan runs only after
+	// an ambiguous write, never on an ordinary vote.
 	listCalls int
 
 	// rawRecords are listed alongside records but never went through
@@ -105,6 +132,33 @@ type voteOp struct {
 
 func (o voteOp) String() string { return o.kind + "(" + o.rkey + ")" }
 
+// createAttempt is one CreateRecord call, whether or not it committed.
+type createAttempt struct {
+	rkey   string
+	record votes.VoteRecord
+}
+
+// attemptedCreates returns every CreateRecord call so far, in order.
+func (f *fakePDS) attemptedCreates() []createAttempt {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return append([]createAttempt(nil), f.createAttempts...)
+}
+
+// commitLate commits a create that failed earlier, as a PDS that finishes a
+// write after its reply was lost does. Like CreateRecord, it refuses a record
+// key the repo already holds: it commits nothing and returns false.
+func (f *fakePDS) commitLate(attempt createAttempt) bool {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if _, exists := f.records[attempt.rkey]; exists {
+		return false
+	}
+	f.records[attempt.rkey] = attempt.record
+	f.ops = append(f.ops, voteOp{kind: "create", rkey: attempt.rkey})
+	return true
+}
+
 // creates returns the rkeys created, in order.
 func (f *fakePDS) creates() []string { return f.rkeysOf("create") }
 
@@ -112,6 +166,8 @@ func (f *fakePDS) creates() []string { return f.rkeysOf("create") }
 func (f *fakePDS) deletes() []string { return f.rkeysOf("delete") }
 
 func (f *fakePDS) rkeysOf(kind string) []string {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	var out []string
 	for _, op := range f.ops {
 		if op.kind == kind {
@@ -126,33 +182,82 @@ func newFakePDS(t *testing.T, did string) *fakePDS {
 	return &fakePDS{t: t, did: did, records: map[string]votes.VoteRecord{}}
 }
 
-func (f *fakePDS) CreateRecord(_ context.Context, collection, rkey string, record any) (string, string, error) {
-	if f.createErr != nil {
-		return "", "", f.createErr
+// runWriteHook runs the write hook, if any, without the lock held.
+func (f *fakePDS) runWriteHook(ctx context.Context, operation, rkey string) error {
+	f.mutex.Lock()
+	writeHook := f.writeHook
+	f.mutex.Unlock()
+	if writeHook == nil {
+		return nil
 	}
+	return writeHook(ctx, operation, rkey)
+}
+
+func (f *fakePDS) CreateRecord(ctx context.Context, collection, rkey string, record any) (string, string, error) {
+	if err := f.runWriteHook(ctx, "create", rkey); err != nil {
+		return "", "", err
+	}
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	require.Equal(f.t, "social.coves.feed.vote", collection,
 		"the vote service wrote to a collection other than the vote one")
 	vote, ok := record.(votes.VoteRecord)
 	require.Truef(f.t, ok, "the vote service passed a %T to CreateRecord rather than a votes.VoteRecord", record)
+	f.createAttempts = append(f.createAttempts, createAttempt{rkey: rkey, record: vote})
+	if f.createErr != nil && !f.commitBeforeError {
+		return "", "", f.createErr
+	}
+	if f.createAnswer != nil {
+		uri, cid := f.createAnswer(rkey)
+		return uri, cid, nil
+	}
+	if _, exists := f.records[rkey]; exists {
+		// Verified against the local dev PDS: createRecord at an existing
+		// record key answers HTTP 500 and commits nothing.
+		return "", "", fmt.Errorf("createRecord: %w: Internal Server Error", pds.ErrServerError)
+	}
 	f.records[rkey] = vote
 	f.ops = append(f.ops, voteOp{kind: "create", rkey: rkey})
+	if f.createErr != nil {
+		return "", "", f.createErr
+	}
 	return "at://" + f.did + "/" + collection + "/" + rkey, "bafycid" + rkey, nil
 }
 
-func (f *fakePDS) DeleteRecord(_ context.Context, collection, rkey string) error {
-	if f.deleteErr != nil {
+func (f *fakePDS) DeleteRecord(ctx context.Context, collection, rkey string) error {
+	if err := f.runWriteHook(ctx, "delete", rkey); err != nil {
+		return err
+	}
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	if f.deleteErr != nil && !f.commitBeforeError {
 		return f.deleteErr
 	}
 	require.Equal(f.t, "social.coves.feed.vote", collection)
 	delete(f.records, rkey)
 	f.ops = append(f.ops, voteOp{kind: "delete", rkey: rkey})
-	return nil
+	return f.deleteErr
 }
 
 func (f *fakePDS) ListRecords(_ context.Context, collection string, _ int, cursor string) (*pds.ListRecordsResponse, error) {
+	response, afterList, err := f.listRecords(collection, cursor)
+	if err != nil {
+		return nil, err
+	}
+	if afterList != nil {
+		afterList()
+	}
+	return response, nil
+}
+
+// listRecords builds one ListRecords page under the lock and returns the
+// hook to run after it.
+func (f *fakePDS) listRecords(collection, cursor string) (*pds.ListRecordsResponse, func(), error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	f.listCalls++
 	if f.listErr != nil {
-		return nil, f.listErr
+		return nil, nil, f.listErr
 	}
 	require.Equal(f.t, "social.coves.feed.vote", collection)
 
@@ -197,13 +302,38 @@ func (f *fakePDS) ListRecords(_ context.Context, collection string, _ int, curso
 		require.Zerof(f.t, f.pageSize, "rawRecords is single-page only; paginating them is not modelled")
 		out.Records = append(out.Records, f.rawRecords...)
 	}
-	return out, nil
+	return out, f.afterList, nil
 }
 
 func (f *fakePDS) DID() string     { return f.did }
 func (f *fakePDS) HostURL() string { return "https://pds.invalid" }
 
 func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit string) (*pds.ApplyWritesResult, error) {
+	afterBatch, batchResult, committed, failure := f.commitBatch(writes, swapCommit)
+	if !committed {
+		return nil, failure
+	}
+	if afterBatch != nil {
+		afterBatch()
+	}
+	if failure != nil {
+		return nil, failure
+	}
+	result := &pds.ApplyWritesResult{Results: []pds.WriteResult{
+		{Op: pds.WriteOpDelete},
+		{Op: pds.WriteOpCreate, URI: "at://" + f.did + "/social.coves.feed.vote/" + writes[1].RKey, CID: "bafycid" + writes[1].RKey},
+	}}
+	if batchResult != nil {
+		result = batchResult(result)
+	}
+	return result, nil
+}
+
+// commitBatch applies a replacement under the lock and returns the hooks to
+// run after it, so a hook never runs with the lock held.
+func (f *fakePDS) commitBatch(writes []pds.Write, swapCommit string) (afterBatch func(), batchResult func(*pds.ApplyWritesResult) *pds.ApplyWritesResult, committed bool, failure error) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	f.batchCalls++
 	require.Empty(f.t, swapCommit)
 	require.Len(f.t, writes, 2)
@@ -214,7 +344,7 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 	require.NoError(f.t, err)
 	// Batch faults take precedence over legacy delete/create faults.
 	// commitBeforeError and afterBatch simulate a committed write with a lost reply.
-	failure := f.batchErr
+	failure = f.batchErr
 	if failure == nil {
 		failure = f.deleteErr
 	}
@@ -222,7 +352,7 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 		failure = f.createErr
 	}
 	if failure != nil && !f.commitBeforeError {
-		return nil, failure
+		return nil, nil, false, failure
 	}
 	for _, write := range writes {
 		require.Equal(f.t, "social.coves.feed.vote", write.Collection)
@@ -232,34 +362,26 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 	delete(f.records, writes[0].RKey)
 	f.records[writes[1].RKey] = record
 	f.ops = append(f.ops, voteOp{kind: "delete", rkey: writes[0].RKey}, voteOp{kind: "create", rkey: writes[1].RKey})
-	if f.afterBatch != nil {
-		f.afterBatch()
-	}
-	if failure != nil {
-		return nil, failure
-	}
-	result := &pds.ApplyWritesResult{Results: []pds.WriteResult{
-		{Op: pds.WriteOpDelete},
-		{Op: pds.WriteOpCreate, URI: "at://" + f.did + "/social.coves.feed.vote/" + writes[1].RKey, CID: "bafycid" + writes[1].RKey},
-	}}
-	if f.batchResult != nil {
-		result = f.batchResult(result)
-	}
-	return result, nil
+	return f.afterBatch, f.batchResult, true, failure
 }
 
 func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.RecordResponse, error) {
+	f.mutex.Lock()
 	f.getCalls++
+	getHook := f.getHook
+	f.mutex.Unlock()
 	_, bounded := ctx.Deadline()
 	require.True(f.t, bounded, "reconciliation must have a bounded deadline")
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if f.getHook != nil {
-		if err := f.getHook(ctx, rkey); err != nil {
+	if getHook != nil {
+		if err := getHook(ctx, rkey); err != nil {
 			return nil, err
 		}
 	}
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -300,16 +422,33 @@ func voter(t *testing.T, did string) *oauth.ClientSessionData {
 	return &oauth.ClientSessionData{AccountDID: parsed, AccessToken: "test-access-token"}
 }
 
-// newService wires the service to a fake PDS.
+// newService wires the service to a fake PDS and a fake votes index.
 //
-// The cache is nil on purpose in most tests: with a cache the service answers
-// "does a vote already exist" from memory, and these tests are about the
-// decision made from that answer, not about the cache. The one test that cares
-// which source the answer came from builds its own.
-func newService(t *testing.T, fake *fakePDS, cache *votes.VoteCache) votes.Service {
+// Most tests pass an empty index: the service's own recent writes then decide
+// what "the existing vote" is, and these tests are about the decision made
+// from that answer, not about where it came from.
+func newService(t *testing.T, fake *fakePDS, repository *fakeVoteRepository) votes.Service {
 	t.Helper()
-	return votes.NewServiceWithPDSFactory(nil, cache, nil,
-		func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return fake, nil })
+	return newServiceForVoters(t, repository, fake)
+}
+
+// newServiceForVoters wires the service to one fake PDS per voter. The factory
+// hands each session its own voter's repo, chosen by the session's DID, so a
+// write made for one voter can never land in another's.
+func newServiceForVoters(t *testing.T, repository votes.Repository, fakes ...*fakePDS) votes.Service {
+	t.Helper()
+	byDID := make(map[string]*fakePDS, len(fakes))
+	for _, fake := range fakes {
+		byDID[fake.did] = fake
+	}
+	return votes.NewServiceWithPDSFactory(repository, nil,
+		func(_ context.Context, session *oauth.ClientSessionData) (votes.PDSClient, error) {
+			fake, exists := byDID[session.AccountDID.String()]
+			if !exists {
+				return nil, fmt.Errorf("fake PDS: no repo for voter %s", session.AccountDID)
+			}
+			return fake, nil
+		})
 }
 
 const (
@@ -325,7 +464,7 @@ func subject() votes.StrongRef {
 func TestCreateVote_FirstVoteWritesTheRecord(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 
 	resp, err := svc.CreateVote(context.Background(), voter(t, testVoterDID),
 		votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
@@ -362,7 +501,7 @@ func TestCreateVote_FirstVoteWritesTheRecord(t *testing.T) {
 func TestCreateVote_SameDirectionTogglesOff(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 	ctx := context.Background()
 
 	first, err := svc.CreateVote(ctx, voter(t, testVoterDID),
@@ -393,7 +532,7 @@ func TestCreateVote_SameDirectionTogglesOff(t *testing.T) {
 func TestCreateVote_DifferentDirectionReplacesUnderANewRKey(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 	ctx := context.Background()
 
 	up, err := svc.CreateVote(ctx, voter(t, testVoterDID),
@@ -444,7 +583,7 @@ func TestCreateVote_DifferentDirectionReplacesUnderANewRKey(t *testing.T) {
 func TestCreateVote_LeavesOtherSubjectsAlone(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 	ctx := context.Background()
 
 	other := votes.StrongRef{
@@ -475,7 +614,7 @@ func TestDeleteVote(t *testing.T) {
 	t.Run("removes the record from the voter's repo", func(t *testing.T) {
 		t.Parallel()
 		fake := newFakePDS(t, testVoterDID)
-		svc := newService(t, fake, nil)
+		svc := newService(t, fake, newFakeVoteRepository(t))
 		ctx := context.Background()
 
 		_, err := svc.CreateVote(ctx, voter(t, testVoterDID),
@@ -492,7 +631,7 @@ func TestDeleteVote(t *testing.T) {
 	t.Run("is not found when there is no vote to delete", func(t *testing.T) {
 		t.Parallel()
 		fake := newFakePDS(t, testVoterDID)
-		svc := newService(t, fake, nil)
+		svc := newService(t, fake, newFakeVoteRepository(t))
 
 		err := svc.DeleteVote(context.Background(), voter(t, testVoterDID),
 			votes.DeleteVoteRequest{Subject: subject()})
@@ -528,7 +667,7 @@ func TestCreateVote_RejectsMalformedInput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			fake := newFakePDS(t, testVoterDID)
-			svc := newService(t, fake, nil)
+			svc := newService(t, fake, newFakeVoteRepository(t))
 
 			_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), tc.req)
 			require.ErrorIs(t, err, tc.wantErr)
@@ -542,7 +681,7 @@ func TestCreateVote_PDSFailureIsReportedRatherThanSwallowed(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
 	fake.createErr = errors.New("pds is down")
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 
 	_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID),
 		votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
@@ -556,7 +695,7 @@ func TestCreateVote_PDSFailureIsReportedRatherThanSwallowed(t *testing.T) {
 func TestCreateVote_FailedToggleOffDoesNotReportSuccess(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
-	svc := newService(t, fake, nil)
+	svc := newService(t, fake, newFakeVoteRepository(t))
 	ctx := context.Background()
 
 	_, err := svc.CreateVote(ctx, voter(t, testVoterDID),

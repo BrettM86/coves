@@ -19,28 +19,48 @@ import (
 
 func TestCreateVote_DefinitiveReplacementRefusalSkipsReconciliation(t *testing.T) {
 	t.Parallel()
-	for _, refusal := range []error{pds.ErrUnauthorized, pds.ErrForbidden, pds.ErrSessionExpired, pds.ErrBadRequest, pds.ErrRateLimited, pds.ErrSwapConflict, pds.ErrConflict, pds.ErrPayloadTooLarge, pds.ErrNotFound, &atclient.APIError{StatusCode: 422, Name: "UnprocessableContent"}} {
-		t.Run(refusal.Error(), func(t *testing.T) {
+	for _, testCase := range []struct {
+		refusal error
+		// wantNextTapScans: a state conflict can expose a stale key, so the
+		// next tap reads the PDS; other refusals leave the overlay usable.
+		wantNextTapScans bool
+	}{
+		{pds.ErrUnauthorized, false},
+		{pds.ErrForbidden, false},
+		{pds.ErrSessionExpired, false},
+		{pds.ErrBadRequest, false},
+		{pds.ErrRateLimited, false},
+		{pds.ErrPayloadTooLarge, false},
+		{&atclient.APIError{StatusCode: 422, Name: "UnprocessableContent"}, false},
+		{sessionBusyError(), false},
+		{pds.ErrSwapConflict, true},
+		{pds.ErrConflict, true},
+		{pds.ErrNotFound, true},
+	} {
+		t.Run(testCase.refusal.Error(), func(t *testing.T) {
 			t.Parallel()
-			fake := newFakePDS(t, testVoterDID)
-			cache := votes.NewVoteCache(longTTL, nil)
-			service := newService(t, fake, cache)
-			up, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
-			require.NoError(t, err)
-			fake.batchErr = refusal
-			_, err = service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-			require.ErrorIs(t, err, refusal)
-			if pds.IsAuthError(refusal) {
-				require.ErrorIs(t, err, votes.ErrNotAuthorized)
-			}
-			require.Zero(t, fake.getCalls, "a refused transaction cannot have committed")
-			if refusal == pds.ErrNotFound || refusal == pds.ErrConflict || refusal == pds.ErrSwapConflict {
-				require.False(t, cache.IsCached(testVoterDID), "state refusal requires fresh state on the next tap")
-			} else {
-				require.True(t, cache.IsCached(testVoterDID))
-				require.Equal(t, up.URI, cache.GetVote(testVoterDID, testSubject).URI)
-			}
-			require.Equal(t, 1, fake.batchCalls)
+			synctest.Test(t, func(t *testing.T) {
+				fake := newFakePDS(t, testVoterDID)
+				service := newService(t, fake, newFakeVoteRepository(t))
+				_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+				require.NoError(t, err)
+				<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
+				fake.batchErr = testCase.refusal
+				_, err = service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+				require.ErrorIs(t, err, testCase.refusal)
+				if pds.IsAuthError(testCase.refusal) {
+					require.ErrorIs(t, err, votes.ErrNotAuthorized)
+				}
+				require.Zero(t, fake.getCalls, "a refused transaction cannot have committed")
+				require.Equal(t, 1, fake.batchCalls)
+
+				fake.batchErr = nil
+				<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
+				_, err = service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+				require.NoError(t, err)
+				require.Equal(t, testCase.wantNextTapScans, fake.listCalls > 0, "whether the next tap scans the PDS")
+				require.Len(t, fake.records, 1)
+			})
 		})
 	}
 }
@@ -49,8 +69,7 @@ func TestCreateVote_ReplacementPollsForDelayedCommit(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		fake := newFakePDS(t, testVoterDID)
-		cache := votes.NewVoteCache(longTTL, nil)
-		service := newService(t, fake, cache)
+		service := newService(t, fake, newFakeVoteRepository(t))
 		_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 		require.NoError(t, err)
 		<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
@@ -72,12 +91,11 @@ func TestCreateVote_ReplacementPollsForDelayedCommit(t *testing.T) {
 			return nil
 		}
 		started := time.Now()
-		down, err := service.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+		_, err = service.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
 		require.NoError(t, err, "not-found may precede a late commit")
 		require.Greater(t, fake.getCalls, 1)
 		require.Greater(t, time.Since(started), time.Duration(0), "polls must wait between reads")
 		require.Less(t, time.Since(started), 5*time.Second)
-		require.Equal(t, down.URI, cache.GetVote(testVoterDID, testSubject).URI)
 		require.Equal(t, 1, fake.batchCalls)
 		require.Len(t, fake.records, 1)
 	})
@@ -90,8 +108,7 @@ func TestCreateVote_ReplacementPollingStopsOnDefinitiveReadFailure(t *testing.T)
 			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				fake := newFakePDS(t, testVoterDID)
-				cache := votes.NewVoteCache(longTTL, nil)
-				service := newService(t, fake, cache)
+				service := newService(t, fake, newFakeVoteRepository(t))
 				_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 				require.NoError(t, err)
 				<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
@@ -107,7 +124,6 @@ func TestCreateVote_ReplacementPollingStopsOnDefinitiveReadFailure(t *testing.T)
 				require.ErrorIs(t, err, context.DeadlineExceeded, "a failed read cannot establish whether the write committed")
 				require.Equal(t, 2, fake.getCalls)
 				require.Less(t, time.Since(started), 5*time.Second)
-				require.False(t, cache.IsCached(testVoterDID))
 				require.Equal(t, 1, fake.batchCalls)
 			})
 		})
@@ -118,8 +134,7 @@ func TestCreateVote_ReplacementAbsenceExhaustsBoundWithoutRetryingWrite(t *testi
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		fake := newFakePDS(t, testVoterDID)
-		cache := votes.NewVoteCache(longTTL, nil)
-		service := newService(t, fake, cache)
+		service := newService(t, fake, newFakeVoteRepository(t))
 		_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 		require.NoError(t, err)
 		<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
@@ -129,7 +144,6 @@ func TestCreateVote_ReplacementAbsenceExhaustsBoundWithoutRetryingWrite(t *testi
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		require.Equal(t, 5*time.Second, time.Since(started), "absence needs the complete reconciliation window")
 		require.Greater(t, fake.getCalls, 1)
-		require.False(t, cache.IsCached(testVoterDID))
 		require.Equal(t, 1, fake.batchCalls)
 		require.Len(t, fake.creates(), 1, "uncertainty must never trigger another write")
 	})
@@ -147,8 +161,7 @@ func TestCreateVote_MalformedReplacementResultReconciles(t *testing.T) {
 				t.Parallel()
 				synctest.Test(t, func(t *testing.T) {
 					fake := newFakePDS(t, testVoterDID)
-					cache := votes.NewVoteCache(longTTL, nil)
-					service := newService(t, fake, cache)
+					service := newService(t, fake, newFakeVoteRepository(t))
 					_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 					require.NoError(t, err)
 					<-time.After(time.Microsecond) // Advance the virtual clock before minting another vote TID.
@@ -178,10 +191,8 @@ func TestCreateVote_MalformedReplacementResultReconciles(t *testing.T) {
 						require.NoError(t, err)
 						require.NotEmpty(t, response.URI)
 						require.NotEmpty(t, response.CID)
-						require.Equal(t, response.URI, cache.GetVote(testVoterDID, testSubject).URI)
 					} else {
 						require.Error(t, err, "malformed reply cannot establish success")
-						require.False(t, cache.IsCached(testVoterDID))
 					}
 					require.Positive(t, fake.getCalls)
 					require.Equal(t, 1, fake.batchCalls)
@@ -197,9 +208,8 @@ func TestCreateVote_ReplacementReconciliationDiagnostics(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			t.Parallel()
 			fake := newFakePDS(t, testVoterDID)
-			cache := votes.NewVoteCache(longTTL, nil)
 			var logs bytes.Buffer
-			service := votes.NewServiceWithPDSFactory(nil, cache, slog.New(slog.NewJSONHandler(&logs, nil)), func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return fake, nil })
+			service := votes.NewServiceWithPDSFactory(newFakeVoteRepository(t), slog.New(slog.NewJSONHandler(&logs, nil)), func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return fake, nil })
 			_, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 			require.NoError(t, err)
 			logs.Reset()

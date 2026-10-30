@@ -126,8 +126,12 @@ func (m *mockUserServiceForComments) UpdateProfile(ctx context.Context, did stri
 	return nil, nil
 }
 
-// mockVoteServiceForComments implements votes.Service for testing getComments
-type mockVoteServiceForComments struct{}
+// mockVoteServiceForComments implements votes.Service for testing getComments.
+// ViewerVotes answers from viewerVotes and counts its calls.
+type mockVoteServiceForComments struct {
+	viewerVotes      map[string]votes.ViewerVote
+	viewerVotesCalls int
+}
 
 func (m *mockVoteServiceForComments) CreateVote(ctx context.Context, session *oauthlib.ClientSessionData, req votes.CreateVoteRequest) (*votes.CreateVoteResponse, error) {
 	return nil, nil
@@ -137,16 +141,9 @@ func (m *mockVoteServiceForComments) DeleteVote(ctx context.Context, session *oa
 	return nil
 }
 
-func (m *mockVoteServiceForComments) EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error {
-	return nil
-}
-
-func (m *mockVoteServiceForComments) GetViewerVote(userDID, subjectURI string) *votes.CachedVote {
-	return nil
-}
-
-func (m *mockVoteServiceForComments) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*votes.CachedVote {
-	return nil
+func (m *mockVoteServiceForComments) ViewerVotes(ctx context.Context, viewerDID string, subjectURIs []string) (map[string]votes.ViewerVote, error) {
+	m.viewerVotesCalls++
+	return m.viewerVotes, nil
 }
 
 func TestGetCommentsHandler_Success(t *testing.T) {
@@ -833,19 +830,42 @@ func TestGetCommentsHandler_DeletedComment_NilRecord(t *testing.T) {
 	}
 }
 
-func TestActorComments_CachedAbsenceClearsIndexedVote(t *testing.T) {
+func TestGetCommentsHandler_ViewerVotesReachResponse(t *testing.T) {
 	const viewer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
-	const subject = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/reply"
-	up, oldURI := "up", "at://"+viewer+"/social.coves.feed.vote/old"
-	cache := votes.NewVoteCache(time.Hour, nil)
-	cache.SetVotesForUser(viewer, map[string]*votes.CachedVote{})
-	handler := NewGetCommentsHandler(nil, nil, votes.NewServiceWithPDSFactory(nil, cache, nil, nil))
-	response := &comments.GetActorCommentsResponse{Comments: []*comments.CommentView{nil, {URI: subject, Viewer: &comments.CommentViewerState{Vote: &up, VoteURI: &oldURI}}}}
-	request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getComments", nil)
-	request = request.WithContext(middleware.SetTestOAuthSession(middleware.SetTestUserDID(request.Context(), viewer), &oauthlib.ClientSessionData{AccountDID: syntax.DID(viewer)}))
-	handler.populateViewerVoteState(request, response)
-	state := response.Comments[1].Viewer
-	if state != nil && (state.Vote != nil || state.VoteURI != nil) {
-		t.Fatal("confirmed absence in cache must clear the indexed vote and record URI")
+	const votedURI = "at://did:plc:testuser/social.coves.community.comment/voted"
+	const unvotedURI = "at://did:plc:testuser/social.coves.community.comment/unvoted"
+	const voteURI = "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/social.coves.feed.vote/voted"
+	mockComments := &mockCommentService{
+		getActorCommentsFunc: func(ctx context.Context, req *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error) {
+			return &comments.GetActorCommentsResponse{Comments: []*comments.CommentView{{URI: votedURI}, {URI: unvotedURI}}}, nil
+		},
+	}
+	mockVotes := &mockVoteServiceForComments{viewerVotes: map[string]votes.ViewerVote{
+		votedURI: {Direction: "down", URI: voteURI},
+	}}
+	handler := NewGetCommentsHandler(mockComments, &mockUserServiceForComments{}, mockVotes)
+	request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getComments?actor=did:plc:testuser", nil)
+	request = request.WithContext(middleware.SetTestOAuthSession(middleware.SetTestUserDID(request.Context(), viewer),
+		&oauthlib.ClientSessionData{AccountDID: syntax.DID(viewer)}))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleGetComments(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if mockVotes.viewerVotesCalls != 1 {
+		t.Errorf("Expected 1 ViewerVotes call, got %d", mockVotes.viewerVotesCalls)
+	}
+	var response comments.GetActorCommentsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	voted := response.Comments[0].Viewer
+	if voted == nil || voted.Vote == nil || *voted.Vote != "down" || voted.VoteURI == nil || *voted.VoteURI != voteURI {
+		t.Errorf("Expected voted comment viewer {vote: down, voteUri: %s}, got %+v", voteURI, voted)
+	}
+	if response.Comments[1].Viewer != nil {
+		t.Errorf("Expected no viewer state on the unvoted comment, got %+v", response.Comments[1].Viewer)
 	}
 }

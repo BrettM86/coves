@@ -46,24 +46,23 @@ const cursorSecret = "test-cursor-secret"
 // mockVoteService is an in-memory votes.Service holding pre-seeded viewer
 // votes.
 //
-// Viewer state is hydrated from a per-session cache that production fills from
-// the viewer's own repository over OAuth. These tests are about what the feed
-// does with that cache once it is populated — whether the right vote lands on
-// the right post, and whether an unauthenticated request gets none at all — so
-// the cache is seeded directly rather than round-tripped through a PDS.
+// Production resolves viewer votes from the AppView index overlaid by recent
+// writes. These tests are about what the feed does with the resolved votes —
+// whether the right vote lands on the right post, and whether an
+// unauthenticated request gets none at all — so the votes are seeded directly.
 type mockVoteService struct {
-	cachedVotes map[string]*votes.CachedVote // userDID:subjectURI -> vote
+	viewerVotes map[string]votes.ViewerVote // viewerDID:subjectURI -> vote
 }
 
 func newMockVoteService() *mockVoteService {
 	return &mockVoteService{
-		cachedVotes: make(map[string]*votes.CachedVote),
+		viewerVotes: make(map[string]votes.ViewerVote),
 	}
 }
 
-func (m *mockVoteService) AddVote(userDID, subjectURI, direction, voteURI string) {
-	key := userDID + ":" + subjectURI
-	m.cachedVotes[key] = &votes.CachedVote{
+func (m *mockVoteService) AddVote(viewerDID, subjectURI, direction, voteURI string) {
+	key := viewerDID + ":" + subjectURI
+	m.viewerVotes[key] = votes.ViewerVote{
 		Direction: direction,
 		URI:       voteURI,
 	}
@@ -77,24 +76,15 @@ func (m *mockVoteService) DeleteVote(_ context.Context, _ *oauthlib.ClientSessio
 	return nil
 }
 
-func (m *mockVoteService) EnsureCachePopulated(_ context.Context, _ *oauthlib.ClientSessionData) error {
-	return nil // Votes are pre-populated via AddVote, so there is nothing to fetch.
-}
-
-func (m *mockVoteService) GetViewerVote(userDID, subjectURI string) *votes.CachedVote {
-	key := userDID + ":" + subjectURI
-	return m.cachedVotes[key]
-}
-
-func (m *mockVoteService) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*votes.CachedVote {
-	result := make(map[string]*votes.CachedVote)
+func (m *mockVoteService) ViewerVotes(_ context.Context, viewerDID string, subjectURIs []string) (map[string]votes.ViewerVote, error) {
+	result := make(map[string]votes.ViewerVote)
 	for _, uri := range subjectURIs {
-		key := userDID + ":" + uri
-		if vote, exists := m.cachedVotes[key]; exists {
+		key := viewerDID + ":" + uri
+		if vote, exists := m.viewerVotes[key]; exists {
 			result[uri] = vote
 		}
 	}
-	return result
+	return result, nil
 }
 
 // A nil vote service and a nil Bluesky service are passed wherever a case does
@@ -597,10 +587,9 @@ func TestGetDiscover_ViewerVoteState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
 
-	// Both context values are what OptionalAuth would have set: the handler
-	// reads the DID to key the vote lookup and the session to populate the
-	// cache, so a test that set only one would exercise a state the middleware
-	// never produces.
+	// Both context values are what OptionalAuth would have set. The handler
+	// reads only the DID, to key the vote lookup; the session is set too so
+	// the test exercises a state the middleware actually produces.
 	did, err := syntax.ParseDID(viewerDID)
 	require.NoError(t, err)
 	session := &oauthlib.ClientSessionData{
@@ -653,8 +642,8 @@ func TestGetDiscover_ViewerVoteState(t *testing.T) {
 }
 
 // TestGetDiscover_NoViewerStateWithoutAuth proves viewer state is withheld from
-// anonymous requests even when the vote cache holds a vote for that post. The
-// vote in the cache belongs to a different account, and leaking it would tell
+// anonymous requests even when the vote service holds a vote for that post. The
+// vote belongs to a different account, and leaking it would tell
 // every visitor how a named user voted.
 func TestGetDiscover_NoViewerStateWithoutAuth(t *testing.T) {
 	t.Parallel()

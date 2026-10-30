@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"Coves/internal/core/votes"
+
+	"github.com/lib/pq"
 )
 
 type postgresVoteRepo struct {
@@ -235,4 +237,78 @@ func (r *postgresVoteRepo) ListByVoter(ctx context.Context, voterDID string, lim
 	}
 
 	return result, nil
+}
+
+// GetActiveVotesForSubjects returns the voter's active votes on any of the
+// subjects, served by unique_voter_subject_active.
+func (r *postgresVoteRepo) GetActiveVotesForSubjects(ctx context.Context, voterDID string, subjectURIs []string) ([]*votes.Vote, error) {
+	if len(subjectURIs) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		SELECT uri, cid, rkey, voter_did, subject_uri, direction
+		FROM votes
+		WHERE voter_did = $1 AND subject_uri = ANY($2) AND deleted_at IS NULL
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, voterDID, pq.Array(subjectURIs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active votes for subjects: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []*votes.Vote
+	for rows.Next() {
+		var vote votes.Vote
+		if err := rows.Scan(&vote.URI, &vote.CID, &vote.RKey, &vote.VoterDID, &vote.SubjectURI, &vote.Direction); err != nil {
+			return nil, fmt.Errorf("failed to scan active vote: %w", err)
+		}
+		result = append(result, &vote)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating active votes: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetIndexedStatesByURIs reports whether each vote URI is indexed as active or
+// soft-deleted, served by votes_uri_key. A URI with no row is absent.
+func (r *postgresVoteRepo) GetIndexedStatesByURIs(ctx context.Context, uris []string) (map[string]votes.IndexedVoteState, error) {
+	states := make(map[string]votes.IndexedVoteState, len(uris))
+	if len(uris) == 0 {
+		return states, nil
+	}
+
+	query := `
+		SELECT uri, deleted_at IS NOT NULL
+		FROM votes
+		WHERE uri = ANY($1)
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query indexed vote states: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var uri string
+		var deleted bool
+		if err := rows.Scan(&uri, &deleted); err != nil {
+			return nil, fmt.Errorf("failed to scan indexed vote state: %w", err)
+		}
+		states[uri] = votes.IndexedVoteActive
+		if deleted {
+			states[uri] = votes.IndexedVoteDeleted
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating indexed vote states: %w", err)
+	}
+
+	return states, nil
 }
