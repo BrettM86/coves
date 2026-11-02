@@ -90,6 +90,12 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 		if len(data) >= 6 && bytes.HasPrefix(data, []byte("GIF8")) && data[5] == 'a' {
 			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
 		}
+		// Likewise any WebP container: x/image/webp and the riff, vp8 and vp8l
+		// packages under it report most bad input as plain errors, and the
+		// source is an in-memory reader, so every one of them describes the bytes.
+		if len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
+			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
+		}
 		return nil, classifyDecodeError(err)
 	}
 
@@ -158,7 +164,9 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 		img, _, err = image.Decode(bytes.NewReader(data))
 	}
 	if err != nil {
-		if format == "gif" {
+		// The source is an in-memory reader, so neither decoder has an I/O
+		// failure to report: every error here describes the bytes.
+		if format == "gif" || format == "webp" {
 			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
 		}
 		return nil, classifyDecodeError(err)
@@ -336,8 +344,9 @@ func resizeImage(img image.Image, width, height int) image.Image {
 // through the 500-rate alert. Only errors outside that set are ours.
 //
 // Classification is by TYPE, not by message text: the decoders' strings differ
-// per case and are not part of their API. x/image/webp returns plain errors,
-// so its truncations arrive as the io sentinels.
+// per case and are not part of their API. image/gif and x/image/webp report
+// most bad input as plain errors, so Process maps their errors itself and they
+// never reach here.
 func classifyDecodeError(err error) error {
 	if isMalformedInputError(err) {
 		return fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)

@@ -2,6 +2,7 @@ package imageproxy
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
@@ -232,6 +233,18 @@ func TestProcessor_Process_InvalidImageData(t *testing.T) {
 			// a failure of ours; see TestProcessor_Process_MalformedHeaderIsClientError.
 			name:    "truncated JPEG header",
 			data:    []byte{0xFF, 0xD8, 0xFF, 0xE0}, // Partial JPEG magic
+			wantErr: ErrUnsupportedFormat,
+		},
+		{
+			// Must be exact-capacity: slicing data[8:12] past len but within
+			// capacity would not panic, so a []byte("...") literal, which may be
+			// over-allocated, would not prove the length guard in Process.
+			name: "RIFF blob shorter than the WEBP form type",
+			data: func() []byte {
+				data := make([]byte, 11)
+				copy(data, "RIFF\x00\x00\x00\x00WEB")
+				return data
+			}(),
 			wantErr: ErrUnsupportedFormat,
 		},
 	}
@@ -547,6 +560,139 @@ func TestProcessor_Process_MalformedHeaderIsClientError(t *testing.T) {
 				"a malformed header is the client's bytes, not a failure of ours")
 			assert.Lessf(t, allocated, uint64(budgetAllocBound),
 				"Process allocated %d bytes (%.1f MiB) for a %d-byte malformed input", allocated, float64(allocated)/(1<<20), len(tt.data))
+		})
+	}
+}
+
+// webpChunk frames payload as a RIFF chunk: FourCC, little-endian size, and the
+// pad byte RIFF requires after an odd-sized payload.
+func webpChunk(fourCC string, payload []byte) []byte {
+	chunk := append([]byte(fourCC), binary.LittleEndian.AppendUint32(nil, uint32(len(payload)))...)
+	chunk = append(chunk, payload...)
+	if len(payload)%2 == 1 {
+		chunk = append(chunk, 0)
+	}
+	return chunk
+}
+
+// webpExtended builds a RIFF/WEBP file holding a VP8X header with the given
+// flags and canvas size, followed by chunks.
+func webpExtended(flags byte, canvasWidth, canvasHeight uint32, chunks ...[]byte) []byte {
+	vp8x := make([]byte, 0, 10)
+	vp8x = append(vp8x, flags, 0, 0, 0)
+	vp8x = append(vp8x, byte(canvasWidth-1), byte((canvasWidth-1)>>8), byte((canvasWidth-1)>>16))
+	vp8x = append(vp8x, byte(canvasHeight-1), byte((canvasHeight-1)>>8), byte((canvasHeight-1)>>16))
+
+	body := append([]byte("WEBP"), webpChunk("VP8X", vp8x)...)
+	for _, chunk := range chunks {
+		body = append(body, chunk...)
+	}
+	file := append([]byte("RIFF"), binary.LittleEndian.AppendUint32(nil, uint32(len(body)))...)
+	return append(file, body...)
+}
+
+// webpAnimated builds a 150x150 animated WebP with the layout real encoders
+// write: VP8X with the animation flag, ANIM, then one ANMF frame.
+func webpAnimated() []byte {
+	const animationFlag = 0x02
+
+	// Background colour (4 bytes) and loop count (2 bytes, 0 = forever).
+	anim := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0, 0}
+	// Frame X and Y (3 bytes each), width-1 and height-1 (3 bytes each),
+	// duration (3 bytes) and flags (1 byte), then the frame's image chunk.
+	anmf := []byte{
+		0, 0, 0,
+		0, 0, 0,
+		149, 0, 0,
+		149, 0, 0,
+		60, 0, 0,
+		0x02,
+	}
+	anmf = append(anmf, webpChunk("VP8 ", []byte{0x50, 0x53, 0x00, 0x9D, 0x01, 0x2A, 0x96, 0x00, 0x96, 0x00})...)
+
+	return webpExtended(animationFlag, 150, 150, webpChunk("ANIM", anim), webpChunk("ANMF", anmf))
+}
+
+// TestProcessor_Process_WebPWithoutDecodableFrameIsClientError pins WebP files
+// whose extended header is valid but which hold no frame the decoder can read.
+// x/image/webp reads the size from VP8X, so the header check passes, and then
+// reports a plain error once pixel decoding runs out of chunks. These are
+// bytes we cannot serve, not a failure of ours, so they must not reach the
+// handler as a 500.
+func TestProcessor_Process_WebPWithoutDecodableFrameIsClientError(t *testing.T) {
+	proc := newTestProcessor(t)
+	preset, err := GetPreset("avatar")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "animated webp", data: webpAnimated()},
+		// No animation flag and no ANIM chunk, so nothing marks this as
+		// animated: the file simply has no image chunk after its header.
+		{
+			name: "non-animated VP8X with only an unknown chunk",
+			data: webpExtended(0, 150, 150, webpChunk("JUNK", []byte{1, 2, 3, 4})),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config, format, err := image.DecodeConfig(bytes.NewReader(tt.data))
+			require.NoError(t, err, "the fixture must pass header parsing so the failure comes from pixel decoding")
+			require.Equal(t, "webp", format)
+			require.Equal(t, 150, config.Width)
+			require.Equal(t, 150, config.Height)
+
+			result, err := proc.Process(tt.data, preset)
+
+			require.Error(t, err)
+			assert.Nil(t, result)
+			assert.ErrorIs(t, err, ErrUnsupportedFormat)
+			assert.NotErrorIs(t, err, ErrProcessingFailed,
+				"an undecodable WebP is the client's bytes, not a failure of ours")
+		})
+	}
+}
+
+// TestProcessor_Process_WebPWithMalformedHeaderIsClientError pins WebP files
+// that fail in image.DecodeConfig itself. x/image/webp reports these fixtures as
+// plain errors, with no type or io sentinel to recognise, and they describe the
+// client's bytes, so they must not reach the handler as a 500.
+func TestProcessor_Process_WebPWithMalformedHeaderIsClientError(t *testing.T) {
+	proc := newTestProcessor(t)
+	preset, err := GetPreset("avatar")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		// Canvas width-1 and height-1 are both 0xFFFFFF: the area exceeds what
+		// the WebP decoder accepts.
+		{name: "VP8X canvas of 2^24 x 2^24", data: webpExtended(0, 1<<24, 1<<24)},
+		// A lossless chunk whose first byte is not the 0x2F VP8L signature.
+		// The RIFF size is 18: "WEBP", the chunk header, 5 payload bytes, 1 pad.
+		{
+			name: "VP8L chunk with a bad signature",
+			data: append([]byte("RIFF\x12\x00\x00\x00WEBP"), webpChunk("VP8L", []byte{0, 0, 0, 0, 0})...),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := image.DecodeConfig(bytes.NewReader(tt.data))
+			require.Error(t, err, "the fixture must fail header parsing so the failure comes from DecodeConfig")
+			require.NotErrorIs(t, err, image.ErrFormat, "the fixture must be recognised as WebP and reach its decoder")
+
+			result, err := proc.Process(tt.data, preset)
+
+			require.Error(t, err)
+			assert.Nil(t, result)
+			assert.ErrorIs(t, err, ErrUnsupportedFormat)
+			assert.NotErrorIs(t, err, ErrProcessingFailed,
+				"a malformed WebP header is the client's bytes, not a failure of ours")
 		})
 	}
 }
