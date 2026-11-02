@@ -136,7 +136,7 @@ Hydration is batched per page, never per row. A reference the list query saw as 
 
 Decided 2026-10-03.
 
-- A post preview is its title, or when the title is absent or whitespace-only, a body excerpt. An image post without a real title has no text, only its thumbnail. `rootPost.title` is omitted when blank and never falls back to the body. Excerpts are cut at 140 grapheme clusters.
+- A post preview is its title, or when the title is absent or whitespace-only, a body excerpt. An image post without a real title has no text, only its thumbnail. `rootPost.title` is omitted when blank and never falls back to the body. Excerpts are cut at 1,000 grapheme clusters.
 - Each reference carries its own author's self-labels in `labels`, unfiltered and not inherited between positions. Values over 128 bytes are dropped and the first 10 kept, to stay valid against `com.atproto.label.defs#selfLabels`. A live comment whose stored labels do not parse omits the row rather than show unlabeled text.
 - A post reference may carry `thumbnail`: the first image of an image post or the link card's thumbnail. `posts.PreviewThumbnail` is the only source. It projects only a blob the stored record carries with a valid CID through the image proxy, and rejects an embed already claiming the served `#view` shape or a URL string in the record. Feeds, `post.get` and comment views do not reject those. Comments, videos and quoted posts get none. With the image proxy disabled, as in dev, there are no thumbnails.
 - `thumbnailAlt` is the first image's alt text, bounded to 1,000 grapheme clusters and 10,000 bytes and omitted when blank. Link cards have none.

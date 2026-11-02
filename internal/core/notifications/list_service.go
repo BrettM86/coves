@@ -431,9 +431,13 @@ func boundedNotificationLabels(labels *posts.SelfLabels) *posts.SelfLabels {
 	return bounded
 }
 
+// notificationExcerptMaxGraphemes is the grapheme cluster cap on notification
+// excerpts and previews. It matches the excerpt limit in the notification lexicon.
+const notificationExcerptMaxGraphemes = 1000
+
 func notificationExcerpt(text string) string {
 	clusters := uniseg.NewGraphemes(text)
-	for count := 0; count < 140; count++ {
+	for count := 0; count < notificationExcerptMaxGraphemes; count++ {
 		if !clusters.Next() {
 			return text
 		}

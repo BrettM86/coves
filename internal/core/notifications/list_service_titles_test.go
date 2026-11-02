@@ -15,22 +15,9 @@ import (
 )
 
 func TestListNotifications_BlankPostTitles(t *testing.T) {
-	const bodyExcerpt = "ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ" +
-		"ABCDEFGHIJABCDEFGHIJ"
-	const titleExcerpt = "abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij" +
-		"abcdefghijabcdefghij"
-	const wholeTitle = titleExcerpt + "zzzzzzzzzzzzzzzzzzzz" +
-		"zzzzzzzzzzzzzzzzzzzz" + "zzzzzzzzzzzzzzzzzzzz"
+	bodyExcerpt := strings.Repeat("ABCDEFGHIJ", 100)
+	titleExcerpt := strings.Repeat("abcdefghij", 100)
+	wholeTitle := titleExcerpt + strings.Repeat("z", 60)
 	const postURI = "at://did:plc:owner/social.coves.community.postv2/subject"
 	const replyURI = "at://did:plc:actor/social.coves.community.comment/reply"
 	for _, tc := range []struct {
@@ -40,7 +27,7 @@ func TestListNotifications_BlankPostTitles(t *testing.T) {
 		{"tab and newline", "\t\n", bodyExcerpt + "BODY-TAIL", "", bodyExcerpt, bodyExcerpt},
 		{"ideographic space", "　", bodyExcerpt + "BODY-TAIL", "", bodyExcerpt, bodyExcerpt},
 		{"nonblank title retains surrounding whitespace", "  Hello  ", "Body", "  Hello  ", "  Hello  ", "  Hello  "},
-		{"long title is whole except mention excerpt", titleExcerpt + strings.Repeat("z", 60), "Body", wholeTitle, wholeTitle, titleExcerpt},
+		{"long title is whole except mention excerpt", wholeTitle, "Body", wholeTitle, wholeTitle, titleExcerpt},
 		{"blank title and empty body omit text", "   ", "", "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

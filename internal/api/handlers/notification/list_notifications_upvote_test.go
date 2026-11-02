@@ -63,8 +63,8 @@ func TestListNotifications_UpvoteFullShape(t *testing.T) {
 		name, kind, title, content, preview, subjectCID, rootCID string
 	}{
 		{"post title", "post", "A complete title", "Body", "A complete title", "bafyroot", "bafyroot"},
-		{"untitled post body", "post", "", strings.Repeat("b", 139) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 139) + "👩‍👩‍👧‍👦", "bafyroot", "bafyroot"},
-		{"comment excerpt on another author's root", "comment", "Other root", strings.Repeat("a", 139) + "🇺🇸" + strings.Repeat("z", 160), strings.Repeat("a", 139) + "🇺🇸", "bafycurrentcomment", "bafyotherroot"},
+		{"untitled post body", "post", "", strings.Repeat("b", 999) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 999) + "👩‍👩‍👧‍👦", "bafyroot", "bafyroot"},
+		{"comment excerpt on another author's root", "comment", "Other root", strings.Repeat("a", 999) + "🇺🇸" + strings.Repeat("z", 160), strings.Repeat("a", 999) + "🇺🇸", "bafycurrentcomment", "bafyotherroot"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newListHandlerFixture(t)

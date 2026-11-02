@@ -26,7 +26,7 @@ func (f *listHandlerFixture) addMention(recipient, recordURI, oldCID, actor, roo
 
 func TestListNotifications_CommentMentionFullShape(t *testing.T) {
 	for _, tc := range []struct{ name, content, want string }{
-		{"long multi-codepoint excerpt", strings.Repeat("a", 139) + "👩‍👩‍👧‍👦" + strings.Repeat("b", 160), strings.Repeat("a", 139) + "👩‍👩‍👧‍👦"},
+		{"long multi-codepoint excerpt", strings.Repeat("a", 999) + "👩‍👩‍👧‍👦" + strings.Repeat("b", 160), strings.Repeat("a", 999) + "👩‍👩‍👧‍👦"},
 		{"short content", "Hello recipient", "Hello recipient"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,8 +59,8 @@ func TestListNotifications_CommentMentionFullShape(t *testing.T) {
 
 func TestListNotifications_PostMentionTitleOrBodyExcerpt(t *testing.T) {
 	for _, tc := range []struct{ name, title, body, want string }{
-		{"title truncated on grapheme", strings.Repeat("T", 139) + "🇺🇸" + strings.Repeat("X", 160), "Other body", strings.Repeat("T", 139) + "🇺🇸"},
-		{"untitled body truncated on grapheme", "", strings.Repeat("b", 139) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 139) + "👩‍👩‍👧‍👦"},
+		{"title truncated on grapheme", strings.Repeat("T", 999) + "🇺🇸" + strings.Repeat("X", 160), "Other body", strings.Repeat("T", 999) + "🇺🇸"},
+		{"untitled body truncated on grapheme", "", strings.Repeat("b", 999) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 999) + "👩‍👩‍👧‍👦"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newListHandlerFixture(t)

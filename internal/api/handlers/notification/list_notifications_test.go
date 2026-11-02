@@ -247,8 +247,8 @@ func TestListNotifications_PostPreviewTitleOrBodyExcerpt(t *testing.T) {
 	for _, tc := range []struct {
 		name, title, content, want string
 	}{
-		{"long title is complete", strings.Repeat("T", 149) + "🇺🇸", "Other body", strings.Repeat("T", 149) + "🇺🇸"},
-		{"untitled body is truncated", "", strings.Repeat("b", 139) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 139) + "👩‍👩‍👧‍👦"},
+		{"long title is complete", strings.Repeat("T", 1049) + "🇺🇸", "Other body", strings.Repeat("T", 1049) + "🇺🇸"},
+		{"untitled body is truncated", "", strings.Repeat("b", 999) + "👩‍👩‍👧‍👦" + strings.Repeat("c", 160), strings.Repeat("b", 999) + "👩‍👩‍👧‍👦"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newListHandlerFixture(t)
@@ -271,18 +271,18 @@ func TestListNotifications_GraphemeTruncation(t *testing.T) {
 		name, parent, reply, wantParent, wantReply string
 	}{
 		{
-			"300 clusters cut on multi-codepoint cluster",
-			strings.Repeat("a", 139) + "👩‍👩‍👧‍👦" + strings.Repeat("b", 160),
-			strings.Repeat("c", 139) + "🇺🇸" + strings.Repeat("d", 160),
-			strings.Repeat("a", 139) + "👩‍👩‍👧‍👦",
-			strings.Repeat("c", 139) + "🇺🇸",
+			"1160 clusters cut on multi-codepoint cluster",
+			strings.Repeat("a", 999) + "👩‍👩‍👧‍👦" + strings.Repeat("b", 160),
+			strings.Repeat("c", 999) + "🇺🇸" + strings.Repeat("d", 160),
+			strings.Repeat("a", 999) + "👩‍👩‍👧‍👦",
+			strings.Repeat("c", 999) + "🇺🇸",
 		},
 		{
-			"exactly 140 clusters unchanged",
-			strings.Repeat("e", 139) + "👩‍👩‍👧‍👦",
-			strings.Repeat("f", 139) + "🇺🇸",
-			strings.Repeat("e", 139) + "👩‍👩‍👧‍👦",
-			strings.Repeat("f", 139) + "🇺🇸",
+			"exactly 1000 clusters unchanged",
+			strings.Repeat("e", 999) + "👩‍👩‍👧‍👦",
+			strings.Repeat("f", 999) + "🇺🇸",
+			strings.Repeat("e", 999) + "👩‍👩‍👧‍👦",
+			strings.Repeat("f", 999) + "🇺🇸",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
