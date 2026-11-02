@@ -23,7 +23,14 @@ import (
 // is why both go through hotRankSQL.
 var feedHotRankExpression = hotRankSQL("p", "NOW()")
 
-const cursorDelimiter = "::"
+const (
+	cursorDelimiter = "::"
+
+	// defaultHotCandidateLimit is how many of the newest visible posts in scope
+	// Timeline, community and Discover Hot rank. Older posts are out of reach on Hot; Top
+	// and New still reach them.
+	defaultHotCandidateLimit = 5_000
+)
 
 // feedSortClauses whitelists ORDER BY clauses for all post feeds
 // (discover, timeline, community, search), preventing SQL injection via dynamic ORDER BY
@@ -55,18 +62,64 @@ var feedSortClauses = map[string]string{
 //
 // 4. Hot sort uses computed expression: see hotRankSQL below
 //   - Cannot be indexed directly (computed at query time)
-//   - Uses idx_posts_community_created for base ordering
-//   - Performance: ~10-20ms for timeline, ~8-15ms for discover (acceptable for alpha)
+//   - hotCandidateBoundFilter limits ranking to the newest posts in scope. The
+//     outer query joins and ranks only those posts, so its cost follows the
+//     candidate limit. Community Hot's newest-posts subquery walks
+//     idx_posts_community_created and stops at the limit. Timeline Hot's reads
+//     every subscribed post before it can cut to the limit, so that part
+//     still scales with the size of the scope
 //
 // PERFORMANCE NOTES:
-// - All queries use single execution (no N+1)
-// - JOINs are minimal (3 for timeline, 2 for discover)
-// - Partial indexes (WHERE deleted_at IS NULL) eliminate soft-deleted posts efficiently
-// - Cursor pagination is stable (no offset drift)
-// - Limit+1 pattern checks for next page without extra query
+//   - All queries use single execution (no N+1)
+//   - JOINs are minimal (3 for timeline, 2 for discover)
+//   - Partial indexes (WHERE deleted_at IS NULL) eliminate soft-deleted posts efficiently
+//   - Cursor pagination is stable (no offset drift), though Hot's candidate bound
+//     can move between pages; see hotCandidateBoundFilter
+//   - Limit+1 pattern checks for next page without extra query
 type feedRepoBase struct {
 	db           *sql.DB
 	cursorSecret string // HMAC secret for cursor integrity protection
+
+	hotCandidateLimit int
+}
+
+func (r *feedRepoBase) effectiveHotCandidateLimit() int {
+	if r.hotCandidateLimit <= 0 {
+		return defaultHotCandidateLimit
+	}
+	return r.hotCandidateLimit
+}
+
+// hotCandidateBoundFilter renders the WHERE fragment that limits a hot read to
+// the newest visible posts in scope, and the argument to bind at $limitParam.
+// Any other sort gets no fragment and no argument.
+//
+// scopeSQL selects the feed's posts. viewerParam and blockFilter are the outer
+// query's own, so a post the viewer cannot see never takes a slot in the bound.
+//
+// The caller must keep the cursor filter outside this fragment: a bound computed
+// after the cursor would slide older posts into later pages.
+//
+// The fragment is = ANY(ARRAY(...)) rather than IN (...) because the array is
+// evaluated once and then probed through posts_uri_key. Given an IN subquery the
+// planner reads every post in scope and hash-joins it to the bound.
+func (r *feedRepoBase) hotCandidateBoundFilter(sort, scopeSQL string, viewerParam int, blockFilter string, limitParam int) (string, []interface{}) {
+	if sort != "hot" {
+		return "", nil
+	}
+
+	visJoin, visWhere := visiblePostsJoin(viewerParam)
+	filter := fmt.Sprintf(`AND p.uri = ANY(ARRAY(
+			SELECT p.uri
+			FROM posts p%s
+			WHERE %s
+				AND p.deleted_at IS NULL
+				AND %s
+				%s
+			ORDER BY p.created_at DESC, p.uri DESC
+			LIMIT $%d
+		))`, visJoin, scopeSQL, visWhere, blockFilter, limitParam)
+	return filter, []interface{}{r.effectiveHotCandidateLimit()}
 }
 
 // hotRankSQL builds the hot-rank SQL expression for a posts-table alias and a
@@ -90,9 +143,8 @@ type feedRepoBase struct {
 //
 // The age is cast to double precision before any arithmetic. EXTRACT returns
 // NUMERIC, and POWER over NUMERIC runs in arbitrary precision — about 20x the
-// cost of the float8 version, paid on every candidate row of every hot feed
-// (the whole community, or every subscribed community on the timeline). The
-// rank was already rounded to float8 by the division, so this changes nothing
+// cost of the float8 version, paid on every candidate row of every hot feed.
+// The rank was already rounded to float8 by the division, so this changes nothing
 // but the last bits of a value that both sides of every cursor comparison
 // compute with this same builder.
 func hotRankSQL(alias, nowExpr string) string {

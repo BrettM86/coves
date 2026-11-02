@@ -36,6 +36,7 @@ package communityFeeds_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -648,5 +649,25 @@ func TestGetCommunityFeed_TheCallerIsNotMutated(t *testing.T) {
 	// assertion above is about copying rather than about defaults being absent.
 	if seen := repo.only(t); seen.Sort != "hot" || seen.Limit != 15 || seen.Community != theCommunityDID {
 		t.Errorf("the repository saw %+v, want the defaulted and resolved request", seen)
+	}
+}
+
+// An empty page is a normal outcome, and the lexicon requires feed to be an
+// array, so a repository's nil slice must not reach the wire as null.
+func TestGetCommunityFeed_EmptyFeedEncodesAsAnArray(t *testing.T) {
+	t.Parallel()
+
+	service := newFeedService(&recordingFeedRepo{}, &recordingCommunityService{})
+	response, err := service.GetCommunityFeed(context.Background(), aRequest())
+	if err != nil {
+		t.Fatalf("GetCommunityFeed: %v", err)
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(encoded) != `{"feed":[]}` {
+		t.Errorf("got %s, want an empty feed array", encoded)
 	}
 }

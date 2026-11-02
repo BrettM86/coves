@@ -163,7 +163,7 @@ func TestDiscoverRepo_HotFailedSnapshotBuildConsumesGlobalRateLimit(t *testing.T
 	candidates := seedDiscoverHotSnapshotCandidates(t, db, "failed-build-rate", []int{200, 100})
 	ctx := context.Background()
 	firstRepository := newRateLimitedDiscoverHotRepository(db, "failed-build-rate-secret", 1)
-	firstRepository.discoverHotCandidateLimit = 1
+	firstRepository.discoverHotStoredCandidateLimit = 1
 
 	feed, cursor, err := firstRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
 	require.ErrorIs(t, err, discover.ErrDiscoverUnavailable)
@@ -175,7 +175,7 @@ func TestDiscoverRepo_HotFailedSnapshotBuildConsumesGlobalRateLimit(t *testing.T
 	require.NoError(t, err)
 	stateBeforeRetry := discoverHotStateCounts(t, db)
 	retryRepository := newRateLimitedDiscoverHotRepository(db, "failed-build-rate-secret", 1)
-	retryRepository.discoverHotCandidateLimit = 1
+	retryRepository.discoverHotStoredCandidateLimit = 1
 
 	feed, cursor, err = retryRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
 	require.ErrorIs(t, err, discover.ErrDiscoverUnavailable,

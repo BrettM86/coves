@@ -52,6 +52,13 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 	// pending post reaching the home feed is impossible, while the subscriber
 	// still sees their own non-accepted posts in communities they subscribe to.
 	visJoin, visWhere := visiblePostsJoin(1)
+	blockFilter := viewerBlockFilters(1, aggregateSurface)
+
+	hotBoundLimitParam := 3 + len(cursorValues)
+	hotBoundFilter, hotBoundValues := r.hotCandidateBoundFilter(
+		req.Sort,
+		`p.community_did IN (SELECT community_did FROM community_subscriptions WHERE user_did = $1)`,
+		1, blockFilter, hotBoundLimitParam)
 
 	// Join with community_subscriptions to get posts from subscribed communities
 	query := fmt.Sprintf(`
@@ -66,13 +73,15 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 			%s
 			%s
 			%s
+			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, visJoin, visWhere, viewerBlockFilters(1, aggregateSurface), timeFilter, cursorFilter, orderBy)
+	`, selectClause, visJoin, visWhere, blockFilter, timeFilter, cursorFilter, hotBoundFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{req.UserDID, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
+	args = append(args, hotBoundValues...)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

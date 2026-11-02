@@ -66,6 +66,9 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 		viewerFilter = viewerBlockFilters(visibilityParam, explicitSurface)
 	}
 
+	hotBoundFilter, hotBoundValues := r.hotCandidateBoundFilter(
+		req.Sort, `p.community_did = $1`, visibilityParam, viewerFilter, visibilityParam+1)
+
 	query := fmt.Sprintf(`
 		%s
 		LEFT JOIN users u ON p.author_did = u.did
@@ -76,15 +79,17 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 			%s
 			%s
 			%s
+			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, viewerFilter, orderBy)
+	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, viewerFilter, hotBoundFilter, orderBy)
 
 	// Prepare query arguments. The viewer DID is bound once at $visibilityParam
 	// and reused by the block filter above.
 	args := []interface{}{req.Community, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
 	args = append(args, req.ViewerDID)
+	args = append(args, hotBoundValues...)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

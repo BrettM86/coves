@@ -56,6 +56,9 @@ func (s *feedService) GetCommunityFeed(ctx context.Context, req GetCommunityFeed
 	if err != nil {
 		return nil, fmt.Errorf("failed to get community feed: %w", err)
 	}
+	if feedPosts == nil {
+		feedPosts = []*FeedViewPost{}
+	}
 
 	// 5. Return feed response
 	return &FeedResponse{

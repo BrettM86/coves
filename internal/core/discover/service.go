@@ -28,6 +28,9 @@ func (s *discoverService) GetDiscover(ctx context.Context, req GetDiscoverReques
 	if err != nil {
 		return nil, fmt.Errorf("failed to get discover feed: %w", err)
 	}
+	if feedPosts == nil {
+		feedPosts = []*FeedViewPost{}
+	}
 
 	// Return discover response
 	return &DiscoverResponse{

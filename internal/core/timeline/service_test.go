@@ -29,6 +29,7 @@ package timeline_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -457,5 +458,25 @@ func TestGetTimeline_FeedViewPostExposesItsPost(t *testing.T) {
 
 	if item.GetPost() != post {
 		t.Errorf("GetPost returned %v, want the wrapped post", item.GetPost())
+	}
+}
+
+// An empty page is a normal outcome, and the lexicon requires feed to be an
+// array, so a repository's nil slice must not reach the wire as null.
+func TestGetTimeline_EmptyFeedEncodesAsAnArray(t *testing.T) {
+	t.Parallel()
+
+	service := timeline.NewTimelineService(&recordingTimelineRepo{})
+	response, err := service.GetTimeline(context.Background(), aTimelineRequest())
+	if err != nil {
+		t.Fatalf("GetTimeline: %v", err)
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(encoded) != `{"feed":[]}` {
+		t.Errorf("got %s, want an empty feed array", encoded)
 	}
 }

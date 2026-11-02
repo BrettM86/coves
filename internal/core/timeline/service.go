@@ -33,6 +33,9 @@ func (s *timelineService) GetTimeline(ctx context.Context, req GetTimelineReques
 	if err != nil {
 		return nil, fmt.Errorf("failed to get timeline: %w", err)
 	}
+	if feedPosts == nil {
+		feedPosts = []*FeedViewPost{}
+	}
 
 	// 4. Return timeline response
 	return &TimelineResponse{

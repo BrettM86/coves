@@ -46,6 +46,8 @@ The numerator is log-damped because bridged and federated communities import vot
 
 `hotRankSQL` in `internal/db/postgres/feed_repo_base.go` is the only builder of this expression. The live `ORDER BY` and the cursor comparison both call it so they cannot drift. Timeline Hot and community Hot use it. Discover Hot ranks in Go and must equal this formula at neutral settings. Do not change the shared formula to tune Discover.
 
+Timeline Hot and community Hot rank only the newest 5,000 visible posts in scope, and the feed ends after them. New, Top with timeframe `all`, and search reach older posts. Discover Hot has the same bound on its candidates. Posts the viewer cannot see or has blocked do not count toward the 5,000. Timeline and community Hot recompute the bound on every page, ignoring the cursor, so posts added or removed during a scroll move it and the feed can end earlier or later. A page can come back empty after a cursor. Discover Hot fixes its candidates in the snapshot.
+
 ## Sorts and parameters
 
 Feeds sort `hot` (default), `top` or `new`. `top` takes a timeframe of hour, day, week, month, year or all, and the feeds default it to day. `limit` is 1 to 50 with default 15. A limit above 50 is a 400, not a silent cap; zero, negative, non-numeric or absent becomes 15. `ORDER BY` clauses come only from the `feedSortClauses` whitelist, and ties break on `created_at DESC, uri DESC`.
@@ -98,7 +100,7 @@ A request with no cursor reuses its scope's snapshot when it is under 30 seconds
 | --- | --- |
 | Snapshot reuse per scope | 30 seconds |
 | Snapshot lifetime | 1 hour, absolute |
-| Candidates per snapshot | 100,000; more fails with 503 rather than truncating |
+| Candidates per snapshot | Newest 5,000 visible posts; beyond that, the feed ends normally |
 | Stored candidates, all snapshots | 10,000,000 |
 | Stored checkpoints | 20,000, each at most 64 KiB (database constraint) |
 | Snapshot builds | 20 per minute globally, failed and cancelled builds included; one at a time under an advisory lock |
@@ -111,7 +113,7 @@ The caps are enforced atomically in the database so several AppView processes sh
 
 An expired, missing, malformed, tampered, wrong-viewer, wrong-sort or old-version cursor returns 400 `InvalidCursor`, and clients restart from page one. Bumping `discoverHotAlgorithmVersion` invalidates every outstanding cursor, and the old version's candidate rows keep counting against the stored-candidate cap for up to an hour.
 
-Capacity refusal or a missed deadline returns 503 `DiscoverUnavailable` with `Retry-After: 30`. It never returns a truncated or empty page and never falls back to the legacy ranking. A continuation that fails this way does not advance its checkpoint. When the caller's own deadline expires, the error matches both `context.DeadlineExceeded` and `ErrDiscoverUnavailable`; a plain cancellation stays a cancellation. A pooled connection that held an advisory lock is discarded after an acquisition error, a cancellation or a failed unlock, so a lock can never leak back into the pool.
+A full stored-candidate or stored-checkpoint cap, a checkpoint over 64 KiB, an exhausted build budget or a missed deadline returns 503 `DiscoverUnavailable` with `Retry-After: 30`. The candidate bound is not a capacity refusal: posts past it are left out and the feed ends normally. A 503 never comes with a partial or empty page and never falls back to the legacy ranking. A continuation that fails this way does not advance its checkpoint. When the caller's own deadline expires, the error matches both `context.DeadlineExceeded` and `ErrDiscoverUnavailable`; a plain cancellation stays a cancellation. A pooled connection that held an advisory lock is discarded after an acquisition error, a cancellation or a failed unlock, so a lock can never leak back into the pool.
 
 The frontend and mobile 1.4.0+11 restart from page one on `InvalidCursor` and honour `Retry-After`. Older mobile installs need a pull-to-refresh after a cursor expires.
 

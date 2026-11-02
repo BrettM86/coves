@@ -26,7 +26,7 @@ const (
 	discoverHotCursorMaxLength                     = 500
 	discoverHotSnapshotReuse                       = 30 * time.Second
 	discoverHotSnapshotLifetime                    = time.Hour
-	discoverHotDefaultCandidateLimit               = 100_000
+	discoverHotDefaultCandidateLimit               = defaultHotCandidateLimit
 	discoverHotDefaultStoredCandidateLimit         = 10_000_000
 	discoverHotDefaultStoredCheckpointLimit        = 20_000
 	discoverHotDefaultCheckpointStateByteLimit     = 64 * 1024
@@ -406,23 +406,20 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 	if viewerDID != "" {
 		viewerFilter = viewerBlockFilters(1, aggregateSurface)
 	}
-	queryLimit := int64(candidateLimit)
-	if queryLimit < math.MaxInt64 {
-		queryLimit++
-	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT p.uri, p.community_did, p.score, p.created_at,
 			c.pds_refresh_token_encrypted IS NOT NULL AS hosted
 		FROM posts p`+visJoin+`
 			-- communities.did is UNIQUE, so this join cannot multiply candidate
-			-- rows: the candidate limit and the atomic overflow refusal both
-			-- depend on one row per post. A missing community reads as not hosted.
+			-- rows: the candidate limit counts posts, so it depends on one row
+			-- per post. A missing community reads as not hosted.
 			LEFT JOIN communities c ON c.did = p.community_did
 		WHERE p.deleted_at IS NULL
 			AND `+visWhere+`
 			`+viewerFilter+`
+		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $2
-	`, viewerDID, queryLimit)
+	`, viewerDID, candidateLimit)
 	if err != nil {
 		return nil, fmt.Errorf("query Discover Hot candidates: %w", err)
 	}
@@ -433,9 +430,6 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 		var candidate discoverHotRawCandidate
 		if err := rows.Scan(&candidate.URI, &candidate.CommunityDID, &candidate.Score, &candidate.CreatedAt, &candidate.Hosted); err != nil {
 			return nil, fmt.Errorf("scan Discover Hot candidate: %w", err)
-		}
-		if len(candidates) == candidateLimit {
-			return nil, fmt.Errorf("Discover Hot candidate limit %d exceeded: %w", candidateLimit, discover.ErrDiscoverUnavailable)
 		}
 		candidates = append(candidates, candidate)
 	}

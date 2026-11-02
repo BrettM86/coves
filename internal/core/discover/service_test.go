@@ -29,6 +29,7 @@ package discover_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -412,5 +413,25 @@ func TestGetDiscover_FeedViewPostExposesItsPost(t *testing.T) {
 
 	if item.GetPost() != post {
 		t.Errorf("GetPost returned %v, want the wrapped post", item.GetPost())
+	}
+}
+
+// An empty page is a normal outcome, and the lexicon requires feed to be an
+// array, so a repository's nil slice must not reach the wire as null.
+func TestGetDiscover_EmptyFeedEncodesAsAnArray(t *testing.T) {
+	t.Parallel()
+
+	service := discover.NewDiscoverService(&recordingDiscoverRepo{})
+	response, err := service.GetDiscover(context.Background(), discover.GetDiscoverRequest{})
+	if err != nil {
+		t.Fatalf("GetDiscover: %v", err)
+	}
+
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(encoded) != `{"feed":[]}` {
+		t.Errorf("got %s, want an empty feed array", encoded)
 	}
 }
