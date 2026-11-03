@@ -169,6 +169,11 @@
           "maxLength": 253,
           "description": "Instance this community actually lives on (hostname only, e.g. lemmy.world). Validated by the AppView at index time."
         },
+        "originSoftware": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Bridge-written home instance software; display only. maxLength counts UTF-8 bytes."
+        },
         "avatar": {
           "type": "string",
           "format": "uri"

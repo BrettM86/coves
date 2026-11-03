@@ -458,12 +458,13 @@ type AuthorView struct {
 
 // CommunityRef represents minimal community info in post views
 type CommunityRef struct {
-	Avatar *string `json:"avatar,omitempty"`
-	Origin *string `json:"origin,omitempty"` // Instance the community lives on (hostname); clients render !name@origin
-	DID    string  `json:"did"`
-	Handle string  `json:"handle"`
-	Name   string  `json:"name"`
-	PDSURL string  `json:"-"` // Not exposed to API, used for blob URL transformation
+	Avatar         *string `json:"avatar,omitempty"`
+	Origin         *string `json:"origin,omitempty"` // Instance the community lives on (hostname); clients render !name@origin
+	DID            string  `json:"did"`
+	Handle         string  `json:"handle"`
+	Name           string  `json:"name"`
+	OriginSoftware string  `json:"originSoftware,omitempty"` // Bridge-written home instance software; display only
+	PDSURL         string  `json:"-"`                        // Not exposed to API, used for blob URL transformation
 }
 
 // PostStats represents aggregated statistics
