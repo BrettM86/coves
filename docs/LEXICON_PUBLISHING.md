@@ -123,15 +123,15 @@ Accepted 2026-10-17, owner-approved hard switch:
 Published: `richtext.*`, `embed.*`, `actor.*` except
 `actor/getViewerAuthority.json`, `feed.*`, `aggregator.*`, and
 `community.*` (including `post.*` and `comment.*`) except the held-back files
-below. Once the moderation release runs, also the reviewed moderation package:
+below, and `notification/defs.json` with its five endpoint files (notifications
+release, 2026-11-05). Once the moderation release runs, also the reviewed moderation package:
 `moderation/defs.json` and the seven endpoint files
 `moderation/removeContent.json`, `moderation/restoreContent.json`,
 `moderation/labelContent.json`, `moderation/retractContentLabel.json`,
 `moderation/listActions.json`, `moderation/listAdminActions.json`,
 `moderation/getSubjectState.json`, plus `actor/getViewerAuthority.json`, which
 tells clients whether the viewer is an instance admin and ships with them; and,
-once the notifications release below runs, `notification/defs.json` and its
-five endpoint files; and, once the media release below runs, `media/uploadImage.json`.
+once the media release below runs, `media/uploadImage.json`.
 
 Held back, because the governance and tribunal design has not landed. Paths
 are relative to `internal/atproto/lexicon/social/coves/`, and the test fails if
@@ -176,7 +176,7 @@ DNS delegation is one TXT record per unique NSID authority, each with content
 | `_lexicon.vote.feed.coves.social` | live |
 | `_lexicon.richtext.coves.social` | live |
 | `_lexicon.moderation.coves.social` | created in the moderation release, step 3a |
-| `_lexicon.notification.coves.social` | created in the notifications release, step 4a |
+| `_lexicon.notification.coves.social` | live (created 2026-11-05) |
 | `_lexicon.media.coves.social` | created in the media release, step 5a |
 
 `scripts/publish-lexicon-dns.sh` creates or updates them through the
