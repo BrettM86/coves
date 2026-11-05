@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
+	"Coves/internal/validation"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
@@ -890,4 +892,208 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 	t.Logf("   ✓ PutRecord with stale CID correctly returns ErrConflict")
 	t.Logf("   ✓ PutRecord with correct CID succeeds")
 	t.Logf("   ✓ Optimistic locking prevents lost updates")
+}
+
+// imageCommentAuthor is a fresh local PDS account writing comments through a
+// lexicon-validated comment service, with one image already in its blob store.
+type imageCommentAuthor struct {
+	service comments.Service
+	account *testkit.Account
+	session *oauthlib.ClientSessionData
+	image   testkit.BlobRef
+}
+
+func newImageCommentAuthor(t *testing.T, handlePrefix string) imageCommentAuthor {
+	t.Helper()
+	db := testkit.DB(t)
+	validator, err := validation.NewEmbeddedLexiconValidator(false)
+	require.NoError(t, err)
+	service := comments.NewCommentServiceWithPDSFactory(
+		postgres.NewCommentRepository(db), nil, nil, nil, nil,
+		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
+		comments.WithLexiconValidator(validator),
+	)
+	account := testkit.NewPDS(t).CreateAccount(t, testkit.WithHandlePrefix(handlePrefix))
+	store := fixtures.NewOAuthStore()
+	store.AddSessionWithPDS(account.DID, "session-"+account.DID, account.AccessToken, testkit.Endpoints().PDS.BaseURL)
+	did, err := parseTestDID(account.DID)
+	require.NoError(t, err)
+	session, err := store.GetSession(context.Background(), did, "session-"+account.DID)
+	require.NoError(t, err)
+	return imageCommentAuthor{
+		service: service,
+		account: account,
+		session: session,
+		image:   account.UploadBlob(t, testkit.TestPNG(64, 48), "image/png"),
+	}
+}
+
+// imagesEmbedJSON is a social.coves.embed.images embed holding the author's
+// uploaded image.
+func (a imageCommentAuthor) imagesEmbedJSON() string {
+	return fmt.Sprintf(`{"$type":"social.coves.embed.images","images":[{"image":{"$type":"blob","ref":{"$link":%q},"mimeType":%q,"size":%d},"alt":"A harbour at dusk"}]}`,
+		a.image.CID(), a.image.MimeType, a.image.Size)
+}
+
+// imagesWithAttachmentEmbedJSON nests imagesEmbedJSON beside a quoted post.
+func (a imageCommentAuthor) imagesWithAttachmentEmbedJSON() string {
+	return `{"$type":"social.coves.embed.imagesWithAttachment","images":` + a.imagesEmbedJSON() + `,"attachment":` + imageOnlyQuotedPostEmbed + `}`
+}
+
+const imageOnlyQuotedPostEmbed = `{"$type":"social.coves.embed.post","post":{"uri":"at://did:plc:lexcommentquotedauthor/social.coves.community.post/3m2lexcommentquote","cid":"bafyreibzohnz4y676vq5u2ycuplmu766phrlhkja37fbg3z2m7xli4wbxy"}}`
+
+// imageOnlyCommentReply replies to a post that need not exist: writes go to
+// the author's PDS only.
+var imageOnlyCommentReply = comments.ReplyRef{
+	Root:   comments.StrongRef{URI: "at://did:plc:test/social.coves.community.post/test123", CID: "bafypost"},
+	Parent: comments.StrongRef{URI: "at://did:plc:test/social.coves.community.post/test123", CID: "bafypost"},
+}
+
+// decodeEmbed turns a JSON literal into the generic shape the handler hands the
+// service and the PDS hands back; "" is no embed.
+func decodeEmbed(t *testing.T, literal string) map[string]interface{} {
+	t.Helper()
+	if literal == "" {
+		return nil
+	}
+	var embed map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(literal), &embed), "test literal is not a JSON object: %s", literal)
+	return embed
+}
+
+// embedArg converts decodeEmbed's result to the request field, keeping a nil
+// map as an absent embed rather than a typed nil.
+func embedArg(embed map[string]interface{}) interface{} {
+	if embed == nil {
+		return nil
+	}
+	return embed
+}
+
+// commentRecordCount lists the author's comment records on its PDS.
+func (a imageCommentAuthor) commentRecordCount(t *testing.T) int {
+	t.Helper()
+	var resp struct {
+		Records []json.RawMessage `json:"records"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, a.account.XRPC().Query(ctx, "com.atproto.repo.listRecords", url.Values{
+		"repo":       {a.account.DID},
+		"collection": {"social.coves.community.comment"},
+		"limit":      {"100"},
+	}, &resp))
+	return len(resp.Records)
+}
+
+func TestCommentWrite_CreateImageOnlyComment(t *testing.T) {
+	t.Parallel()
+	author := newImageCommentAuthor(t, "imgc")
+
+	tests := []struct {
+		name    string
+		content string
+		embed   string
+	}{
+		{name: "empty content with images", content: "", embed: author.imagesEmbedJSON()},
+		{name: "empty content with images and attachment", content: "", embed: author.imagesWithAttachmentEmbedJSON()},
+		{name: "whitespace content with images", content: " \t", embed: author.imagesEmbedJSON()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resp, err := author.service.CreateComment(context.Background(), author.session, comments.CreateCommentRequest{
+				Reply:   imageOnlyCommentReply,
+				Content: test.content,
+				Embed:   embedArg(decodeEmbed(t, test.embed)),
+			})
+			require.NoError(t, err)
+
+			record := author.account.GetRecord(t, "social.coves.community.comment", utils.ExtractRKeyFromURI(resp.URI))
+			require.Equal(t, resp.CID, record.CID)
+			require.Equal(t, test.content, record.Value["content"])
+			require.Equal(t, decodeEmbed(t, test.embed), record.Value["embed"])
+		})
+	}
+}
+
+func TestCommentWrite_UpdateToImageOnlyComment(t *testing.T) {
+	t.Parallel()
+	author := newImageCommentAuthor(t, "imgu")
+	ctx := context.Background()
+
+	created, err := author.service.CreateComment(ctx, author.session, comments.CreateCommentRequest{
+		Reply:   imageOnlyCommentReply,
+		Content: "Text before the photo",
+	})
+	require.NoError(t, err)
+
+	embed := author.imagesEmbedJSON()
+	updated, err := author.service.UpdateComment(ctx, author.session, comments.UpdateCommentRequest{
+		URI:     created.URI,
+		Content: "",
+		Embed:   decodeEmbed(t, embed),
+	})
+	require.NoError(t, err)
+
+	record := author.account.GetRecord(t, "social.coves.community.comment", utils.ExtractRKeyFromURI(created.URI))
+	require.Equal(t, updated.CID, record.CID)
+	require.Equal(t, "", record.Value["content"])
+	require.Equal(t, decodeEmbed(t, embed), record.Value["embed"])
+}
+
+func TestCommentWrite_EmptyContentWithoutImagesRefused(t *testing.T) {
+	t.Parallel()
+	author := newImageCommentAuthor(t, "imge")
+	ctx := context.Background()
+
+	t.Run("create", func(t *testing.T) {
+		for _, content := range []string{"", " \t"} {
+			for embedName, embed := range map[string]string{"no embed": "", "quoted post": imageOnlyQuotedPostEmbed} {
+				t.Run(fmt.Sprintf("%q/%s", content, embedName), func(t *testing.T) {
+					_, err := author.service.CreateComment(ctx, author.session, comments.CreateCommentRequest{
+						Reply:   imageOnlyCommentReply,
+						Content: content,
+						Embed:   embedArg(decodeEmbed(t, embed)),
+					})
+					require.ErrorIs(t, err, comments.ErrContentEmpty)
+					require.Equal(t, 0, author.commentRecordCount(t), "a refused create writes no comment record")
+				})
+			}
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		storedEmbed := author.imagesEmbedJSON()
+		created, err := author.service.CreateComment(ctx, author.session, comments.CreateCommentRequest{
+			Reply:   imageOnlyCommentReply,
+			Content: "Harbour photo",
+			Embed:   decodeEmbed(t, storedEmbed),
+		})
+		require.NoError(t, err)
+		rkey := utils.ExtractRKeyFromURI(created.URI)
+
+		tests := []struct {
+			name    string
+			content string
+			embed   string
+		}{
+			{name: "empty content without embed", content: "", embed: ""},
+			{name: "whitespace content with quoted post", content: " \t", embed: imageOnlyQuotedPostEmbed},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				_, err := author.service.UpdateComment(ctx, author.session, comments.UpdateCommentRequest{
+					URI:     created.URI,
+					Content: test.content,
+					Embed:   embedArg(decodeEmbed(t, test.embed)),
+				})
+				require.ErrorIs(t, err, comments.ErrContentEmpty)
+
+				record := author.account.GetRecord(t, "social.coves.community.comment", rkey)
+				require.Equal(t, created.CID, record.CID, "a refused update leaves the record unchanged")
+				require.Equal(t, "Harbour photo", record.Value["content"])
+				require.Equal(t, decodeEmbed(t, storedEmbed), record.Value["embed"])
+			})
+		}
+	})
 }

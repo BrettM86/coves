@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/aggregators"
@@ -142,7 +143,7 @@ func TestUploadImageRoute_AcceptsAggregatorAPIKeys(t *testing.T) {
 			loader := &deadSessionLoader{}
 			dualAuth := middleware.NewDualAuthMiddleware(nil, nil, nil, nil).WithAPIKeyValidator(singleKeyValidator{})
 			router := chi.NewRouter()
-			RegisterMediaRoutes(router, dualAuth, media.NewUploadService(pipeline, defaultUploadLimiter(t)), repoFactory, loader)
+			RegisterMediaRoutes(router, dualAuth, media.NewUploadService(pipeline, defaultUploadLimiter(t)), repoFactory, loader, 120*time.Second, 120*time.Second)
 
 			request := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.media.uploadImage", nil)
 			request.Header.Set("Content-Type", "image/jpeg")

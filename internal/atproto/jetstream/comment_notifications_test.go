@@ -5,6 +5,7 @@ package jetstream
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -521,4 +522,116 @@ func TestCommentConsumer_MissingActivationRowFailsIndexingForRetry(t *testing.T)
 	assert.Equal(t, 1, countRows(t, db, `SELECT count(*) FROM notifications
 		WHERE record_uri = $1 AND recipient_did = $2 AND reason = $3`,
 		commentURI, revTestAuthor, "postReply"), "the retry must notify B exactly once")
+}
+
+// B10: an image-only reply (content "" with an images embed) notifies the
+// target's author, and listing that author's notifications returns it with an
+// empty record excerpt.
+func TestCommentConsumer_ImageOnlyReplyNotificationListed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		replyToPost bool
+		wantReason  notifications.Reason
+	}{
+		{name: "reply to post", replyToPost: true, wantReason: "postReply"},
+		{name: "reply to comment", replyToPost: false, wantReason: "commentReply"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			db := testkit.DB(t)
+			uniqueID := testkit.UniqueID(t)
+			authorDID := "did:plc:" + uniqueID + "author"
+			replierDID := "did:plc:" + uniqueID + "replier"
+			communityDID := "did:plc:" + uniqueID + "community"
+			for _, user := range []struct{ did, handle string }{
+				{authorDID, uniqueID + "author.test"},
+				{replierDID, uniqueID + "replier.test"},
+			} {
+				_, err := db.ExecContext(ctx,
+					`INSERT INTO users (did, handle, pds_url, created_at) VALUES ($1, $2, $3, NOW())`,
+					user.did, user.handle, bridgedTestNativePDS)
+				require.NoError(t, err)
+			}
+			_, err := db.ExecContext(ctx,
+				`INSERT INTO communities (did, handle, name, owner_did, created_by_did, hosted_by_did, pds_url, created_at)
+				 VALUES ($1, $2, $3, $4, $4, $4, $5, NOW())`,
+				communityDID, uniqueID+"community.test", "Image reply community", authorDID, bridgedTestNativePDS)
+			require.NoError(t, err)
+
+			userService := newMockUserService()
+			userService.users[authorDID] = &users.User{DID: authorDID, Handle: uniqueID + "author.test"}
+			postConsumer := NewPostEventConsumer(
+				postgres.NewPostRepository(db),
+				postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
+				userService, db,
+				WithAdmissions(postgres.NewAdmissionRepository(db)),
+			)
+			postKey := testkit.TID()
+			postURI := pv2URI(authorDID, postKey)
+			const postCID = "bafyreiimageonlyreplypost"
+			require.NoError(t, postConsumer.HandleEvent(ctx, pv2Event(
+				authorDID, "create", postKey, testkit.TID(), postCID, time.Now().UnixMicro(),
+				pv2Record(communityDID, "Image reply target", "A post with text"),
+			)))
+			// The post consumer opens a pending admission; accept it so the
+			// notification's root post is visible to the listing.
+			accepted, err := db.ExecContext(ctx, `UPDATE community_post_admissions
+				SET status = 'accepted', accepted_cid = $2, evaluated_cid = $2
+				WHERE post_uri = $1`, postURI, postCID)
+			require.NoError(t, err)
+			acceptedRows, err := accepted.RowsAffected()
+			require.NoError(t, err)
+			require.EqualValues(t, 1, acceptedRows, "fixture: post consumer must open the post's admission")
+			createdAt := activatedCommentNotificationTime(t, db, ctx)
+
+			consumer := NewCommentEventConsumer(
+				postgres.NewCommentRepository(db), db,
+				WithCommentNotifications(postgres.NewNotificationRepository(db)),
+			)
+			parentURI, parentCID := postURI, postCID
+			if !tc.replyToPost {
+				parentKey := testkit.TID()
+				parentURI = "at://" + authorDID + "/" + CommentCollection + "/" + parentKey
+				parentCID = "bafyreiimageonlyreplyparent"
+				parentRecord := revCommentRecord("Author's own text comment", postURI, postCID, postURI, postCID)
+				parentRecord["createdAt"] = createdAt
+				require.NoError(t, consumer.HandleEvent(ctx, revCommitEvent(
+					authorDID, CommentCollection, "create", parentKey, testkit.TID(), parentCID,
+					time.Now().UnixMicro(), parentRecord,
+				)))
+			}
+
+			replyKey := testkit.TID()
+			replyURI := "at://" + replierDID + "/" + CommentCollection + "/" + replyKey
+			const replyCID = "bafyreiimageonlyreply"
+			replyRecord := revCommentRecord("", postURI, postCID, parentURI, parentCID)
+			replyRecord["createdAt"] = createdAt
+			var embed map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(imageOnlyImagesEmbed), &embed))
+			replyRecord["embed"] = embed
+			require.NoError(t, consumer.HandleEvent(ctx, revCommitEvent(
+				replierDID, CommentCollection, "create", replyKey, testkit.TID(), replyCID,
+				time.Now().UnixMicro(), replyRecord,
+			)), "index the image-only reply")
+			require.Equal(t, 1, countRows(t, db, `SELECT count(*) FROM notifications
+				WHERE recipient_did = $1 AND reason = $2 AND actor_did = $3 AND record_uri = $4 AND subject_uri = $5`,
+				authorDID, string(tc.wantReason), replierDID, replyURI, parentURI),
+				"the image-only reply must notify the target's author")
+
+			listService := notifications.NewListService(
+				postgres.NewNotificationRepository(db).(notifications.ReadRepository),
+				postgres.NewUserRepository(db), postgres.NewPostRepository(db), postgres.NewCommentRepository(db))
+			output, err := listService.ListNotifications(ctx, authorDID, "", 50)
+			require.NoError(t, err)
+			require.Len(t, output.Notifications, 1)
+			listed := output.Notifications[0]
+			assert.Equal(t, tc.wantReason, listed.Reason)
+			require.NotNil(t, listed.Record)
+			assert.Equal(t, replyURI, listed.Record.URI)
+			assert.Equal(t, replyCID, listed.Record.CID)
+			assert.Equal(t, "", listed.Record.Excerpt)
+		})
+	}
 }

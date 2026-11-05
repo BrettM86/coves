@@ -1352,8 +1352,9 @@ func (c *CommentEventConsumer) validateCommentEvent(ctx context.Context, repoDID
 		return fmt.Errorf("%w: invalid commenter DID format: %s", ErrPermanentEvent, repoDID)
 	}
 
-	// Validate content is not empty (required per lexicon)
-	if comment.Content == "" {
+	// Validate content is not empty (required per lexicon) unless the comment
+	// carries images: an image-only comment may have empty content.
+	if comment.Content == "" && !richtext.EmbedHasImages(comment.Embed) {
 		return fmt.Errorf("%w: comment content is required", ErrPermanentEvent)
 	}
 
@@ -1457,7 +1458,12 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 	}
 
 	// Validate required fields. PERMANENT: structurally invalid forever.
-	if comment.Content == "" {
+	// The content field must be present; it may be empty only when the comment
+	// carries images.
+	if content, present := record["content"]; !present || content == nil {
+		return nil, fmt.Errorf("%w: comment record missing content field", ErrPermanentEvent)
+	}
+	if comment.Content == "" && !richtext.EmbedHasImages(comment.Embed) {
 		return nil, fmt.Errorf("%w: comment record missing content field", ErrPermanentEvent)
 	}
 

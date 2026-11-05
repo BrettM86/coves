@@ -838,3 +838,83 @@ func TestCommentAPIContract(t *testing.T) {
 		assert.Empty(t, empty.Comments)
 	})
 }
+
+// TestImageOnlyCommentCreateContract: a signed-in local account uploads an
+// image, then creates a comment with content "" and an images embed carrying
+// that blob. The PDS record keeps content "" and the image, the comment is
+// indexed and served by getComments with its image, and the served image URL is
+// the AppView image proxy's, which serves the bytes.
+func TestImageOnlyCommentCreateContract(t *testing.T) {
+	p := newPipeline(t)
+	author := p.IndexedAccount(t, "ioc")
+	community := indexedCommunity(t, p, "ioc", author.DID)
+	post := indexedPost(t, p, community, author, "image-only comment thread")
+	viewer := p.AppView.As(p.AppView.SignIn(t, author))
+
+	ctx, cancel := context.WithTimeout(t.Context(), contractBudget)
+	defer cancel()
+	var uploaded struct {
+		Blob testkit.BlobRef `json:"blob"`
+	}
+	require.NoError(t, viewer.Upload(ctx, "social.coves.media.uploadImage", "image/png", testkit.TestPNG(40, 24), &uploaded))
+	require.NotEmpty(t, uploaded.Blob.CID())
+
+	var created strongRef
+	require.NoError(t, viewer.Procedure(ctx, "social.coves.community.comment.create", map[string]any{
+		"reply": map[string]any{
+			"root":   map[string]any{"uri": post.URI, "cid": post.CID},
+			"parent": map[string]any{"uri": post.URI, "cid": post.CID},
+		},
+		"content": "",
+		"embed": map[string]any{
+			"$type":  "social.coves.embed.images",
+			"images": []any{map[string]any{"image": blobRefValue(uploaded.Blob), "alt": "image-only comment"}},
+		},
+	}, &created), "comment.create must accept empty content with an images embed")
+	require.NotEmpty(t, created.CID)
+	rkey := strings.TrimPrefix(created.URI, commentURI(author.DID, ""))
+	require.Equal(t, commentURI(author.DID, rkey), created.URI)
+
+	// (a) The record on the PDS has content "" and the uploaded image.
+	stored := author.GetRecord(t, commentCollection, rkey)
+	require.Equal(t, created.CID, stored.CID)
+	require.Equal(t, "", stored.Value["content"])
+	storedEmbed, ok := stored.Value["embed"].(map[string]any)
+	require.True(t, ok, "the PDS record must carry the embed")
+	require.Equal(t, "social.coves.embed.images", storedEmbed["$type"])
+	storedImages, ok := storedEmbed["images"].([]any)
+	require.True(t, ok)
+	require.Len(t, storedImages, 1)
+	storedBlob := storedImages[0].(map[string]any)["image"].(map[string]any)
+	require.Equal(t, uploaded.Blob.CID(), storedBlob["ref"].(map[string]any)["$link"])
+
+	// (b) The comment is indexed and getComments serves it with its image.
+	var node threadNode
+	p.Await(t, "the image-only comment to be served by getComments", func() (bool, error) {
+		thread, err := p.Thread(ctx, post.URI, nil)
+		if done, err := testkit.PendingIfNotFound(err); !done || err != nil {
+			return done, err
+		}
+		found, ok := thread.find(created.URI)
+		if !ok || found.Comment.CID != created.CID {
+			return false, nil
+		}
+		node = found
+		return true, nil
+	}, withReadCadence())
+	require.False(t, node.Comment.IsDeleted)
+	require.Equal(t, "", node.Comment.Record["content"])
+	require.Equal(t, "social.coves.embed.images#view", node.Comment.Embed["$type"])
+	images, ok := node.Comment.Embed["images"].([]any)
+	require.True(t, ok)
+	require.Len(t, images, 1, "the view must carry the uploaded image")
+	imageURL, ok := images[0].(map[string]any)["fullsize"].(string)
+	require.True(t, ok, "the image view must carry a fullsize URL")
+
+	// (c) The URL is the AppView image proxy's for this account's blob, and it
+	// serves image bytes.
+	parsed, err := url.Parse(imageURL)
+	require.NoError(t, err)
+	require.Equal(t, "/img/content_full/plain/"+author.DID+"/"+uploaded.Blob.CID(), parsed.Path)
+	requireServesImage(t, p, "image-only comment image", imageURL)
+}

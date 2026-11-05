@@ -87,7 +87,7 @@
         },
         {
           "name": "ContentEmpty",
-          "description": "Updated comment content is empty or contains only whitespace"
+          "description": "Content is empty and the comment has no images"
         },
         {
           "name": "NotAuthorized",

@@ -303,3 +303,68 @@ func TestCheckImageFacets_ImagesWithAttachmentUsesMainGallery(t *testing.T) {
 		}
 	})
 }
+
+func TestEmbedHasImages(t *testing.T) {
+	tests := []struct {
+		name  string
+		embed map[string]interface{}
+		want  bool
+	}{
+		{name: "images embed with one image", embed: imagesEmbed(1), want: true},
+		{
+			name: "imagesWithAttachment with one nested image",
+			embed: map[string]interface{}{
+				"$type":  "social.coves.embed.imagesWithAttachment",
+				"images": imagesEmbed(1),
+				"attachment": map[string]interface{}{
+					"$type": "social.coves.embed.post",
+					"post": map[string]interface{}{
+						"uri": "at://did:plc:quotedauthor/social.coves.community.post/3m2quoted",
+						"cid": "bafyreibzohnz4y676vq5u2ycuplmu766phrlhkja37fbg3z2m7xli4wbxy",
+					},
+				},
+			},
+			want: true,
+		},
+		{name: "images embed with an empty array", embed: imagesEmbed(0), want: false},
+		{name: "images embed without an images key", embed: map[string]interface{}{"$type": "social.coves.embed.images"}, want: false},
+		{
+			name: "imagesWithAttachment with an empty nested array",
+			embed: map[string]interface{}{
+				"$type":  "social.coves.embed.imagesWithAttachment",
+				"images": imagesEmbed(0),
+			},
+			want: false,
+		},
+		{
+			name: "quoted record embed",
+			embed: map[string]interface{}{
+				"$type": "social.coves.embed.record",
+				"record": map[string]interface{}{
+					"uri": "at://did:plc:quotedauthor/social.coves.community.post/3m2quoted",
+					"cid": "bafyreibzohnz4y676vq5u2ycuplmu766phrlhkja37fbg3z2m7xli4wbxy",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "quoted post embed",
+			embed: map[string]interface{}{
+				"$type": "social.coves.embed.post",
+				"post": map[string]interface{}{
+					"uri": "at://did:plc:quotedauthor/social.coves.community.post/3m2quoted",
+					"cid": "bafyreibzohnz4y676vq5u2ycuplmu766phrlhkja37fbg3z2m7xli4wbxy",
+				},
+			},
+			want: false,
+		},
+		{name: "nil embed", embed: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := EmbedHasImages(test.embed); got != test.want {
+				t.Errorf("EmbedHasImages() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

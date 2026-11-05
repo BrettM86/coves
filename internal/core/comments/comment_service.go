@@ -825,12 +825,27 @@ func (s *commentService) checkEmbedAndImageFacets(facets []interface{}, embed in
 	return richtext.CheckImageFacets(facets, embedObject, contentByteLen)
 }
 
+// commentContent returns the content to write into the comment record. Text is
+// trimmed of surrounding whitespace. Content that is empty after trimming is
+// refused with ErrContentEmpty unless the embed carries images; an image-only
+// comment writes rawContent unchanged, since the lexicon requires the field.
+func commentContent(rawContent string, embed interface{}) (string, error) {
+	content := strings.TrimSpace(rawContent)
+	if content != "" {
+		return content, nil
+	}
+	embedObject, _ := embed.(map[string]interface{})
+	if !richtext.EmbedHasImages(embedObject) {
+		return "", ErrContentEmpty
+	}
+	return rawContent, nil
+}
+
 // CreateComment creates a new comment on a post or reply to another comment
 func (s *commentService) CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error) {
-	// Validate content not empty
-	content := strings.TrimSpace(req.Content)
-	if content == "" {
-		return nil, ErrContentEmpty
+	content, err := commentContent(req.Content, req.Embed)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate content length (max 10000 graphemes)
@@ -944,10 +959,10 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		return nil, ErrNotAuthorized
 	}
 
-	// Validate new content
-	content := strings.TrimSpace(req.Content)
-	if content == "" {
-		return nil, ErrContentEmpty
+	// Validate new content; the updated record takes its embed from the request.
+	content, err := commentContent(req.Content, req.Embed)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate content length (max 10000 graphemes)

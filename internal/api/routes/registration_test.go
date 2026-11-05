@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
@@ -467,7 +468,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	if err != nil {
 		panic(err)
 	}
-	RegisterMediaRoutes(mux, middleware.NewDualAuthMiddleware(unsealer, nil, nil, nil), media.NewUploadService(pipeline, uploadLimiter), nil, nil)
+	RegisterMediaRoutes(mux, middleware.NewDualAuthMiddleware(unsealer, nil, nil, nil), media.NewUploadService(pipeline, uploadLimiter), nil, nil, 120*time.Second, 120*time.Second)
 
 	return builtRouter{mux: mux, unsealer: unsealer}
 })

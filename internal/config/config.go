@@ -411,6 +411,9 @@ type MediaConfig struct {
 
 	UploadLimit media.UploadLimitConfig
 
+	// UploadReadTimeout is the read deadline for an image upload body (MEDIA_UPLOAD_READ_TIMEOUT).
+	UploadReadTimeout time.Duration
+
 	// CDNPurge configures optional Cloudflare edge invalidation for blocked media.
 	CDNPurge CDNPurgeConfig
 
@@ -630,6 +633,19 @@ func Load() (*Config, error) {
 	if math.IsNaN(uploadWarnFraction) || math.IsInf(uploadWarnFraction, 0) || uploadWarnFraction <= 0 || uploadWarnFraction > 1 {
 		return nil, fmt.Errorf("MEDIA_UPLOAD_WARN_FRACTION must be in (0, 1]")
 	}
+	uploadReadTimeout, err := durationVar("MEDIA_UPLOAD_READ_TIMEOUT", 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	// uploadImage extends the connection's read deadline to this value, so it
+	// must be positive and must not shorten the listener's own read deadline.
+	if uploadReadTimeout <= 0 {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_READ_TIMEOUT must be greater than 0")
+	}
+	if uploadReadTimeout < cfg.Server.ReadTimeout {
+		return nil, fmt.Errorf("MEDIA_UPLOAD_READ_TIMEOUT (%s) must not be below HTTP_READ_TIMEOUT (%s)",
+			uploadReadTimeout, cfg.Server.ReadTimeout)
+	}
 
 	cfg.Media = MediaConfig{
 		ImageProxy: imageProxy,
@@ -638,6 +654,7 @@ func Load() (*Config, error) {
 			UploadsPerTenMinutes: uploadsPerTenMinutes,
 			BytesPerDay:          uploadBytesPerDay, WarnFraction: uploadWarnFraction,
 		},
+		UploadReadTimeout: uploadReadTimeout,
 		CDNPurge: CDNPurgeConfig{
 			ZoneID:   lookup("CLOUDFLARE_CACHE_PURGE_ZONE_ID"),
 			APIToken: lookup("CLOUDFLARE_CACHE_PURGE_API_TOKEN"),

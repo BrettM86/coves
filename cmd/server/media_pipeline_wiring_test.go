@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -183,11 +184,19 @@ func TestRegisterXRPCRoutesUploadImageLoadsStoredSession(t *testing.T) {
 		"the upload route never read the aggregator's stored session through the application's loader")
 }
 
-// mediaWiringUploader stands in for a caller's PDS and counts stored blobs.
-type mediaWiringUploader struct{ calls int }
+// mediaWiringUploader stands in for a caller's PDS and counts stored blobs,
+// keeping the bytes of the last one.
+type mediaWiringUploader struct {
+	mu     sync.Mutex
+	calls  int
+	stored []byte
+}
 
 func (u *mediaWiringUploader) UploadBlob(_ context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.calls++
+	u.stored = append([]byte(nil), data...)
 	return &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": "bafkreimediawiringupload"}, MimeType: mimeType, Size: len(data)}, nil
 }
 

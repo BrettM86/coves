@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMediaUploadMaxConcurrentConfig(t *testing.T) {
@@ -187,5 +189,66 @@ func TestClearEnvForTestClearsUploadByteLimitAndWarning(t *testing.T) {
 		if value := os.Getenv(name); value != "" {
 			t.Errorf("ClearEnvForTest left %s=%q, want empty", name, value)
 		}
+	}
+}
+
+// B1-B3, T0: the upload body read deadline loads at the env boundary, refuses
+// non-positive and unparseable values, and is never below HTTP_READ_TIMEOUT.
+func TestMediaUploadReadTimeoutConfig(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		value       string
+		set         bool
+		readTimeout string
+		want        time.Duration
+		wantError   bool
+	}{
+		{"unset", "", false, "", 120 * time.Second, false},
+		{"zero", "0s", true, "", 0, true},
+		{"negative", "-5s", true, "", 0, true},
+		{"unparseable", "soon", true, "", 0, true},
+		{"below HTTP_READ_TIMEOUT", "30s", true, "60s", 0, true},
+		{"equal to HTTP_READ_TIMEOUT", "60s", true, "60s", 60 * time.Second, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("IS_DEV_ENV", "true")
+			t.Setenv("MEDIA_UPLOAD_READ_TIMEOUT", "")
+			if !row.set {
+				if err := os.Unsetenv("MEDIA_UPLOAD_READ_TIMEOUT"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				t.Setenv("MEDIA_UPLOAD_READ_TIMEOUT", row.value)
+			}
+			if row.readTimeout != "" {
+				t.Setenv("HTTP_READ_TIMEOUT", row.readTimeout)
+			}
+			cfg, err := Load()
+			if row.wantError {
+				if err == nil {
+					t.Fatalf("Load(MEDIA_UPLOAD_READ_TIMEOUT=%q, HTTP_READ_TIMEOUT=%q): want error", row.value, row.readTimeout)
+				}
+				if !strings.Contains(err.Error(), "MEDIA_UPLOAD_READ_TIMEOUT") {
+					t.Fatalf("error = %q, want it to name MEDIA_UPLOAD_READ_TIMEOUT", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Media.UploadReadTimeout != row.want {
+				t.Fatalf("Media.UploadReadTimeout = %v, want %v", cfg.Media.UploadReadTimeout, row.want)
+			}
+		})
+	}
+}
+
+// B4, T0.
+func TestClearEnvForTestClearsUploadReadTimeout(t *testing.T) {
+	t.Setenv("MEDIA_UPLOAD_READ_TIMEOUT", "45s")
+	ClearEnvForTest(t)
+	if value := os.Getenv("MEDIA_UPLOAD_READ_TIMEOUT"); value != "" {
+		t.Errorf("ClearEnvForTest left MEDIA_UPLOAD_READ_TIMEOUT=%q, want empty", value)
 	}
 }

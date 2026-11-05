@@ -289,12 +289,38 @@ coves.social {
         header ?Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
     }
     handle {
-        # The frontend's /api/proxy buffers request bodies in Node memory
-        # (request.blob()) with no size limit of its own, so bound them at
-        # the edge. Nothing routed here legitimately POSTs more than small
-        # JSON today (posts, comments, auth) — raise this the day a media
-        # upload path is routed through the frontend instead of the PDS.
-        request_body {
+        # The frontend's /api/proxy buffers request bodies in Node memory,
+        # and its BODY_SIZE_LIMIT is global, so Caddy sets the per-route
+        # caps here. Two POST routes get more than the 1MB default:
+        # uploadImage, for the AppView's 10,000,000-byte image cap plus
+        # headroom, and updateProfile, whose JSON carries base64 avatars
+        # (about 1.33 MB for a 1 MB image). Caddy applies every matching
+        # request_body, so the default excludes both routes.
+        @upload_image_body {
+            method POST
+            path /api/proxy/xrpc/social.coves.media.uploadImage
+        }
+        @update_profile_body {
+            method POST
+            path /api/proxy/xrpc/social.coves.actor.updateProfile
+        }
+        @default_body {
+            not {
+                method POST
+                path /api/proxy/xrpc/social.coves.media.uploadImage
+            }
+            not {
+                method POST
+                path /api/proxy/xrpc/social.coves.actor.updateProfile
+            }
+        }
+        request_body @upload_image_body {
+            max_size 10500000
+        }
+        request_body @update_profile_body {
+            max_size 1500000
+        }
+        request_body @default_body {
             max_size 1MB
         }
         reverse_proxy coves-prod-frontend:3000 {

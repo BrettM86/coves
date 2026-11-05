@@ -202,3 +202,17 @@ func facetRange(facet map[string]interface{}) (byteRange, error) {
 	}
 	return byteRange{start: start, end: end}, nil
 }
+
+// EmbedHasImages reports whether embed carries at least one image: it is a
+// social.coves.embed.images embed with a non-empty images array, or a
+// social.coves.embed.imagesWithAttachment whose nested images object is one.
+func EmbedHasImages(embed map[string]interface{}) bool {
+	if embedType, _ := embed["$type"].(string); embedType == embedTypeImagesWithAttachment {
+		embed, _ = embed["images"].(map[string]interface{})
+	}
+	if embedType, _ := embed["$type"].(string); embedType != embedTypeImages {
+		return false
+	}
+	images, _ := embed["images"].([]interface{})
+	return len(images) > 0
+}

@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	covesoauth "Coves/internal/atproto/oauth"
@@ -118,11 +119,23 @@ func newHandler(t *testing.T, pds *fakePDS) *UploadImageHandler {
 
 func newHandlerWithLoader(t *testing.T, pds *fakePDS, loader StoredSessionLoader) *UploadImageHandler {
 	t.Helper()
+	return newHandlerWithLoaderAndTimeouts(t, pds, loader, 120*time.Second, 120*time.Second)
+}
+
+// newHandlerWithTimeouts is newHandler with the given upload read and server
+// write timeouts.
+func newHandlerWithTimeouts(t *testing.T, pds *fakePDS, uploadReadTimeout, writeTimeout time.Duration) *UploadImageHandler {
+	t.Helper()
+	return newHandlerWithLoaderAndTimeouts(t, pds, unconsultedLoader{t: t}, uploadReadTimeout, writeTimeout)
+}
+
+func newHandlerWithLoaderAndTimeouts(t *testing.T, pds *fakePDS, loader StoredSessionLoader, uploadReadTimeout, writeTimeout time.Duration) *UploadImageHandler {
+	t.Helper()
 	pipeline, err := coremedia.NewPipeline(coremedia.Config{MaxConcurrent: 2, MaxLongEdge: coremedia.DefaultMaxLongEdge})
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
-	return NewUploadImageHandler(defaultUploadService(t, pipeline), pds.factory, loader)
+	return NewUploadImageHandler(defaultUploadService(t, pipeline), pds.factory, loader, uploadReadTimeout, writeTimeout)
 }
 
 // newHandlerWithMaxLongEdge is newHandler with a pipeline that downscales
@@ -133,7 +146,7 @@ func newHandlerWithMaxLongEdge(t *testing.T, pds *fakePDS, maxLongEdge int) *Upl
 	if err != nil {
 		t.Fatalf("NewPipeline: %v", err)
 	}
-	return NewUploadImageHandler(defaultUploadService(t, pipeline), pds.factory, unconsultedLoader{t: t})
+	return NewUploadImageHandler(defaultUploadService(t, pipeline), pds.factory, unconsultedLoader{t: t}, 120*time.Second, 120*time.Second)
 }
 
 func sessionWithScopes(scopes ...string) *oauth.ClientSessionData {
@@ -923,7 +936,7 @@ func TestUploadImageRefusesACallerOverTheUploadLimit(t *testing.T) {
 		t.Fatalf("NewUploadLimiter: %v", err)
 	}
 	pds := newFakePDS()
-	handler := NewUploadImageHandler(coremedia.NewUploadService(pipeline, limiter), pds.factory, unconsultedLoader{t: t})
+	handler := NewUploadImageHandler(coremedia.NewUploadService(pipeline, limiter), pds.factory, unconsultedLoader{t: t}, 120*time.Second, 120*time.Second)
 
 	first := serve(handler, uploadRequest(testkit.TestJPEG(16, 16), "image/jpeg", blobSession()))
 	if first.Code != http.StatusOK {
@@ -947,5 +960,198 @@ func TestUploadImageRefusesACallerOverTheUploadLimit(t *testing.T) {
 	}
 	if last := pds.calls[len(pds.calls)-1]; last.did != otherDID {
 		t.Fatalf("repo opened for the other caller's upload: got %s, want %s", last.did, otherDID)
+	}
+}
+
+// deadlineRecorder is a ResponseRecorder that http.NewResponseController can
+// set connection deadlines on. It records each deadline it was given, and
+// answers with readErr / writeErr.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	readSet, writeSet           bool
+	readDeadline, writeDeadline time.Time
+	readErr, writeErr           error
+}
+
+func newDeadlineRecorder() *deadlineRecorder {
+	return &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *deadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.readSet, r.readDeadline = true, deadline
+	return r.readErr
+}
+
+func (r *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.writeSet, r.writeDeadline = true, deadline
+	return r.writeErr
+}
+
+// deadlineObservingBody records, at the handler's first Read of the request
+// body, whether both connection deadlines had already been set.
+type deadlineObservingBody struct {
+	reader                          io.Reader
+	writer                          *deadlineRecorder
+	read                            bool
+	readSetAtFirst, writeSetAtFirst bool
+}
+
+func (b *deadlineObservingBody) Read(p []byte) (int, error) {
+	if !b.read {
+		b.read = true
+		b.readSetAtFirst, b.writeSetAtFirst = b.writer.readSet, b.writer.writeSet
+	}
+	return b.reader.Read(p)
+}
+
+// uploadThroughDeadlineRecorder serves an authenticated JPEG upload to handler
+// through writer, with a body that observes the deadlines at its first Read.
+func uploadThroughDeadlineRecorder(handler http.Handler, writer *deadlineRecorder, session *oauth.ClientSessionData) *deadlineObservingBody {
+	body := &deadlineObservingBody{reader: bytes.NewReader(testkit.TestJPEG(16, 16)), writer: writer}
+	req := uploadRequest(nil, "image/jpeg", session)
+	req.Body = io.NopCloser(body)
+	handler.ServeHTTP(writer, req)
+	return body
+}
+
+// B5, T0 guard: a request refused before the body is read never has its
+// connection deadlines extended.
+func TestUploadImageLeavesDeadlinesAloneForRefusedCallers(t *testing.T) {
+	unauthenticated := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.media.uploadImage", bytes.NewReader(testkit.TestJPEG(8, 8)))
+	unauthenticated.Header.Set("Content-Type", "image/jpeg")
+	rows := []struct {
+		name   string
+		req    *http.Request
+		status int
+		error  string
+	}{
+		{"unauthenticated", unauthenticated, http.StatusUnauthorized, "AuthRequired"},
+		{"no blob scope", uploadRequest(testkit.TestJPEG(8, 8), "image/jpeg", sessionWithScopes("atproto", "repo:social.coves.community.post")), http.StatusForbidden, "MissingBlobScope"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			pds := newFakePDS()
+			writer := newDeadlineRecorder()
+
+			newHandlerWithTimeouts(t, pds, 120*time.Second, 120*time.Second).ServeHTTP(writer, row.req)
+
+			expectError(t, writer.ResponseRecorder, row.status, row.error)
+			if writer.readSet || writer.writeSet {
+				t.Errorf("deadlines set on a refused request: read %v (%v), write %v (%v); want neither", writer.readSet, writer.readDeadline, writer.writeSet, writer.writeDeadline)
+			}
+			expectNoUploads(t, pds)
+		})
+	}
+}
+
+// B6, T0: an authorized upload gets a read deadline of uploadReadTimeout and a
+// write deadline of uploadReadTimeout+writeTimeout from when they are set,
+// both before the body is read.
+func TestUploadImageExtendsConnectionDeadlinesBeforeReadingTheBody(t *testing.T) {
+	const tolerance = 3 * time.Second
+	rows := []struct {
+		name                            string
+		uploadReadTimeout, writeTimeout time.Duration
+		wantReadOffset, wantWriteOffset time.Duration
+	}{
+		{"defaults", 120 * time.Second, 120 * time.Second, 120 * time.Second, 240 * time.Second},
+		{"short", 20 * time.Second, 7 * time.Second, 20 * time.Second, 27 * time.Second},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			pds := newFakePDS()
+			writer := newDeadlineRecorder()
+			handler := newHandlerWithTimeouts(t, pds, row.uploadReadTimeout, row.writeTimeout)
+
+			before := time.Now()
+			body := uploadThroughDeadlineRecorder(handler, writer, blobSession())
+			after := time.Now()
+
+			for _, deadline := range []struct {
+				name   string
+				set    bool
+				got    time.Time
+				offset time.Duration
+			}{
+				{"read", writer.readSet, writer.readDeadline, row.wantReadOffset},
+				{"write", writer.writeSet, writer.writeDeadline, row.wantWriteOffset},
+			} {
+				if !deadline.set {
+					t.Errorf("%s deadline was not set; want call time + %v", deadline.name, deadline.offset)
+					continue
+				}
+				earliest, latest := before.Add(deadline.offset-tolerance), after.Add(deadline.offset+tolerance)
+				if deadline.got.Before(earliest) || deadline.got.After(latest) {
+					t.Errorf("%s deadline: got %v, want between %v and %v (call time + %v)", deadline.name, deadline.got, earliest, latest, deadline.offset)
+				}
+			}
+			if !body.read {
+				t.Fatal("the handler never read the request body")
+			}
+			if !body.readSetAtFirst || !body.writeSetAtFirst {
+				t.Errorf("deadlines set at the body's first Read: read %v, write %v; want both", body.readSetAtFirst, body.writeSetAtFirst)
+			}
+			if writer.Code != http.StatusOK {
+				t.Errorf("status: got %d, want 200 (body %q)", writer.Code, writer.Body.String())
+			}
+		})
+	}
+}
+
+// B7, T0: a connection that refuses a deadline is logged at WARN without
+// credentials, the caller's DID, or the error's text, and the upload goes on.
+func TestUploadImageWarnsAndContinuesWhenADeadlineCannotBeSet(t *testing.T) {
+	const (
+		accessToken  = "sentinel-deadline-access-token-41c2"
+		refreshToken = "sentinel-deadline-refresh-token-9e07"
+		dpopKey      = "sentinel-deadline-dpop-key-b3d8"
+		errorText    = "sentinel-deadline-error-text-6a5f"
+	)
+	rows := []struct {
+		name              string
+		readErr, writeErr error
+	}{
+		{"read deadline refused", fmt.Errorf("conn %s: %w", errorText, http.ErrNotSupported), nil},
+		{"write deadline refused", nil, errors.New("conn refused write deadline " + errorText)},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			captured := captureDefaultLog(t)
+			session := blobSession()
+			session.AccessToken = accessToken
+			session.RefreshToken = refreshToken
+			session.DPoPPrivateKeyMultibase = dpopKey
+			pds := newFakePDS()
+			writer := newDeadlineRecorder()
+			writer.readErr, writer.writeErr = row.readErr, row.writeErr
+
+			uploadThroughDeadlineRecorder(newHandlerWithTimeouts(t, pds, 120*time.Second, 120*time.Second), writer, session)
+
+			if writer.Code != http.StatusOK {
+				t.Fatalf("status: got %d, want 200 (body %q)", writer.Code, writer.Body.String())
+			}
+			if len(pds.repo.uploads) != 1 {
+				t.Fatalf("uploads reaching the PDS: got %d, want 1", len(pds.repo.uploads))
+			}
+			if row.readErr != nil && !writer.writeSet {
+				t.Error("write deadline was not attempted after the read deadline was refused")
+			}
+			var warnings []string
+			for _, line := range strings.Split(captured.String(), "\n") {
+				if strings.Contains(line, "level=WARN") {
+					warnings = append(warnings, line)
+				}
+			}
+			if len(warnings) == 0 {
+				t.Fatalf("no WARN record for the refused deadline; log output %q", captured.String())
+			}
+			for _, warning := range warnings {
+				for _, sentinel := range []string{uploaderDID, accessToken, refreshToken, dpopKey, errorText} {
+					if strings.Contains(warning, sentinel) {
+						t.Errorf("WARN record %q contains %q", warning, sentinel)
+					}
+				}
+			}
+		})
 	}
 }

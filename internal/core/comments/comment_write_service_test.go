@@ -1524,3 +1524,44 @@ func TestCreateComment_GraphemeCounting(t *testing.T) {
 		t.Errorf("Expected success for 10000 graphemes with skin tone modifier, got error: %v", err)
 	}
 }
+
+// An image-only comment has no text for a facet to annotate, so any facet on
+// it is refused by the existing facet range checks rather than accepted.
+func TestCreateComment_ImageOnlyContentRefusesFacets(t *testing.T) {
+	tests := []struct {
+		name    string
+		facets  string
+		wantErr error
+	}{
+		{
+			name:    "bold facet",
+			facets:  `[{"index":{"byteStart":0,"byteEnd":1},"features":[{"$type":"social.coves.richtext.facet#bold"}]}]`,
+			wantErr: ErrInvalidFacets,
+		},
+		{
+			name:    "image facet",
+			facets:  `[{"index":{"byteStart":0,"byteEnd":1},"features":[{"$type":"social.coves.richtext.facet#image","index":0}]}]`,
+			wantErr: ErrInvalidImageFacet,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, client := newLexiconCommentService(t)
+			_, err := service.CreateComment(context.Background(), createTestSession(lexiconCommentAuthorDID), CreateCommentRequest{
+				Reply:   lexiconCommentReply(),
+				Content: "",
+				Facets:  lexiconCommentFacets(t, test.facets),
+				Embed:   lexiconCommentObject(t, lexiconOneImageEmbed),
+			})
+			if !errors.Is(err, test.wantErr) {
+				t.Errorf("CreateComment error = %v, want %v", err, test.wantErr)
+			}
+			if errors.Is(err, ErrContentEmpty) {
+				t.Errorf("CreateComment error = %v, must not be ErrContentEmpty", err)
+			}
+			if len(client.records[commentCollection]) != 0 {
+				t.Errorf("a refused create wrote %d comment records, want 0", len(client.records[commentCollection]))
+			}
+		})
+	}
+}

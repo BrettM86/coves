@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/moderation"
 	"Coves/internal/db/postgres"
@@ -359,4 +360,41 @@ func TestModerationActorCommentsOmitsRemovedAndAuthorDeletedAcrossPages(t *testi
 		cursor = page.Cursor
 	}
 	assert.Equal(t, []string{first.URI, fourthURI}, visited, "cursor traversal must match the unpaged profile without gaps or duplicates")
+}
+
+// B11: an image-only comment (content "" with an images embed) indexed through
+// the Jetstream consumer can be removed by an admin; the content snapshot holds
+// empty text and the captured CID, and the indexed embed survives the overlay.
+func TestModerationRemovesImageOnlyCommentWithEmptySnapshotText(t *testing.T) {
+	db, _, moderationService, postURI, _, authorDID := moderationThreadFixture(t)
+	post, err := postgres.NewPostRepository(db).GetRawIndexedRow(t.Context(), postURI)
+	require.NoError(t, err)
+	consumer := jetstream.NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
+	rkey := testkit.TID()
+	subject := moderation.StrongRef{URI: "at://" + authorDID + "/" + moderation.CommentCollection + "/" + rkey, CID: moderatedCommentCID}
+	require.NoError(t, consumer.HandleEvent(t.Context(), consumerCommentEvent(
+		authorDID, postURI, post.CID, rkey, "create", testkit.TID(), moderatedCommentCID, "", moderatedImageCID, time.Now().Add(-time.Minute),
+	)), "index the image-only comment through the consumer")
+
+	removed, err := moderationService.RemoveContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "imageonlyadmin")), moderation.RemoveContentRequest{
+		Subject: subject, ExpectedVersion: "v0", IdempotencyKey: "image-only-remove", Reason: moderationTestReason,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, removed)
+	require.NotNil(t, removed.Action)
+	require.Equal(t, moderation.OutcomeApplied, removed.Outcome)
+
+	var snapshotText, capturedCID string
+	require.NoError(t, db.QueryRowContext(t.Context(),
+		`SELECT COALESCE(text, ''), captured_cid FROM moderation_content_snapshots WHERE action_id = $1`, removed.Action.ID,
+	).Scan(&snapshotText, &capturedCID), "removal must store a content snapshot")
+	assert.Equal(t, "", snapshotText)
+	assert.Equal(t, "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", capturedCID)
+
+	var indexedContent string
+	var indexedEmbed sql.NullString
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT content, embed::text FROM comments WHERE uri = $1`, subject.URI).Scan(&indexedContent, &indexedEmbed))
+	assert.Equal(t, "", indexedContent)
+	require.True(t, indexedEmbed.Valid, "the comment row's embed must remain after removal")
+	assert.Contains(t, indexedEmbed.String, "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm")
 }

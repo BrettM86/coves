@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
@@ -37,6 +38,10 @@ type UploadImageHandler struct {
 	uploads        *coremedia.UploadService
 	repoFactory    posts.AuthorRepoFactory
 	storedSessions StoredSessionLoader
+	// uploadReadTimeout replaces the listener's read deadline for the body;
+	// writeTimeout is added after it for the response.
+	uploadReadTimeout time.Duration
+	writeTimeout      time.Duration
 }
 
 // StoredSessionLoader loads the stored OAuth session of a caller that
@@ -47,8 +52,11 @@ type StoredSessionLoader interface {
 
 // NewUploadImageHandler builds the handler. It does not validate its
 // arguments, so route tables can be built without a PDS-capable factory.
-func NewUploadImageHandler(uploads *coremedia.UploadService, repoFactory posts.AuthorRepoFactory, storedSessions StoredSessionLoader) *UploadImageHandler {
-	return &UploadImageHandler{uploads: uploads, repoFactory: repoFactory, storedSessions: storedSessions}
+func NewUploadImageHandler(uploads *coremedia.UploadService, repoFactory posts.AuthorRepoFactory, storedSessions StoredSessionLoader, uploadReadTimeout, writeTimeout time.Duration) *UploadImageHandler {
+	return &UploadImageHandler{
+		uploads: uploads, repoFactory: repoFactory, storedSessions: storedSessions,
+		uploadReadTimeout: uploadReadTimeout, writeTimeout: writeTimeout,
+	}
 }
 
 type aspectRatioResponse struct {
@@ -90,6 +98,11 @@ func (h *UploadImageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"Your session lacks the "+blobUploadScope+" scope; sign in again to grant it")
 		return
 	}
+
+	// A 10 MB body over a slow uplink can outlast the listener-wide read
+	// deadline. The longer limit is applied only here, after authentication
+	// and the scope check, so callers that are refused never get it.
+	h.extendConnectionDeadlines(w)
 
 	data, err := reqbody.ReadBytes(w, r, reqbody.LimitImage)
 	if err != nil {
@@ -140,6 +153,21 @@ func (h *UploadImageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Height: uploaded.AspectRatio.Height,
 		},
 	})
+}
+
+// extendConnectionDeadlines sets the read deadline to uploadReadTimeout from
+// now and the write deadline to uploadReadTimeout plus writeTimeout from now.
+// A failure is logged and the request carries on under the listener's
+// deadlines. The error is not logged: it can carry connection details.
+func (h *UploadImageHandler) extendConnectionDeadlines(w http.ResponseWriter) {
+	controller := http.NewResponseController(w)
+	now := time.Now()
+	if err := controller.SetReadDeadline(now.Add(h.uploadReadTimeout)); err != nil {
+		slog.Warn("image upload: could not extend the connection deadline", "deadline", "read")
+	}
+	if err := controller.SetWriteDeadline(now.Add(h.uploadReadTimeout + h.writeTimeout)); err != nil {
+		slog.Warn("image upload: could not extend the connection deadline", "deadline", "write")
+	}
 }
 
 // loadStoredSession loads the stored OAuth session of a caller that

@@ -249,6 +249,9 @@ The work:
   | `MEDIA_UPLOAD_MAX_CONCURRENT` | 4 |
   | `MEDIA_UPLOAD_RATE_PER_10MIN` | 30 |
   | `MEDIA_UPLOAD_BYTES_PER_DAY` | 300 MB |
+  | `MEDIA_UPLOAD_READ_TIMEOUT` | 120 s |
+
+  `MEDIA_UPLOAD_READ_TIMEOUT` is the time allowed to receive an upload body, on uploadImage only. It must be at least `HTTP_READ_TIMEOUT`; the write deadline extends by the same amount plus `HTTP_WRITE_TIMEOUT`.
 
 - No public hosts. Uploads, DID resolution and proxy fetches all use the configured local PLC and PDS (the 2026-09-05 incident rule).
 

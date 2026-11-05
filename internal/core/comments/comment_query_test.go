@@ -1395,3 +1395,62 @@ func (h *testGetCommentsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// B12: an image-only comment (content "" with an images embed) indexed through
+// the Jetstream consumer is served by the thread and actor comments views as a
+// live comment with empty content and its image gallery.
+func TestCommentQuery_ImageOnlyCommentServedByThreadAndActorViews(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := t.Context()
+	name := testkit.UniqueIDWithPrefix(t, "imageonly")
+	commenterDID := fixtures.DID(name)
+	fixtures.User(t, db, name+".test", commenterDID)
+	communityName := testkit.UniqueIDWithPrefix(t, "imageonlycomm")
+	communityDID, err := fixtures.Community(ctx, db, communityName, "owner"+communityName)
+	require.NoError(t, err)
+	postURI := fixtures.Post(t, db, communityDID, commenterDID, "Image-only comment view post", 0, time.Now())
+	post, err := postgres.NewPostRepository(db).GetRawIndexedRow(ctx, postURI)
+	require.NoError(t, err)
+
+	consumer := jetstream.NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
+	rkey := testkit.TID()
+	commentURI := "at://" + commenterDID + "/" + moderation.CommentCollection + "/" + rkey
+	require.NoError(t, consumer.HandleEvent(ctx, consumerCommentEvent(
+		commenterDID, postURI, post.CID, rkey, "create", testkit.TID(),
+		"bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si", "",
+		"bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", time.Now().Add(-time.Minute),
+	)), "index the image-only comment through the consumer")
+
+	service := setupCommentService(db)
+	thread, err := service.GetComments(ctx, &comments.GetCommentsRequest{PostURI: postURI, Sort: "new", Depth: 1, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, thread.Comments, 1)
+	actor, err := service.GetActorComments(ctx, &comments.GetActorCommentsRequest{ActorDID: commenterDID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, actor.Comments, 1)
+
+	for _, view := range []struct {
+		name    string
+		comment *comments.CommentView
+	}{
+		{name: "thread view", comment: thread.Comments[0].Comment},
+		{name: "actor comments view", comment: actor.Comments[0]},
+	} {
+		t.Run(view.name, func(t *testing.T) {
+			comment := view.comment
+			assert.Equal(t, commentURI, comment.URI)
+			assert.False(t, comment.IsDeleted, "an image-only comment must not be shown as deleted")
+			assert.Nil(t, comment.Moderation)
+			require.IsType(t, &comments.CommentRecord{}, comment.Record)
+			assert.Equal(t, "", comment.Record.(*comments.CommentRecord).Content)
+			gallery, ok := comment.Embed.(map[string]interface{})
+			require.Truef(t, ok, "embed = %#v, want an images view", comment.Embed)
+			assert.Equal(t, "social.coves.embed.images#view", gallery["$type"])
+			images, ok := gallery["images"].([]interface{})
+			require.True(t, ok)
+			require.Len(t, images, 1)
+			assert.Equal(t, "indexed image", images[0].(map[string]interface{})["alt"])
+		})
+	}
+}

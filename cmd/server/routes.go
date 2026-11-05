@@ -124,7 +124,7 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 		app.userService, app.identityResolver,
 		aggregator.PrivateHostOptions(app.allowPrivateHosts())...)
 	routes.RegisterAggregatorAPIKeyRoutes(r, app.authMiddleware, app.apiKeyService, app.aggregatorService)
-	routes.RegisterMediaRoutes(r, app.dualAuth, app.mediaUploads, app.authorRepoFactory, app.apiKeyService)
+	routes.RegisterMediaRoutes(r, app.dualAuth, app.mediaUploads, app.authorRepoFactory, app.apiKeyService, app.cfg.Media.UploadReadTimeout, app.cfg.Server.WriteTimeout)
 
 	registerCommentQueryRoute(r, app)
 
