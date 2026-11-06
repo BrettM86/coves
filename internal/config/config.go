@@ -17,6 +17,7 @@ import (
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/media"
 
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
@@ -129,6 +130,9 @@ type Config struct {
 	// Moderation holds the instance moderation settings.
 	Moderation ModerationConfig
 
+	// Labels holds the label publication settings.
+	Labels LabelsConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -142,6 +146,16 @@ type Config struct {
 	// because ENCRYPTION_KEY was unset in dev. Credentials sealed under a
 	// generated key do not survive a restart.
 	EncryptionKeyGenerated bool
+}
+
+// LabelsConfig holds the label publication settings.
+type LabelsConfig struct {
+	// SigningKey signs published labels (LABEL_SIGNING_KEY). Nil disables
+	// publication.
+	SigningKey atcrypto.PrivateKey
+	// RetiringKey is the public multibase of the label key being retired
+	// (LABEL_SIGNING_KEY_RETIRING).
+	RetiringKey string
 }
 
 // ModerationConfig holds the instance moderation settings.
@@ -265,6 +279,10 @@ type IdentityConfig struct {
 	// format, the leading-dot rule, and why a value outside dev is a hard
 	// error rather than an ignored one.
 	WellKnownHosts map[string]string
+
+	// DIDWebHosts maps a did:web host to the host:port that serves its
+	// /.well-known/did.json (DID_WEB_HOSTS). Dev and CI only.
+	DIDWebHosts map[string]string
 }
 
 // OAuthConfig holds the atProto OAuth client settings.
@@ -310,7 +328,10 @@ type InstanceConfig struct {
 	// TrustedBridgePDSHosts may assert bridged vote aggregates
 	// (bridgedStats) for the repos they host. Every other repo is
 	// default-denied so it cannot inflate its own vote counts. Nil means
-	// bridgedStats are ignored everywhere.
+	// bridgedStats are ignored everywhere. Never list this instance's own
+	// PDS: communities on a listed host whose handle is under its domain are
+	// treated as bridge communities (BridgeTrust.TrustsCommunity), and
+	// CreateCommunity's instance-provisioned handles would then qualify.
 	TrustedBridgePDSHosts []string
 
 	// SkipDIDWebVerification disables did:web domain verification in the
@@ -334,6 +355,10 @@ type InstanceConfig struct {
 	// BridgedVotePollSweepCap bounds subjects polled per sweep. Zero means the
 	// poller's own default applies.
 	BridgedVotePollSweepCap int
+
+	// AtprotoPublicKey is the public multibase of the instance #atproto key
+	// (INSTANCE_ATPROTO_PUBLIC_KEY), published in the instance DID document.
+	AtprotoPublicKey string
 }
 
 // PDSConfig holds the settings for this instance's own PDS account, used to
@@ -542,6 +567,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadModeration(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadLabels(); err != nil {
 		return nil, err
 	}
 
@@ -787,6 +815,10 @@ func (c *Config) loadIdentity() error {
 	if err != nil {
 		return err
 	}
+	didWebHosts, err := didWebHostsVar(c.IsDevEnv)
+	if err != nil {
+		return err
+	}
 
 	c.Identity = IdentityConfig{
 		PLCURL:           plcURL,
@@ -794,6 +826,7 @@ func (c *Config) loadIdentity() error {
 		CacheTTL:         cacheTTL,
 		NegativeCacheTTL: negativeCacheTTL,
 		WellKnownHosts:   wellKnownHosts,
+		DIDWebHosts:      didWebHosts,
 	}
 	return nil
 }
@@ -979,6 +1012,13 @@ func (c *Config) loadInstance() error {
 		return err
 	}
 
+	atprotoPublicKey := lookup("INSTANCE_ATPROTO_PUBLIC_KEY")
+	if atprotoPublicKey != "" {
+		if _, err := atcrypto.ParsePublicMultibase(atprotoPublicKey); err != nil {
+			return fmt.Errorf("INSTANCE_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
+		}
+	}
+
 	did := stringVar("INSTANCE_DID", "did:web:coves.social")
 
 	// For did:web the DID *is* the domain claim, so deriving the domain from
@@ -1000,6 +1040,7 @@ func (c *Config) loadInstance() error {
 		BridgedVotePollInterval:  bridgedVotePollInterval,
 		BridgedVotePollLookback:  bridgedVotePollLookback,
 		BridgedVotePollSweepCap:  bridgedVotePollSweepCap,
+		AtprotoPublicKey:         atprotoPublicKey,
 	}
 	return nil
 }
@@ -1125,6 +1166,55 @@ func (c *Config) loadModeration() error {
 		IdempotencyRetention:   retention,
 		MaxLiveIdempotencyKeys: maxKeys,
 	}
+	return nil
+}
+
+// loadLabels reads the label publication settings. It runs after loadInstance
+// because the instance #atproto key must differ from the label key.
+//
+// Errors name the variable and never echo a private key's value.
+func (c *Config) loadLabels() error {
+	var labelsConfig LabelsConfig
+
+	if rawSigningKey := lookup("LABEL_SIGNING_KEY"); rawSigningKey != "" {
+		signingKey, err := atcrypto.ParsePrivateMultibase(rawSigningKey)
+		if err != nil {
+			return errors.New("LABEL_SIGNING_KEY must be a K-256 or P-256 private key multibase")
+		}
+		labelsConfig.SigningKey = signingKey
+	}
+
+	if retiringKey := lookup("LABEL_SIGNING_KEY_RETIRING"); retiringKey != "" {
+		if labelsConfig.SigningKey == nil {
+			return errors.New("LABEL_SIGNING_KEY_RETIRING is only valid with LABEL_SIGNING_KEY, " +
+				"which names the key that replaces it")
+		}
+		if _, err := atcrypto.ParsePublicMultibase(retiringKey); err != nil {
+			return fmt.Errorf("LABEL_SIGNING_KEY_RETIRING must be a public key multibase: %w", err)
+		}
+		labelsConfig.RetiringKey = retiringKey
+	}
+
+	if labelsConfig.SigningKey != nil {
+		if c.Instance.AtprotoPublicKey == "" {
+			return errors.New("INSTANCE_ATPROTO_PUBLIC_KEY is required with LABEL_SIGNING_KEY; " +
+				"the instance DID document lists it as #atproto beside the #atproto_label key")
+		}
+		labelPublicKey, err := labelsConfig.SigningKey.PublicKey()
+		if err != nil {
+			return errors.New("LABEL_SIGNING_KEY: deriving the public key failed")
+		}
+		atprotoPublicKey, err := atcrypto.ParsePublicMultibase(c.Instance.AtprotoPublicKey)
+		if err != nil {
+			return fmt.Errorf("INSTANCE_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
+		}
+		if atprotoPublicKey.Multibase() == labelPublicKey.Multibase() {
+			return errors.New("INSTANCE_ATPROTO_PUBLIC_KEY must differ from the LABEL_SIGNING_KEY public key; " +
+				"the label key is a separate #atproto_label key")
+		}
+	}
+
+	c.Labels = labelsConfig
 	return nil
 }
 

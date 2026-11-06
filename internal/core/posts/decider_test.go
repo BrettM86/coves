@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/accountbans"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,10 +113,11 @@ func (h *deciderHarness) decider() *AdmissionEngineDecider {
 		Authorizer:  h.aggregators2(),
 		Aggregators: h.aggregators,
 		Policy: AdmissionPolicy{
-			Ledger: h.ledger,
-			Bans:   h.bans,
-			Limits: h.limits,
-			Now:    h.clock(),
+			Ledger:      h.ledger,
+			Bans:        h.bans,
+			AccountBans: h.accountBans,
+			Limits:      h.limits,
+			Now:         h.clock(),
 		},
 		TrustedAggregatorDIDs: h.trusted,
 	})
@@ -159,6 +162,37 @@ func TestDecider_AdmitsAnOrdinaryPostInAPublicCommunity(t *testing.T) {
 	assert.Emptyf(t, h.ledger.reserveCalls,
 		"the decider must NOT reserve a ledger slot: it re-decides existing posts, and a redelivery would consume quota and then be refused as its own duplicate")
 	assert.Nil(t, decision.Reservation, "a decision that reserved nothing must not report a reservation")
+}
+
+func TestDecider_IsUndecidedForAnAuthorWithAnAccountBanInForce(t *testing.T) {
+	t.Parallel()
+
+	// The engine persists a code as a terminal rejection or removal, and an
+	// account ban ends when lifted or at its expiry, so the decider defers.
+	h := newDeciderHarness()
+	h.accountBans.bans = map[string]*accountbans.Ban{
+		deciderAuthorDID: {ActionID: "action-ban", Reason: "social.coves.moderation.defs#reasonSpam"},
+	}
+
+	decision, err := h.decide(t)
+	require.ErrorIs(t, err, ErrAuthorAccountBanned)
+	assert.Empty(t, decision.Code, "an account ban must not become a persisted verdict")
+	assert.False(t, decision.Admitted())
+}
+
+func TestDecider_IsUndecidedForAPostInARemovedCommunity(t *testing.T) {
+	t.Parallel()
+
+	// The engine persists a code as a terminal rejection or removal, and a
+	// community removal ends when the community is restored, so the decider
+	// defers.
+	h := newDeciderHarness()
+	h.communities.community.Status = "removed"
+
+	decision, err := h.decide(t)
+	require.ErrorIs(t, err, ErrCommunityRemovedDeferred)
+	assert.Empty(t, decision.Code, "a community removal must not become a persisted verdict")
+	assert.False(t, decision.Admitted())
 }
 
 func TestDecider_RefusesATombstonedPostWithoutRunningPolicy(t *testing.T) {
@@ -216,7 +250,7 @@ func TestDecider_ClassifiesTheAuthorFromTheTrustedSet(t *testing.T) {
 	h := newDeciderHarness()
 	h.posts.post.AuthorDID = deciderTrustedDID
 	h.trusted[deciderTrustedDID] = true
-	h.bans.membership = banned()
+	h.bans.ban = banned()
 
 	decision, err := h.decide(t)
 
@@ -272,7 +306,7 @@ func TestDecider_EngineDefersWhenTheClassificationLookupFails(t *testing.T) {
 	// from an answer that was actually obtained.
 	h := newDeciderHarness()
 	h.aggregators.err = errors.New("aggregators table unreachable")
-	h.bans.membership = banned()
+	h.bans.ban = banned()
 
 	decision, err := h.decide(t)
 
@@ -299,7 +333,7 @@ func TestDecider_TheWritePathStillFallsToTheStricterClass(t *testing.T) {
 	// answer. A refusal reaching a live client is retryable; that is precisely
 	// what makes the guess safe there and unsafe in the engine.
 	h := newAdmitHarness()
-	h.bans.membership = banned()
+	h.bans.ban = banned()
 
 	decision, err := evaluateAdmissionPolicy(context.Background(), h.deps(), AdmissionRequest{
 		Actor:       ActorUser,

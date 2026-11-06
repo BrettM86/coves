@@ -27,7 +27,12 @@ const moderationPostCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tm
 
 func indexedModerationPost(t *testing.T, db *sql.DB, collection, communityDID, authorDID, title, embed string) moderation.StrongRef {
 	t.Helper()
-	rkey := testkit.TID()
+	return indexedModerationPostWithRecordKey(t, db, collection, communityDID, authorDID, title, embed, testkit.TID())
+}
+
+// indexedModerationPostWithRecordKey is indexedModerationPost with a chosen record key.
+func indexedModerationPostWithRecordKey(t *testing.T, db *sql.DB, collection, communityDID, authorDID, title, embed, rkey string) moderation.StrongRef {
+	t.Helper()
 	authority := authorDID
 	if collection == moderation.LegacyPostCollection {
 		authority = communityDID
@@ -63,8 +68,15 @@ func moderationPostActors(t *testing.T, db *sql.DB) (communityDID, authorDID str
 
 func removeIndexedModerationPost(t *testing.T, service moderation.Service, subject moderation.StrongRef) *moderation.MutationResult {
 	t.Helper()
+	return removeIndexedModerationPostWithKey(t, service, subject, "remove-post")
+}
+
+// removeIndexedModerationPostWithKey is removeIndexedModerationPost with a
+// chosen idempotency key, for tests that remove more than one post.
+func removeIndexedModerationPostWithKey(t *testing.T, service moderation.Service, subject moderation.StrongRef, key string) *moderation.MutationResult {
+	t.Helper()
 	result, err := service.RemoveContent(t.Context(), fixtures.DID("postremovaladmin"), moderation.RemoveContentRequest{
-		Subject: subject, ExpectedVersion: "v0", IdempotencyKey: "remove-post",
+		Subject: subject, ExpectedVersion: "v0", IdempotencyKey: key,
 		Reason: "social.coves.moderation.defs#reasonSpam",
 	})
 	require.NoError(t, err, "an indexed post must be readable inside the moderation transaction")

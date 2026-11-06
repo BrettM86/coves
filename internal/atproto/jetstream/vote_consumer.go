@@ -53,6 +53,12 @@ type VoteEventConsumer struct {
 	// bridgeTrust filters recipients hosted on trusted bridge PDS hosts; nil
 	// trusts no host.
 	bridgeTrust *BridgeTrust
+	// now is the Coves clock read when a vote is classified against the
+	// community ban history.
+	now func() time.Time
+	// accountBanAuthorityDID is the instance whose in-force account bans hide
+	// a vote at index time. Empty applies no account ban.
+	accountBanAuthorityDID string
 }
 
 // VoteEventConsumerOption configures optional VoteEventConsumer behaviour.
@@ -95,6 +101,7 @@ func NewVoteEventConsumer(
 		voteRepo:    voteRepo,
 		userService: userService,
 		db:          db,
+		now:         time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -265,29 +272,40 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 		return nil
 	}
 
-	// 2. Soft-delete the vote
+	// 2. Soft-delete the vote. hide_reason comes from the row this statement
+	// soft-deletes, not the read above: a root arrival can classify a pending
+	// vote, and count it, between the two.
 	deleteQuery := `
 		UPDATE votes
 		SET deleted_at = NOW()
 		WHERE uri = $1 AND deleted_at IS NULL
+		RETURNING hide_reason
 	`
-	result, err := tx.ExecContext(ctx, deleteQuery, uri)
-	if err != nil {
+	var hideReason sql.NullString
+	err = tx.QueryRowContext(ctx, deleteQuery, uri).Scan(&hideReason)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("failed to delete vote: %w", err)
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check delete result: %w", err)
 	}
 	// Defensive: createVote's stale-vote cleanup (different URI, so a different
 	// gate row) can soft-delete this row concurrently. Zero rows then means the
 	// vote is already deleted and its count already decremented — commit the
 	// tombstone and skip our decrement.
-	if rowsAffected == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		log.Printf("Vote already deleted: %s (idempotent)", uri)
 		if commitErr := tx.Commit(); commitErr != nil {
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
+		return nil
+	}
+
+	// A hidden or still-pending vote was never counted, so there is nothing
+	// to decrement, and it never qualified for an upvote group, so there is no
+	// group upkeep either.
+	if hideReason.Valid {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		log.Printf("✓ Deleted uncounted vote: %s (%s)", uri, hideReason.String)
 		return nil
 	}
 
@@ -343,12 +361,12 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 		return nil
 	}
 
-	result, err = tx.ExecContext(ctx, updateQuery, subjectURI)
+	result, err := tx.ExecContext(ctx, updateQuery, subjectURI)
 	if err != nil {
 		return fmt.Errorf("failed to update vote counts: %w", err)
 	}
 
-	rowsAffected, err = result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
@@ -420,6 +438,13 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			return false, fmt.Errorf("check vote voter erasure before indexing: %w", err)
 		}
 	}
+	// The ban subject lock is held from before the index order is drawn below
+	// until commit, so a concurrent ban or unban of the voter commits on one
+	// side of this vote's order. Taken before any content row, like the
+	// erasure lock: a ban transaction holds it but never waits on those rows.
+	if err := lockBanSubjectTx(ctx, tx, vote.VoterDID); err != nil {
+		return false, err
+	}
 
 	// 1. ORDERING GATE: a vote is only indexed onto a subject that is present
 	// and live. The subject's deleted_at is read WITHOUT filtering on it because
@@ -459,7 +484,10 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	case posts.IsPostCollection(collection):
 		subjectStateQuery = `SELECT deleted_at FROM posts WHERE uri = $1`
 	case collection == CommentCollection:
-		subjectStateQuery = `SELECT deleted_at FROM comments WHERE uri = $1`
+		// Locked now, before the stale-vote cleanup below takes vote rows:
+		// comment rows before vote rows, the order root classification uses
+		// (lock order on lockBanSubjectTx in community_ban_hides.go).
+		subjectStateQuery = `SELECT deleted_at FROM comments WHERE uri = $1 FOR NO KEY UPDATE`
 	}
 	// Unsupported collections have no table to count on in the first place; they
 	// keep indexing without counts (see the default branch of the count switch).
@@ -531,7 +559,10 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check existing vote: %w", err)
 	}
 
-	// If there's a stale vote, soft-delete it and adjust counts
+	// If there's a stale vote, soft-delete it and adjust counts. The direction
+	// and hide_reason that decide the decrement come from the rows this
+	// statement soft-deletes: a root arrival can classify a pending stale vote,
+	// and count it, after the read above.
 	if existingDirection.Valid {
 		softDeleteQuery := `
 			UPDATE votes
@@ -540,45 +571,81 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			  AND subject_uri = $2
 			  AND deleted_at IS NULL
 			  AND uri != $3
+			RETURNING direction, hide_reason
 		`
-		if _, err := tx.ExecContext(ctx, softDeleteQuery, vote.VoterDID, vote.SubjectURI, vote.URI); err != nil {
+		var countedStaleDirections []string
+		staleRows, err := tx.QueryContext(ctx, softDeleteQuery, vote.VoterDID, vote.SubjectURI, vote.URI)
+		if err != nil {
 			return false, fmt.Errorf("failed to soft-delete existing votes: %w", err)
 		}
-
-		// Decrement the old vote's count (will be re-incremented below if same direction)
-		collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
-		var decrementQuery string
-		if existingDirection.String == "up" {
-			if posts.IsPostCollection(collection) {
-				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
-			} else if collection == CommentCollection {
-				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+		for staleRows.Next() {
+			var staleDirection string
+			var staleHideReason sql.NullString
+			if err := staleRows.Scan(&staleDirection, &staleHideReason); err != nil {
+				_ = staleRows.Close()
+				return false, fmt.Errorf("failed to read soft-deleted existing vote: %w", err)
 			}
-		} else {
-			if posts.IsPostCollection(collection) {
-				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
-			} else if collection == CommentCollection {
-				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+			// A hidden or still-pending stale vote was never counted.
+			if !staleHideReason.Valid {
+				countedStaleDirections = append(countedStaleDirections, staleDirection)
 			}
 		}
-		if decrementQuery != "" {
-			if _, err := tx.ExecContext(ctx, decrementQuery, vote.SubjectURI); err != nil {
-				return false, fmt.Errorf("failed to decrement old vote count: %w", err)
+		if err := staleRows.Close(); err != nil {
+			return false, fmt.Errorf("failed to close soft-deleted existing votes: %w", err)
+		}
+		if err := staleRows.Err(); err != nil {
+			return false, fmt.Errorf("failed to read soft-deleted existing votes: %w", err)
+		}
+
+		// Decrement each counted old vote's count (will be re-incremented below if same direction)
+		collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
+		for _, staleDirection := range countedStaleDirections {
+			var decrementQuery string
+			if staleDirection == "up" {
+				if posts.IsPostCollection(collection) {
+					decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+				} else if collection == CommentCollection {
+					decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+				}
+			} else {
+				if posts.IsPostCollection(collection) {
+					decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+				} else if collection == CommentCollection {
+					decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
+				}
+			}
+			if decrementQuery != "" {
+				if _, err := tx.ExecContext(ctx, decrementQuery, vote.SubjectURI); err != nil {
+					return false, fmt.Errorf("failed to decrement old vote count: %w", err)
+				}
 			}
 		}
 		log.Printf("Cleaned up stale vote for %s on %s (was %s)", vote.VoterDID, vote.SubjectURI, existingDirection.String)
 	}
 
-	// 3. Index the vote (idempotent with ON CONFLICT DO NOTHING)
+	// 3. Index the vote (idempotent with ON CONFLICT DO NOTHING), classified
+	// against the community ban history at a new index order and the
+	// consumer clock's time. A replay keeps the row, and so the recorded value.
+	indexOrder, err := nextIndexOrder(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	indexTime := c.now().UTC()
+	hideReason, err := classifyIndexedVote(ctx, tx, vote.SubjectURI, vote.VoterDID, c.accountBanAuthorityDID, indexOrder, indexTime)
+	if err != nil {
+		return false, err
+	}
 	query := `
 		INSERT INTO votes (
 			uri, cid, rkey, voter_did,
 			subject_uri, subject_cid, direction,
-			created_at, indexed_at
+			created_at, indexed_at,
+			hide_reason, coves_index_order, coves_index_time
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7,
-			$8, NOW()
+			$8, NOW(),
+			$9, $10, $11
 		)
 		ON CONFLICT (uri) DO NOTHING
 		RETURNING id
@@ -590,6 +657,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		vote.URI, vote.CID, vote.RKey, vote.VoterDID,
 		vote.SubjectURI, vote.SubjectCID, vote.Direction,
 		vote.CreatedAt,
+		hideReason, indexOrder, indexTime,
 	).Scan(&voteID)
 
 	// If no rows returned, vote already exists (idempotent - OK for Jetstream replays)
@@ -611,14 +679,9 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		// maintenance before this early commit. It must stay after the stale
 		// decrement: that holds the subject row, which a concurrent vote's count
 		// update also takes before its group bump.
-		if existingDirection.Valid && c.notifications != nil {
-			intent, err := notifications.FanoutVoteRemoval(ctx, c.notifications.LookupsTx(tx),
-				notifications.VoteRecord{SubjectURI: vote.SubjectURI})
-			if err != nil {
-				return false, fmt.Errorf("compute stale vote notifications: %w", err)
-			}
-			if err := c.notifications.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
-				return false, fmt.Errorf("write stale vote notifications: %w", err)
+		if existingDirection.Valid {
+			if err := c.applyStaleVoteRemoval(ctx, tx, vote.SubjectURI); err != nil {
+				return false, err
 			}
 		}
 		// Silently handle the common idempotent case - no log needed for replays.
@@ -630,6 +693,20 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 
 	if err != nil {
 		return false, fmt.Errorf("failed to insert vote: %w", err)
+	}
+
+	// A hidden vote never enters the subject's tallies; a pending one is
+	// counted when its subject's root arrives, if it comes out not hidden.
+	if hideReason.Valid {
+		if existingDirection.Valid {
+			if err := c.applyStaleVoteRemoval(ctx, tx, vote.SubjectURI); err != nil {
+				return false, err
+			}
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return true, nil
 	}
 
 	// 4. Update vote counts on the subject (post or comment)
@@ -739,6 +816,24 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	}
 
 	return true, nil // Vote was newly indexed
+}
+
+// applyStaleVoteRemoval runs delete-if-empty upvote group maintenance after a
+// stale vote by the same voter was soft-deleted and the transaction has
+// committed to no count increment of its own.
+func (c *VoteEventConsumer) applyStaleVoteRemoval(ctx context.Context, tx *sql.Tx, subjectURI string) error {
+	if c.notifications == nil {
+		return nil
+	}
+	intent, err := notifications.FanoutVoteRemoval(ctx, c.notifications.LookupsTx(tx),
+		notifications.VoteRecord{SubjectURI: subjectURI})
+	if err != nil {
+		return fmt.Errorf("compute stale vote notifications: %w", err)
+	}
+	if err := c.notifications.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+		return fmt.Errorf("write stale vote notifications: %w", err)
+	}
+	return nil
 }
 
 // voteSubjectRootAfterCountUpdate reads a comment root under the row lock held

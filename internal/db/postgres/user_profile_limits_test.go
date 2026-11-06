@@ -89,6 +89,26 @@ func TestMigration060_PreservesProfileTextAcrossDownAndUp(t *testing.T) {
 		strings.Repeat("🇺🇸", 256), strings.Repeat("🇺🇸", 64), longDID)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
+		"076 (account status rechecks) must be rolled back first")
+	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
+		"075 (moderation subject kind) must be rolled back first")
+	require.EqualValues(t, 74, testkit.MigrateDownOne(t, db, 74),
+		"074 (account status restrictions) must be rolled back first")
+	require.EqualValues(t, 73, testkit.MigrateDownOne(t, db, 73),
+		"073 (account ban hide reason) must be rolled back first")
+	require.EqualValues(t, 72, testkit.MigrateDownOne(t, db, 72),
+		"072 (account moderation subjects) must be rolled back first")
+	require.EqualValues(t, 71, testkit.MigrateDownOne(t, db, 71),
+		"071 (labels) must be rolled back first")
+	require.EqualValues(t, 70, testkit.MigrateDownOne(t, db, 70),
+		"070 (pending ban-check indexes) must be rolled back first")
+	require.EqualValues(t, 69, testkit.MigrateDownOne(t, db, 69),
+		"069 (ban hide markers) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 68, testkit.MigrateDownOne(t, db, 68),
+		"068 (community ban index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 67, testkit.MigrateDownOne(t, db, 67),
+		"067 (community comment removals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
 	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
 	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))

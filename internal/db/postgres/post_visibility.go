@@ -14,11 +14,16 @@ import (
 // visiblePostsPredicate below — and everything else in this file is a different
 // way of BINDING ITS VIEWER, never a second copy of the rule:
 //
-//   - visiblePostsJoin(n)              — viewer bound to $n. GetViewsByURIs,
-//     VisibleHeaderView, GetByAuthor, the three feed queries, and the profile
-//     post_count.
-//   - visiblePostCountSubquery(expr)   — viewer bound to the anonymous literal,
+//   - visiblePostsJoin(n, m)           — viewer bound to $n. The feed and
+//     search queries.
+//   - authorVisiblePostsJoin(n, m)     — viewer bound to $n, plus the author's
+//     own view of a post in a removed community. GetViewsByURIs,
+//     VisibleHeaderView and GetByAuthor.
+//   - visiblePostCountSubquery(expr, a) — viewer bound to the anonymous literal,
 //     wrapped in a COUNT over one community. The served community postCount.
+//
+// Every binding also names the account-ban authority (accountRestrictedSQL):
+// $m, or a, is bound to the repository's accountRestriction.authorityDID.
 //
 // The counts used to hand-copy the predicate instead. A reviewer demonstrated
 // three separate mutations to that copy — dropping the collection check,
@@ -71,8 +76,13 @@ import (
 //     decision, is invisible to non-authors on every read path.
 //
 // An active moderation removal hides the post from everyone, including its
-// author, regardless of admission status. Restoring it reverts to the admission
-// rule above; neither operation changes the post or its admission row.
+// author, regardless of admission status. A restricted author's posts
+// (accountRestrictedSQL, e.g. an in-force instance account ban) are hidden
+// from every viewer but the author. A post in a community under an active
+// instance removal (communityRemovedSQL) is hidden from everyone; only the
+// author's own views (authorVisiblePostsJoin) keep it. Restoring any of these
+// reverts to the admission rule above; none of them changes the post or its
+// admission row.
 //
 // The collection is the fourth '/'-segment of the AT-URI
 // (at://<authority>/<collection>/<rkey>), read with split_part; authorities and
@@ -83,9 +93,9 @@ import (
 // WHERE clause. The caller owns the arguments: it must bind $viewerParam to the
 // viewer's DID (or "" for an anonymous read), reusing a parameter it has already
 // bound where the viewer DID is already in the argument list (the timeline
-// reuses $1).
-func visiblePostsJoin(viewerParam int) (joinSQL, whereSQL string) {
-	return visiblePostsPredicate(fmt.Sprintf("$%d", viewerParam))
+// reuses $1), and $authorityParam to its account-ban authority DID.
+func visiblePostsJoin(viewerParam, authorityParam int) (joinSQL, whereSQL string) {
+	return visiblePostsPredicate(fmt.Sprintf("$%d", viewerParam), fmt.Sprintf("$%d", authorityParam))
 }
 
 // anonymousViewerSQL is the viewer expression for a read that HAS no viewer: a
@@ -102,19 +112,41 @@ const anonymousViewerSQL = `''`
 // visiblePostsPredicate is THE read-path predicate, and the only place it is
 // spelled. viewerExpr is whatever SQL evaluates to the viewer's DID — a bind
 // parameter reference for a query that has a viewer to bind, or
-// anonymousViewerSQL for one that structurally does not.
+// anonymousViewerSQL for one that structurally does not. authorityExpr is the
+// bind parameter reference of the account-ban authority DID.
 //
 // Everything above about the join key, the collection-aware status rule and the
 // pinned CID, and active-removal exclusion describes THIS function;
 // visiblePostsJoin is the parameterized spelling of it. Two viewer bindings,
 // one predicate: a count and a display query cannot disagree about what
 // "visible" means, because there is only one string.
-func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
+func visiblePostsPredicate(viewerExpr, authorityExpr string) (joinSQL, whereSQL string) {
+	return postsVisibleUnder(viewerExpr, authorityExpr, `NOT `+communityRemovedSQL("p.community_did", authorityExpr))
+}
+
+// authorVisiblePostsJoin is visiblePostsJoin for the author's own views of
+// their posts: their profile posts (GetByAuthor), their thread header
+// (VisibleHeaderView) and post.get (GetViewsByURIs). It differs in one rule
+// only: a post in a community under an active instance removal stays visible
+// to its author, who reads it with status "removed" (authorPostViewSelectColumns).
+// Every other viewer, and every other read path, hides it.
+func authorVisiblePostsJoin(viewerParam, authorityParam int) (joinSQL, whereSQL string) {
+	viewerExpr, authorityExpr := fmt.Sprintf("$%d", viewerParam), fmt.Sprintf("$%d", authorityParam)
+	return postsVisibleUnder(viewerExpr, authorityExpr,
+		`(p.author_did = `+viewerExpr+` OR NOT `+communityRemovedSQL("p.community_did", authorityExpr)+`)`)
+}
+
+// postsVisibleUnder is the body of visiblePostsPredicate and
+// authorVisiblePostsJoin: admission, active-removal exclusion, account
+// restriction, and communityRemovalSQL, the community-removal rule the
+// caller chooses.
+func postsVisibleUnder(viewerExpr, authorityExpr, communityRemovalSQL string) (joinSQL, whereSQL string) {
 	joinSQL, admittedSQL := admittedPostsPredicate(viewerExpr)
 	whereSQL = admittedSQL + ` AND NOT EXISTS (
 				SELECT 1 FROM moderation_decisions d
 				WHERE d.subject_uri = p.uri AND d.kind = 'removal' AND d.active
-			)`
+			) AND ` + visibleToViewerUnlessRestrictedSQL("p.author_did", viewerExpr, authorityExpr) + `
+			AND ` + communityRemovalSQL
 	return joinSQL, whereSQL
 }
 
@@ -176,8 +208,9 @@ func admittedPostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 // path will actually render. A live subquery over the same predicate cannot
 // drift by construction: it IS the read path's answer.
 //
-// communityExpr must be a column reference or a bind parameter — it is spliced,
-// never a caller-supplied value.
+// communityExpr must be a column reference or a bind parameter, and
+// authorityExpr the bind parameter of the account-ban authority DID — both are
+// spliced, never caller-supplied values.
 //
 // It is COLLECTION-AWARE, which an accepted-only count is not. A legacy
 // social.coves.community.post lives in the community's own repo, is accepted by
@@ -186,8 +219,8 @@ func admittedPostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 // which today is all of them. Counting exactly what the predicate renders is
 // also the only definition that cannot advertise unreachable content: the count
 // and the feed answer the same question.
-func visiblePostCountSubquery(communityExpr string) string {
-	joinSQL, whereSQL := visiblePostsPredicate(anonymousViewerSQL)
+func visiblePostCountSubquery(communityExpr, authorityExpr string) string {
+	joinSQL, whereSQL := visiblePostsPredicate(anonymousViewerSQL, authorityExpr)
 	return `(SELECT COUNT(*)
 			FROM posts p` + joinSQL + `
 			WHERE p.community_did = ` + communityExpr + `

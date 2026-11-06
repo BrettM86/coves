@@ -13,6 +13,7 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/labels"
 
 	indigoIdentity "github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -82,6 +83,8 @@ type ActionView struct {
 	LabelValue   string          `json:"labelValue,omitempty"`
 	Actor        *ActorRefView   `json:"actor,omitempty"`
 	Reverses     *ActionRefView  `json:"reverses,omitempty"`
+	// ExpiresAt is a temporary account ban's expiry.
+	ExpiresAt string `json:"expiresAt,omitempty"`
 	// ContentSnapshot is present only while the subject is public and not deleted by its author.
 	ContentSnapshot *ContentSnapshotView `json:"contentSnapshot,omitempty"`
 }
@@ -171,6 +174,9 @@ func NewActionView(action Action) ActionView {
 	}
 	if action.ReversesActionID != "" {
 		view.Reverses = &ActionRefView{ServiceDID: action.AuthorityDID, ActionID: action.ReversesActionID}
+	}
+	if action.ExpiresAt != nil {
+		view.ExpiresAt = action.ExpiresAt.UTC().Format(labels.CreatedAtLayout)
 	}
 	return view
 }

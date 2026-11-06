@@ -1,9 +1,7 @@
 {
   "$type": "social.coves.moderation.ban",
-  "community": "did:plc:programming123",
   "subject": "did:plc:troublemaker456",
-  "banType": "moderator",
   "reason": "Repeated violations of community guidelines: spam and harassment",
-  "bannedBy": "did:plc:moderator789",
+  "expiresAt": "2025-02-09T12:00:00Z",
   "createdAt": "2025-01-09T12:00:00Z"
 }

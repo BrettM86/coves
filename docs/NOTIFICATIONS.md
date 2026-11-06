@@ -21,7 +21,7 @@ A postv2 URI's repo DID is its author, and so is a comment's. Legacy `social.cov
 
 One record notifies each recipient at most once. The reply recipient never also gets a mention from that record, after edits and re-creates too. The rule keys on who the reply recipient is, not on whether their reply row exists, so a reply row lost to retention or a lifted block does not reopen the mention. Mentions of the author or of a community DID are dropped.
 
-Nobody is notified of their own action, which covers the author's automatic upvote on every create. A recipient gets nothing when they have no `users` row, are erased, are an aggregator, or are hosted on a trusted bridge PDS, or when either party blocks the other at write time. A block created later hides existing rows at read time but does not undo a bump. An erased actor notifies nobody. Community blocks and community bans suppress nothing: a ban gates only post admission, and a banned user's comments stay visible in threads.
+Nobody is notified of their own action, which covers the author's automatic upvote on every create. A recipient gets nothing when they have no `users` row, are erased, are an aggregator, or are hosted on a trusted bridge PDS, or when either party blocks the other at write time. A block created later hides existing rows at read time but does not undo a bump. An erased actor notifies nobody. Community blocks suppress nothing. Community bans, instance account bans, PDS account-status restrictions and community removals are in § Moderated accounts and communities.
 
 ## Activity time
 
@@ -97,6 +97,16 @@ A post shows a placeholder only if it was publicly visible at the moment it was 
 Legacy posts never get markers, so a deleted or removed legacy post is hidden, not a placeholder. Nearly all of them are aggregator posts.
 
 A post that was never public (pending, rejected, awaiting re-acceptance, missing its admission row, or CID-mismatched) still gets rows written; they stay hidden until the post is accepted and then appear with their original `sort_at`, possibly already read. Deleted or removed while in that state, the post stays hidden.
+
+## Moderated accounts and communities
+
+The rules are in [MODERATION.md](MODERATION.md) (§ Account bans, § Account status restrictions, § Community removal) and [POSTS.md](POSTS.md) § 4.1 for community bans. Their effect on notifications:
+
+- A comment or vote that the consumer records hidden at index time (`hide_reason` `community_ban` or `account_ban`) notifies no one, as if the AppView had refused the write. A comment still pending its ban check fans out, and its rows stay hidden until it is classified; a pending vote that comes out unhidden is counted and fanned out then.
+- A comment create, edit or active re-create by an account whose instance ban is in force, or whose PDS-confirmed takendown or suspended status is stored, sends no reply or mention notifications. The status records no hide marker, so nothing is undone when it ends, and nothing is backfilled either. Votes by a status-restricted account still count and enter upvote groups.
+- The write gate (`ReferenceStates`) withdraws a comment recorded `account_ban` as `removedByServerAdmin` and one recorded `community_ban` as `removedByModerator` (or `removedByServerAdmin` under an instance removal or a removed community), also after the ban ends. It withdraws a post in a community under an active instance removal, and a comment whose parent chain reaches one, as `removedByServerAdmin`. So a reply to a ban-hidden comment, or a mention added later by editing one, notifies nobody. A ban or status restriction on the author of a referenced post or comment does not block fan-out; the read rule below covers it.
+- At read time, content by an account whose instance ban is in force or whose status restriction is stored (`accountRestrictedSQL`) reads `removedByServerAdmin` and turns live again when the restriction ends. Content in a community under an active instance removal (a comment by the community its parent chain reaches) reads `removedByServerAdmin` until the community is restored. A comment recorded `account_ban` reads `removedByServerAdmin` permanently, one recorded `community_ban` reads `removedByModerator` (or an admin removal's status), and one pending its ban check is hidden.
+- Self-view: the account-restriction and community-removal reads and the `account_ban` marker exempt a reference the recipient authored, so an account sees its own content in its own notifications as before. `listNotifications` hydrates that content as the recipient sees it: the recipient's own posts in a removed community or while the recipient is restricted are loaded with the recipient as viewer, and the recipient's own comments recorded `account_ban` are shown live. The `community_ban` marker and direct removal decisions on that content or on a comment's root post are not exempt. The unread count and the list apply the same rule, so they agree.
 
 ## Write path
 

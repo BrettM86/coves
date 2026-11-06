@@ -13,6 +13,7 @@ import (
 	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/utils"
+	"Coves/internal/core/accountstatus"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 )
@@ -47,6 +48,7 @@ type JetstreamEvent struct {
 type AccountEvent struct {
 	Did    string `json:"did"`
 	Time   string `json:"time"`
+	Status string `json:"status,omitempty"`
 	Seq    int64  `json:"seq"`
 	Active bool   `json:"active"`
 }
@@ -76,11 +78,12 @@ type UserEventConsumer struct {
 	identityResolver         identity.Resolver
 	uncachedIdentityResolver identity.UncachedResolver
 	identityRefreshFailures  *identityRefreshFailureDebounce
-	identityRefreshLock      IdentityRefreshLock   // Required for identity refreshes; serializes refreshes of one DID
-	sessionHandleUpdater     SessionHandleUpdater  // Optional: updates OAuth sessions on handle change
-	userBlockRepo            userblocks.Repository // Optional: indexes user-to-user blocks
-	bridgeTrust              *BridgeTrust          // Optional: admits new identities hosted by trusted bridge PDSes
-	revGate                  *RevGate              // Optional: cross-feed ordering guard for commit events (nil = ungated)
+	identityRefreshLock      IdentityRefreshLock       // Required for identity refreshes; serializes refreshes of one DID
+	sessionHandleUpdater     SessionHandleUpdater      // Optional: updates OAuth sessions on handle change
+	userBlockRepo            userblocks.Repository     // Optional: indexes user-to-user blocks
+	bridgeTrust              *BridgeTrust              // Optional: admits new identities hosted by trusted bridge PDSes
+	revGate                  *RevGate                  // Optional: cross-feed ordering guard for commit events (nil = ungated)
+	accountStatus            *accountstatus.Reconciler // Optional: PDS-confirmed takendown/suspended restrictions
 }
 
 // ConsumerOption is a functional option for configuring UserEventConsumer
@@ -282,9 +285,13 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 		return fmt.Errorf("%w: account event missing did", ErrPermanentEvent)
 	}
 
-	// Account events don't include handle, so we skip them.
-	// Users are indexed via OAuth login or signup, not from account events.
-	return nil
+	// Account events don't include handle, so users are never indexed from
+	// them (that happens via OAuth login or signup). They only drive the
+	// takendown/suspended status restriction, when it is wired.
+	if c.accountStatus == nil {
+		return nil
+	}
+	return c.reconcileAccountStatus(ctx, did, event.Account)
 }
 
 // handleCommitEvent processes commit events for user-related collections.
@@ -361,6 +368,17 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 		} else {
 			// Database error - propagate so the connector can report it.
 			return fmt.Errorf("failed to check if user exists: %w", err)
+		}
+	}
+
+	// The account's own profile record is an account signal: promote a
+	// hydrated-author row to an account row on every create/update commit. The
+	// record's existence is the signal, so this runs before the rev gate and
+	// recency guard; freshness only governs the profile fields below.
+	if existingUser != nil && existingUser.IndexSource == users.IndexSourceAuthorHydration &&
+		(event.Commit.Operation == "create" || event.Commit.Operation == "update") {
+		if indexErr := c.userService.IndexUser(ctx, existingUser.DID, existingUser.Handle, existingUser.PDSURL); indexErr != nil {
+			return fmt.Errorf("failed to promote hydrated author %s to an account: %w", event.Did, indexErr)
 		}
 	}
 

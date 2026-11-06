@@ -836,6 +836,20 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 		return fmt.Errorf("recording the pending admission for %s in %s: %w", uri, record.Community, err)
 	}
 
+	// Removals held for comments that were indexed before their root. After
+	// the admission, so a failure here cannot leave the post without one, and
+	// also on a same-rev replay, so a failure here is repaired by redelivery.
+	if c.communityCommentRemovals != nil {
+		if err := c.communityCommentRemovals.ApplyHeldForRoot(ctx, uri); err != nil {
+			return fmt.Errorf("applying held community comment removals under %s: %w", uri, err)
+		}
+	}
+	if c.db != nil {
+		if err := classifyPendingForRoot(ctx, c.db, uri, record.Community, c.countedVoteNotifier()); err != nil {
+			return fmt.Errorf("classifying comments and votes pending a ban check under %s: %w", uri, err)
+		}
+	}
+
 	log.Printf("✓ Indexed author post: %s (author: %s, community: %s)", uri, authorDID, record.Community)
 	return nil
 }
@@ -933,7 +947,7 @@ func (c *PostEventConsumer) hydrateAuthorOpportunistically(ctx context.Context, 
 		return
 	}
 
-	if err := c.userService.IndexUser(hydrateCtx, resolved.DID, verifiedHandle, resolved.PDSURL); err != nil {
+	if err := c.userService.IndexHydratedAuthor(hydrateCtx, resolved.DID, verifiedHandle, resolved.PDSURL); err != nil {
 		log.Printf("debug: could not hydrate post author %s: %v", authorDID, err)
 	}
 }
@@ -1118,6 +1132,13 @@ func (c *PostEventConsumer) handleCommunityDecisionEvent(ctx context.Context, ev
 	if err != nil {
 		return err
 	}
+	// An acceptance's or removal's record key is derived from its subject, so
+	// one subject has one record of each per community. A record under any
+	// other key is refused before anything is indexed for it.
+	if commit.RKey != posts.SubjectRkey(decision.Subject.URI) {
+		return fmt.Errorf("%w: %s record key %q is not the canonical key for subject %s",
+			ErrPermanentEvent, commit.Collection, commit.RKey, decision.Subject.URI)
+	}
 
 	// The subject's author, and therefore the erasure gate. An admission row
 	// for an erased account's post is exactly the row migration 036 exists to
@@ -1144,6 +1165,9 @@ func (c *PostEventConsumer) handleCommunityDecisionEvent(ctx context.Context, ev
 	case posts.AcceptanceCollection:
 		return c.applyAcceptance(ctx, communityDID, commit, decision, subjectCollection, watermark)
 	case posts.RemovalCollection:
+		if subjectCollection == CommentCollection && c.communityCommentRemovals != nil {
+			return c.recordCommunityCommentRemoval(ctx, communityDID, commit, decision)
+		}
 		return c.applyRemoval(ctx, communityDID, decision, watermark)
 	}
 	return nil
@@ -1200,6 +1224,24 @@ func (c *PostEventConsumer) applyAcceptance(
 		// no retry makes this valid.
 		return fmt.Errorf("%w: %s was submitted to community %s, but the acceptance came from %s (the fork/import flow is not built)",
 			ErrPermanentEvent, decision.Subject.URI, indexedCommunity, communityDID)
+	}
+
+	// The root is now indexed in communityDID, by this convergence or earlier.
+	// Applying held comment removals and classifying pending comments and votes
+	// are both idempotent and run on every delivery, so a failure after the
+	// direct fetch committed the root is repaired by redelivery, which finds the
+	// root indexed and skips the fetch. A root indexed by the fetch never passes
+	// through upsertAuthorPost (its own event, if it arrives, loses the recency
+	// guard), so this is the only place its held removals are applied.
+	if c.communityCommentRemovals != nil {
+		if err := c.communityCommentRemovals.ApplyHeldForRoot(ctx, decision.Subject.URI); err != nil {
+			return fmt.Errorf("applying held community comment removals under accepted post %s: %w", decision.Subject.URI, err)
+		}
+	}
+	if c.db != nil {
+		if err := classifyPendingForRoot(ctx, c.db, decision.Subject.URI, communityDID, c.countedVoteNotifier()); err != nil {
+			return fmt.Errorf("classifying comments and votes pending a ban check under accepted post %s: %w", decision.Subject.URI, err)
+		}
 	}
 
 	result, err := c.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
@@ -1401,6 +1443,14 @@ func (c *PostEventConsumer) applyRemoval(
 // (§5.3), is the one delete that arrives unpaired — and it is the one this
 // lookup resolves.
 func (c *PostEventConsumer) applyCommunityDecisionDelete(ctx context.Context, communityDID string, commit *CommitEvent) error {
+	// A comment removal is indexed by (repo DID, rkey); a key it does not know
+	// may still be a post removal.
+	if commit.Collection == posts.RemovalCollection && c.communityCommentRemovals != nil {
+		if handled, err := c.deleteCommunityCommentRemoval(ctx, communityDID, commit); handled || err != nil {
+			return err
+		}
+	}
+
 	postURI, found, err := c.subjectOfDeletedRecord(ctx, communityDID, commit)
 	if err != nil {
 		return err

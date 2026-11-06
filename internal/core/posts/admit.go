@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"Coves/internal/core/accountbans"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 )
@@ -196,19 +197,6 @@ type CommunityLookup interface {
 	GetByDID(ctx context.Context, did string) (*communities.Community, error)
 }
 
-// BanLookup answers whether an author is banned from a community, by returning
-// the membership row that carries the answer.
-//
-// It returns the whole membership rather than a bool so that the translation of
-// "no membership row" into "not banned" happens in ONE place — inside
-// admitPost, next to the comment that explains why an error is not the same
-// thing. Satisfied by communities.Service.
-type BanLookup interface {
-	// GetMembership returns the author's membership of the community, or an
-	// error wrapping communities.ErrMembershipNotFound when there is none.
-	GetMembership(ctx context.Context, userDID, communityIdentifier string) (*communities.Membership, error)
-}
-
 // AggregatorAuthorizer checks a registered aggregator's authorization and its
 // own quota. Satisfied by aggregators.Service.
 type AggregatorAuthorizer interface {
@@ -265,10 +253,11 @@ type SubmissionLedger interface {
 // AdmissionPolicy is the collaborator set the new §8 policy needs, over and
 // above what postService already holds.
 type AdmissionPolicy struct {
-	Ledger SubmissionLedger
-	Bans   BanLookup
-	Limits SubmissionLimits
-	Now    Clock
+	Ledger      SubmissionLedger
+	Bans        communities.BanReader
+	AccountBans accountbans.Reader
+	Limits      SubmissionLimits
+	Now         Clock
 }
 
 // WithAdmissionPolicy supplies the ban check, dedupe and per-author rate limit
@@ -304,6 +293,8 @@ func mustCompleteAdmissionPolicy(policy *AdmissionPolicy) {
 		panic("posts.NewPostService: AdmissionPolicy.Ledger cannot be nil")
 	case policy.Bans == nil:
 		panic("posts.NewPostService: AdmissionPolicy.Bans cannot be nil")
+	case policy.AccountBans == nil:
+		panic("posts.NewPostService: AdmissionPolicy.AccountBans cannot be nil")
 	case policy.Now == nil:
 		panic("posts.NewPostService: AdmissionPolicy.Now cannot be nil")
 	case policy.Limits.MaxPerAuthorPerCommunity <= 0:
@@ -335,14 +326,20 @@ func (unmeteredLedger) CountSince(context.Context, string, string, time.Time) (i
 	return 0, nil
 }
 
-// unenforcedBans is the allow-all test policy's ban lookup, answering the way
-// an author with no membership row does. It returns the sentinel rather than a
-// nil membership so that it travels the same branch a real absent row does —
-// the "no membership means not banned" translation stays in one place.
+// unenforcedBans is the allow-all test policy's ban index, answering the way
+// an index with no ban for the author does.
 type unenforcedBans struct{}
 
-func (unenforcedBans) GetMembership(context.Context, string, string) (*communities.Membership, error) {
-	return nil, communities.ErrMembershipNotFound
+func (unenforcedBans) GetCommunityBan(context.Context, string, string) (*communities.CommunityBan, error) {
+	return nil, communities.ErrCommunityBanNotFound
+}
+
+// unenforcedAccountBans is the allow-all test policy's account-ban read,
+// answering the way a store with no active ban decision does.
+type unenforcedAccountBans struct{}
+
+func (unenforcedAccountBans) ActiveBan(context.Context, string) (*accountbans.Ban, error) {
+	return nil, nil
 }
 
 // NewAllowAllAdmissionPolicyForTests is the explicit opt-out for TEST fixtures
@@ -358,8 +355,9 @@ func (unenforcedBans) GetMembership(context.Context, string, string) (*communiti
 // unmetered ledger never counts against them anyway.
 func NewAllowAllAdmissionPolicyForTests() AdmissionPolicy {
 	return AdmissionPolicy{
-		Ledger: unmeteredLedger{},
-		Bans:   unenforcedBans{},
+		Ledger:      unmeteredLedger{},
+		Bans:        unenforcedBans{},
+		AccountBans: unenforcedAccountBans{},
 		Limits: SubmissionLimits{
 			MaxPerAuthorPerCommunity: 1 << 30,
 			Window:                   time.Hour,
@@ -377,6 +375,7 @@ func (s *postService) admissionDeps() admissionDeps {
 	return admissionDeps{
 		communities: s.communityService,
 		bans:        s.admission.Bans,
+		accountBans: s.admission.AccountBans,
 		aggregators: s.aggregatorService,
 		ledger:      s.admission.Ledger,
 		limits:      s.admission.Limits,
@@ -400,6 +399,10 @@ func refusalError(decision AdmissionDecision) error {
 		return ErrNotAuthorized
 	case DecisionAuthorBanned:
 		return ErrBanned
+	case DecisionAccountBanned:
+		return ErrAccountBanned
+	case DecisionCommunityRemoved:
+		return ErrCommunityRemoved
 	case DecisionAggregatorNotAuthorized:
 		// The aggregators-package sentinel has to survive: the boundary tells a
 		// permanent 403 from a retryable 429 by matching on it, and the wording
@@ -421,7 +424,8 @@ func refusalError(decision AdmissionDecision) error {
 // function of its arguments rather than of a service's field set.
 type admissionDeps struct {
 	communities CommunityLookup
-	bans        BanLookup
+	bans        communities.BanReader
+	accountBans accountbans.Reader
 	aggregators AggregatorAuthorizer
 	ledger      SubmissionLedger
 	limits      SubmissionLimits
@@ -431,6 +435,10 @@ type admissionDeps struct {
 // admitPost decides whether one submission may become a post.
 //
 // CHECK ORDER — each step its own refusal, and the order is load-bearing:
+//
+//  0. Actor class, then the instance account ban, for every actor class. An
+//     account an instance admin banned is refused before anything about the
+//     community is read.
 //
 //  1. Community resolution. Nothing else can be evaluated against a community
 //     that does not exist.
@@ -442,10 +450,15 @@ type admissionDeps struct {
 //     answering "you are banned" would confirm to an outsider both that the
 //     community exists and that a moderator has acted on them.
 //
-//  3. Ban, for regular users in public communities. A membership row with no
-//     ban, or NO membership row at all, is not a ban — that is the ordinary
-//     case, since posting to a public community does not require joining it.
-//     Any OTHER lookup error FAILS the request. Failing open here would turn a
+//     Then community removal, for every actor class: a community under an
+//     active instance removal (Status removed, read by the community
+//     repository) takes no new posts. The firehose decider turns this code
+//     into a deferral (ErrCommunityRemovedDeferred) rather than a terminal
+//     verdict, so a restore lets the post be decided normally.
+//
+//  3. Ban, for regular users in public communities, read from the community
+//     ban index. A ban needs no membership row, and a ban past its expiresAt
+//     is not in force. A lookup error FAILS the request. Failing open here would turn a
 //     Postgres blip into a global unban for its duration, which is the one
 //     failure mode a ban check exists to prevent.
 //
@@ -511,6 +524,18 @@ func evaluateAdmissionPolicy(ctx context.Context, deps admissionDeps, req Admiss
 		return undecided(fmt.Errorf("unknown actor class %q: the submission cannot be evaluated", req.Actor))
 	}
 
+	// 0b. The instance account ban, for every actor class: an instance admin
+	// banning an account bans it whatever it is, aggregators included. It is
+	// read on the admission clock and, like the community ban, a lookup error
+	// fails the request rather than admitting.
+	accountBan, err := deps.accountBans.ActiveBan(ctx, req.AuthorDID)
+	if err != nil {
+		return undecided(fmt.Errorf("failed to look up account ban: %w", err))
+	}
+	if accountBan.InForce(deps.now()) {
+		return AdmissionDecision{Code: DecisionAccountBanned}, nil
+	}
+
 	// 1. Community resolution. Two lookups — the at-identifier to a DID, then
 	// the DID to the indexed row — and either failing to find it is the same
 	// answer to the client.
@@ -537,27 +562,29 @@ func evaluateAdmissionPolicy(ctx context.Context, deps admissionDeps, req Admiss
 		return undecided(fmt.Errorf("failed to fetch community: %w", err))
 	}
 
-	if req.Actor == ActorUser {
-		// 2. The privacy wall, and it stands ahead of the ban lookup rather
-		// than beside it: moderation state must not be read at all for a
-		// community the submitter cannot see. See the check-order note above.
-		if community.Visibility == "private" {
-			return AdmissionDecision{Code: DecisionCommunityPrivate}, nil
-		}
+	// 2. The privacy wall, and it stands ahead of the removal and ban checks
+	// rather than beside them: moderation state must not be read at all for a
+	// community the submitter cannot see. See the check-order note above.
+	if req.Actor == ActorUser && community.Visibility == "private" {
+		return AdmissionDecision{Code: DecisionCommunityPrivate}, nil
+	}
 
+	// An instance removal of the community refuses every actor class.
+	if community.Status == communities.CommunityStatusRemoved {
+		return AdmissionDecision{Code: DecisionCommunityRemoved}, nil
+	}
+
+	if req.Actor == ActorUser {
 		// 3. The ban. Looked up against the RESOLVED DID — handles are mutable,
 		// and a ban keyed to one stops applying the moment a community renames
 		// itself.
-		membership, err := deps.bans.GetMembership(ctx, req.AuthorDID, community.DID)
-		switch {
-		case errors.Is(err, communities.ErrMembershipNotFound):
-			// A VALUE meaning "not banned". Posting in a public community has
-			// never required joining it, so an absent row is the common case.
-		case err != nil:
+		ban, err := communities.ActiveCommunityBan(ctx, deps.bans, community.DID, req.AuthorDID, deps.now())
+		if err != nil {
 			// Fail closed. Treating an unreachable database as "not banned"
 			// would turn a Postgres blip into a global unban for its duration.
-			return undecided(fmt.Errorf("failed to look up community membership: %w", err))
-		case membership != nil && membership.IsBanned:
+			return undecided(fmt.Errorf("failed to look up community ban: %w", err))
+		}
+		if ban != nil {
 			return AdmissionDecision{Code: DecisionAuthorBanned}, nil
 		}
 	}

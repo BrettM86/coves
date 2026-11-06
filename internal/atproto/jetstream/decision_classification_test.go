@@ -45,7 +45,8 @@ func TestDecisionClassification(t *testing.T) {
 			}
 
 			err := consumer.HandleEvent(context.Background(), taxonomyEvent(
-				"did:plc:decisioncommunity", tc.collection, "create", "decision", record))
+				"did:plc:decisioncommunity", tc.collection, "create",
+				posts.SubjectRkey("at://did:plc:decisionauthor/social.coves.post.v2/decision"), record))
 			require.Error(t, err, "a decision from an unverifiable community must not be applied")
 			assert.NotErrorIs(t, err, ErrPermanentEvent,
 				"community existence can change after cross-repo delivery, so the decision must remain redrivable")

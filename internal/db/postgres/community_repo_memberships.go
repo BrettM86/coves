@@ -16,9 +16,9 @@ func (r *postgresCommunityRepo) CreateMembership(ctx context.Context, membership
 	query := `
 		INSERT INTO community_memberships (
 			user_did, community_did, reputation_score, contribution_count,
-			joined_at, last_active_at, is_banned, is_moderator
+			joined_at, last_active_at, is_moderator
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, joined_at, last_active_at`
 
 	err := r.db.QueryRowContext(ctx, query,
@@ -28,7 +28,6 @@ func (r *postgresCommunityRepo) CreateMembership(ctx context.Context, membership
 		membership.ContributionCount,
 		membership.JoinedAt,
 		membership.LastActiveAt,
-		membership.IsBanned,
 		membership.IsModerator,
 	).Scan(&membership.ID, &membership.JoinedAt, &membership.LastActiveAt)
 	if err != nil {
@@ -49,7 +48,7 @@ func (r *postgresCommunityRepo) GetMembership(ctx context.Context, userDID, comm
 	membership := &communities.Membership{}
 	query := `
 		SELECT id, user_did, community_did, reputation_score, contribution_count,
-			joined_at, last_active_at, is_banned, is_moderator
+			joined_at, last_active_at, is_moderator
 		FROM community_memberships
 		WHERE user_did = $1 AND community_did = $2`
 
@@ -61,7 +60,6 @@ func (r *postgresCommunityRepo) GetMembership(ctx context.Context, userDID, comm
 		&membership.ContributionCount,
 		&membership.JoinedAt,
 		&membership.LastActiveAt,
-		&membership.IsBanned,
 		&membership.IsModerator,
 	)
 
@@ -82,8 +80,7 @@ func (r *postgresCommunityRepo) UpdateMembership(ctx context.Context, membership
 		SET reputation_score = $3,
 			contribution_count = $4,
 			last_active_at = $5,
-			is_banned = $6,
-			is_moderator = $7
+			is_moderator = $6
 		WHERE user_did = $1 AND community_did = $2
 		RETURNING last_active_at`
 
@@ -93,7 +90,6 @@ func (r *postgresCommunityRepo) UpdateMembership(ctx context.Context, membership
 		membership.ReputationScore,
 		membership.ContributionCount,
 		membership.LastActiveAt,
-		membership.IsBanned,
 		membership.IsModerator,
 	).Scan(&membership.LastActiveAt)
 
@@ -111,7 +107,7 @@ func (r *postgresCommunityRepo) UpdateMembership(ctx context.Context, membership
 func (r *postgresCommunityRepo) ListMembers(ctx context.Context, communityDID string, limit, offset int) ([]*communities.Membership, error) {
 	query := `
 		SELECT id, user_did, community_did, reputation_score, contribution_count,
-			joined_at, last_active_at, is_banned, is_moderator
+			joined_at, last_active_at, is_moderator
 		FROM community_memberships
 		WHERE community_did = $1
 		ORDER BY reputation_score DESC, joined_at ASC
@@ -139,7 +135,6 @@ func (r *postgresCommunityRepo) ListMembers(ctx context.Context, communityDID st
 			&membership.ContributionCount,
 			&membership.JoinedAt,
 			&membership.LastActiveAt,
-			&membership.IsBanned,
 			&membership.IsModerator,
 		)
 		if scanErr != nil {

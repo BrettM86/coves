@@ -29,9 +29,10 @@ const defaultPendingSubjectsPerPass = 100
 // ListPendingSubjects returns the acceptance engine's backlog: subjects this
 // AppView can actually settle, oldest first.
 //
-// The two exclusions are documented on the interface
-// (posts.AdmissionRepository); what belongs here is how they are SPELLED, since
-// both are joins and a join written the obvious way gets one of them wrong:
+// The exclusions are documented on the interface
+// (posts.AdmissionRepository); what belongs here is how they are SPELLED. The
+// first two are joins, and a join written the obvious way gets one of them
+// wrong:
 //
 //   - HOSTED is a credential test — communities.pds_refresh_token_encrypted IS
 //     NOT NULL — and never communities.hosted_by_did, which is a claim copied
@@ -42,6 +43,16 @@ const defaultPendingSubjectsPerPass = 100
 //     different rows: an admission can legitimately exist with NO post row at
 //     all (an acceptance that arrived before its subject), and a LEFT JOIN would
 //     let those through as decidable when there is nothing to decide about.
+//   - NO AUTHOR UNDER AN ACCOUNT BAN IN FORCE, a NOT EXISTS over the author's
+//     active instance-scope removal by accountBanAuthorityDID whose action
+//     records the account subject kind, the same predicate AccountBanReader
+//     uses, plus the expiry. With no authority
+//     configured the empty DID matches no decision and nothing is excluded.
+//   - NO COMMUNITY UNDER A REMOVAL, communityRemovedSQL on the admission's
+//     community by the same authority. The decider defers these subjects
+//     (ErrCommunityRemovedDeferred) until the community is restored, so listing
+//     them would only crowd the batch window; with no authority nothing is
+//     excluded.
 func (r *postgresAdmissionRepo) ListPendingSubjects(ctx context.Context, limit int) ([]posts.PendingSubject, error) {
 	switch {
 	case limit <= 0:
@@ -50,12 +61,17 @@ func (r *postgresAdmissionRepo) ListPendingSubjects(ctx context.Context, limit i
 		limit = maxPendingSubjectsPerPass
 	}
 
-	// Both joins are INNER, and both exclusions are spelled as a join rather
-	// than as a NOT EXISTS so the planner can use the ordinary primary keys on
-	// posts and communities. ORDER BY created_at is the queue discipline: a
+	// Both joins are INNER, and those two exclusions are spelled as a join
+	// rather than as a NOT EXISTS so the planner can use the ordinary primary
+	// keys on posts and communities. The ban probe is served by
+	// moderation_decisions_active_subject (subject_uri, authority_did) WHERE
+	// active and the moderation_actions primary key. Expiry is judged on the
+	// database clock: Ban.InForce uses the server's, and a skew of seconds only
+	// shifts which pass first lists a lapsed ban's rows; the decider still
+	// re-checks every subject. ORDER BY created_at is the queue discipline: a
 	// queue served newest-first starves its own backlog, and the post that has
 	// waited longest is the one whose author is already wondering where it went.
-	const query = `
+	query := `
 		SELECT admissions.community_did, admissions.post_uri, admissions.created_at
 		FROM community_post_admissions AS admissions
 		JOIN posts
@@ -65,11 +81,24 @@ func (r *postgresAdmissionRepo) ListPendingSubjects(ctx context.Context, limit i
 		  ON communities.did = admissions.community_did
 		 AND communities.pds_refresh_token_encrypted IS NOT NULL
 		WHERE admissions.status IN ('pending', 'pending_reacceptance')
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM moderation_decisions AS decisions
+			JOIN moderation_actions AS actions ON actions.id = decisions.active_action_id
+			WHERE decisions.subject_uri = 'at://' || posts.author_did
+			  AND decisions.authority_did = $2
+			  AND decisions.scope_kind = 'instance'
+			  AND decisions.kind = 'removal'
+			  AND decisions.active
+			  AND actions.subject_kind = 'account'
+			  AND (actions.expires_at IS NULL OR actions.expires_at > now())
+		  )
+		  AND NOT ` + communityRemovedSQL("admissions.community_did", "$2") + `
 		ORDER BY admissions.created_at ASC
 		LIMIT $1
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, limit)
+	rows, err := r.db.QueryContext(ctx, query, limit, r.accountBanAuthorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("listing the acceptance engine's pending subjects: %w", err)
 	}

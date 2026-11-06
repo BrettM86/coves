@@ -48,6 +48,31 @@ func TestBridgeTrust_NormalizesDefaultHTTPSPort(t *testing.T) {
 	require.True(t, trust.TrustsPDS("https://Bridge.Example:443/"))
 }
 
+// A community is a trusted bridge's community only when its PDS is a trusted
+// bridge host AND its verified handle is under that PDS's registrable domain:
+// the DID controller writes the PDS endpoint, so the PDS alone proves nothing.
+func TestBridgeTrust_TrustsCommunity(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		trust  *BridgeTrust
+		handle string
+		pdsURL string
+		want   bool
+	}{
+		{"trusted PDS and handle under its registrable domain", trustingBridge(), "comicstrips.lemmy-world.tdpl.io", "https://pds.tdpl.io", true},
+		{"trusted PDS and handle outside the bridge domain", trustingBridge(), "comicstrips.lemmy-world.example.org", "https://pds.tdpl.io", false},
+		{"untrusted PDS and handle under its own registrable domain", trustingBridge(), "group.example.net", "https://pds.example.net", false},
+		{"nil bridge trust", nil, "comicstrips.lemmy-world.tdpl.io", "https://pds.tdpl.io", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, test.want, test.trust.TrustsCommunity(test.handle, test.pdsURL))
+		})
+	}
+}
+
 func TestAdmitCommunityOrigin(t *testing.T) {
 	t.Parallel()
 
@@ -112,7 +137,7 @@ func newOriginRepo() *originRepo {
 	return &originRepo{byDID: map[string]*communities.Community{}}
 }
 
-func (r *originRepo) Create(_ context.Context, c *communities.Community) (*communities.Community, error) {
+func (r *originRepo) Create(_ context.Context, c *communities.Community, _ ...communities.CreateOption) (*communities.Community, error) {
 	if _, ok := r.byDID[c.DID]; ok {
 		return nil, communities.ErrCommunityAlreadyExists
 	}

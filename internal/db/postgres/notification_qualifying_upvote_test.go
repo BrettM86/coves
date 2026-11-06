@@ -9,6 +9,7 @@ import (
 
 	"Coves/tests/testkit"
 
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,6 +52,13 @@ func (fixture qualifyingUpvoteFixture) insertVote(t *testing.T, voter, subject, 
 		(uri, cid, rkey, voter_did, subject_uri, subject_cid, direction, created_at, deleted_at)
 		VALUES ($1, 'bafyqualifyingvote', $2, $3, $4, 'bafyqualifyingsubject', $5, $6, $7)`,
 		"at://"+voter+"/social.coves.feed.vote/"+key, key, voter, subject, direction, createdAt, deletedAt)
+	require.NoError(t, err)
+}
+
+// setHideReason records the index-time hide reason on every vote by voter.
+func (fixture qualifyingUpvoteFixture) setHideReason(t *testing.T, voter, reason string) {
+	t.Helper()
+	_, err := fixture.db.Exec(`UPDATE votes SET hide_reason = $2 WHERE voter_did = $1`, voter, reason)
 	require.NoError(t, err)
 }
 
@@ -176,6 +184,14 @@ func TestQualifyingUpvoteSQL_OnlyDisqualifiedVoteDoesNotKeepGroup(t *testing.T) 
 		}},
 		{"soft_deleted_upvote", func(t *testing.T, fixture qualifyingUpvoteFixture, now time.Time) {
 			fixture.insertVote(t, fixture.voter, fixture.subject, "up", now, true)
+		}},
+		{"community_ban_hidden_upvote", func(t *testing.T, fixture qualifyingUpvoteFixture, now time.Time) {
+			fixture.insertVote(t, fixture.voter, fixture.subject, "up", now, false)
+			fixture.setHideReason(t, fixture.voter, "community_ban")
+		}},
+		{"pending_ban_check_upvote", func(t *testing.T, fixture qualifyingUpvoteFixture, now time.Time) {
+			fixture.insertVote(t, fixture.voter, fixture.subject, "up", now, false)
+			fixture.setHideReason(t, fixture.voter, "pending_ban_check")
 		}},
 		{"qualifying_upvote_only_on_other_subject", func(t *testing.T, fixture qualifyingUpvoteFixture, now time.Time) {
 			// The control vote below is the sole vote: the target subject has none.
@@ -312,4 +328,25 @@ func TestQualifyingUpvoteSQL_EmbedsTwiceAgainstAliasedNotificationRows(t *testin
 	}
 	require.NoError(t, remainingRows.Err())
 	require.Equal(t, []string{"subject"}, remaining, "the sweep must leave only the group with a qualifying upvote")
+}
+
+// A community-ban-hidden or still-pending upvote is left out of the subject's
+// tallies, so the upvote group's count and recent voters leave it out too.
+func TestQualifyingUpvoteSQL_GroupAggregatesLeaveOutBanHiddenAndPendingUpvotes(t *testing.T) {
+	t.Parallel()
+	fixture := newQualifyingUpvoteFixture(t)
+	now := time.Now().UTC()
+	fixture.insertVote(t, fixture.control, fixture.subject, "up", now, false)
+	fixture.insertVote(t, fixture.voter, fixture.subject, "up", now.Add(time.Second), false)
+	fixture.setHideReason(t, fixture.voter, "community_ban")
+	fixture.insertVote(t, fixture.thirdUser, fixture.subject, "up", now.Add(2*time.Second), false)
+	fixture.setHideReason(t, fixture.thirdUser, "pending_ban_check")
+
+	var voteCount int
+	var recentVoters []string
+	require.NoError(t, fixture.db.QueryRow(buildListNotificationUpvotesSQL(false), fixture.recipient,
+		pq.Array([]string{fixture.subject})).Scan(new(string), &voteCount, pq.Array(&recentVoters)))
+	require.Equal(t, 1, voteCount, "only the counted upvote is in the group's count")
+	require.Equal(t, []string{fixture.control}, recentVoters,
+		"the banned and pending voters are not among the group's recent voters")
 }

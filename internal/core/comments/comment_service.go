@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/accountbans"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
@@ -107,19 +109,20 @@ type PostReader interface {
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo      Repository                   // Comment data access
-	userRepo         users.UserRepository         // User lookup for author hydration
-	postRepo         PostReader                   // Post lookup + the admission-aware header gate
-	communityRepo    communities.Repository       // Community lookup for community hydration
-	oauthClient      *oauthclient.OAuthClient     // OAuth client for PDS authentication
-	oauthStore       oauth.ClientAuthStore        // OAuth session store
-	logger           *slog.Logger                 // Structured logger
-	pdsClientFactory PDSClientFactory             // Optional, for testing. If nil, uses OAuth.
-	lexiconValidator *validation.LexiconValidator // Optional; nil skips lexicon validation of written records
+	commentRepo       Repository                    // Comment data access
+	userRepo          users.UserRepository          // User lookup for author hydration
+	postRepo          PostReader                    // Post lookup + the admission-aware header gate
+	communityRepo     communities.Repository        // Community lookup for community hydration
+	oauthClient       *oauthclient.OAuthClient      // OAuth client for PDS authentication
+	oauthStore        oauth.ClientAuthStore         // OAuth session store
+	logger            *slog.Logger                  // Structured logger
+	pdsClientFactory  PDSClientFactory              // Optional, for testing. If nil, uses OAuth.
+	lexiconValidator  *validation.LexiconValidator  // Optional; nil skips lexicon validation of written records
+	communityBans     communities.CommunityBanIndex // Optional; when set, banned commenters are refused.
+	communityRemovals communities.RemovalReader     // Optional; when set, comments in removed communities are refused.
+	accountBans       accountbans.Reader            // Optional; when set, banned accounts are refused.
+	instanceDID       string                        // This instance's moderation authority, named on restricted-account placeholders.
 }
-
-// CommentServiceOption configures optional commentService dependencies.
-type CommentServiceOption func(*commentService)
 
 // NewCommentService creates a new comment service instance
 // All repositories are required for proper view construction per lexicon requirements
@@ -384,7 +387,7 @@ func (s *commentService) buildThreadViews(
 	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
-	result, err := s.buildLevelViews(ctx, comments, remainingDepth)
+	result, err := s.buildLevelViews(ctx, comments, remainingDepth, viewerDID)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +436,7 @@ func (s *commentService) buildThreadViews(
 			// Update HasMore based on actual reply count vs loaded count
 			levelViews[i].HasMore = comment.ReplyCount > len(replies)
 		}
-		nextViews, err := s.buildLevelViews(ctx, nextLevel, depth-1)
+		nextViews, err := s.buildLevelViews(ctx, nextLevel, depth-1, viewerDID)
 		if err != nil {
 			return nil, err
 		}
@@ -469,6 +472,7 @@ func (s *commentService) buildLevelViews(
 	ctx context.Context,
 	comments []*Comment,
 	remainingDepth int,
+	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	if len(comments) == 0 {
@@ -513,23 +517,29 @@ func (s *commentService) buildLevelViews(
 		sources := removals[comment.URI]
 
 		// Build appropriate view based on deletion status
-		if comment.DeletedAt != nil || len(sources) > 0 {
+		hiddenFromViewer := comment.IsHiddenFromViewer(viewerDID)
+		writtenDuringAccountBan := comment.HideReason != nil && *comment.HideReason == HideReasonAccountBan
+		if comment.DeletedAt == nil && (comment.IsHiddenByAccountRestriction(viewerDID) || writtenDuringAccountBan) {
+			// A restricted account's comment, or one it wrote during an
+			// account ban (also once the ban ends), reads as removed by this
+			// instance.
+			sources = s.withAccountRestrictionSource(sources)
+		}
+		if comment.DeletedAt != nil || len(sources) > 0 || hiddenFromViewer {
 			// Deleted comment - build placeholder view to preserve thread structure
 			commentView = s.buildDeletedCommentView(comment)
+			if hiddenFromViewer && comment.DeletedAt == nil {
+				// A recorded hide reads like a moderator removal, never an author delete.
+				reason := DeletionReasonModerator
+				commentView.DeletionReason = &reason
+			}
 			if len(sources) > 0 {
 				if comment.DeletedAt == nil || comment.DeletionReason == nil || *comment.DeletionReason != DeletionReasonAuthor {
 					reason := DeletionReasonModerator
 					commentView.DeletionReason = &reason
 					commentView.DeletedAt = nil
 				}
-				viewSources := make([]ModerationSourceView, 0, len(sources))
-				for _, source := range sources {
-					viewSources = append(viewSources, ModerationSourceView{
-						AuthorityDID: source.AuthorityDID,
-						Scope:        ModerationScopeView{Kind: source.ScopeKind},
-					})
-				}
-				commentView.Moderation = &ModerationView{State: "removed", Sources: viewSources}
+				commentView.Moderation = removedModerationView(sources)
 			}
 		} else {
 			// Active comment - build full view with author info and stats
@@ -544,6 +554,31 @@ func (s *commentService) buildLevelViews(
 	}
 
 	return threadViews, nil
+}
+
+// withAccountRestrictionSource returns sources plus the instance-scope source
+// that attributes a restricted account's hidden comment to this instance,
+// unless sources already name it. The result is a new slice; the removals map
+// the caller read sources from is left unchanged.
+func (s *commentService) withAccountRestrictionSource(sources []RemovalSource) []RemovalSource {
+	for _, source := range sources {
+		if source.ScopeKind == "instance" && source.AuthorityDID == s.instanceDID {
+			return sources
+		}
+	}
+	return append(slices.Clip(sources), RemovalSource{AuthorityDID: s.instanceDID, ScopeKind: "instance"})
+}
+
+// removedModerationView attributes a comment's active removals.
+func removedModerationView(sources []RemovalSource) *ModerationView {
+	viewSources := make([]ModerationSourceView, 0, len(sources))
+	for _, source := range sources {
+		viewSources = append(viewSources, ModerationSourceView{
+			AuthorityDID: source.AuthorityDID,
+			Scope:        ModerationScopeView{Kind: source.ScopeKind, CommunityDID: source.CommunityDID},
+		})
+	}
+	return &ModerationView{State: "removed", Sources: viewSources}
 }
 
 // hydrateAuthorProfile fills display name, avatar and the bridge-written origin
@@ -876,6 +911,10 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 
 	// Validate reply references
 	if err := validateReplyRef(req.Reply); err != nil {
+		return nil, err
+	}
+
+	if err := s.refuseBannedCommenter(ctx, session.AccountDID.String(), req.Reply.Parent.URI, req.Reply.Root.URI); err != nil {
 		return nil, err
 	}
 
@@ -1443,10 +1482,27 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 		}
 	}
 
+	// The repository returns the author's own community-removed comments only
+	// to the author; attribute those removals so the author sees why.
+	var removals map[string][]RemovalSource
+	if viewerDID == req.ActorDID && len(dbComments) > 0 {
+		commentURIs := make([]string, 0, len(dbComments))
+		for _, comment := range dbComments {
+			commentURIs = append(commentURIs, comment.URI)
+		}
+		removals, err = s.commentRepo.ActiveRemovalsByURIs(ctx, commentURIs)
+		if err != nil {
+			return nil, fmt.Errorf("checking active comment removals: %w", err)
+		}
+	}
+
 	// Build comment views
 	commentViews := make([]*CommentView, 0, len(dbComments))
 	for _, comment := range dbComments {
 		commentView := s.buildCommentView(comment, usersByDID)
+		if sources := removals[comment.URI]; len(sources) > 0 {
+			commentView.Moderation = removedModerationView(sources)
+		}
 		commentViews = append(commentViews, commentView)
 	}
 

@@ -115,8 +115,14 @@ func (f accFixture) indexPV2(t *testing.T, rkey, cid string, timeUS int64) strin
 // community, forever, which is what makes three independent writers converge on
 // putRecord of the same record instead of allocating duplicate TIDs.
 func acceptanceEvent(communityDID, postURI, pinnedCID, rev string, timeUS int64) *JetstreamEvent {
-	return revCommitEvent(communityDID, posts.AcceptanceCollection, "create",
-		posts.SubjectRkey(postURI), rev, "bafyreiacceptancerecord", timeUS,
+	return acceptanceEventAt(communityDID, "create", posts.SubjectRkey(postURI), postURI, pinnedCID, rev, timeUS)
+}
+
+// acceptanceEventAt builds a community-repo acceptance create or update at
+// the given record key.
+func acceptanceEventAt(communityDID, operation, rkey, postURI, pinnedCID, rev string, timeUS int64) *JetstreamEvent {
+	return revCommitEvent(communityDID, posts.AcceptanceCollection, operation,
+		rkey, rev, "bafyreiacceptancerecord", timeUS,
 		map[string]interface{}{
 			"$type":     posts.AcceptanceCollection,
 			"subject":   map[string]interface{}{"uri": postURI, "cid": pinnedCID},
@@ -124,10 +130,17 @@ func acceptanceEvent(communityDID, postURI, pinnedCID, rev string, timeUS int64)
 		})
 }
 
-// removalEvent builds a community-repo removal commit.
+// removalEvent builds a community-repo removal commit at the subject's
+// derived record key.
 func removalEvent(communityDID, postURI, pinnedCID, code, rev string, timeUS int64) *JetstreamEvent {
-	return revCommitEvent(communityDID, posts.RemovalCollection, "create",
-		posts.SubjectRkey(postURI), rev, "bafyreiremovalrecord", timeUS,
+	return removalEventAt(communityDID, "create", posts.SubjectRkey(postURI), postURI, pinnedCID, code, rev, timeUS)
+}
+
+// removalEventAt builds a community-repo removal create or update at the
+// given record key.
+func removalEventAt(communityDID, operation, rkey, postURI, pinnedCID, code, rev string, timeUS int64) *JetstreamEvent {
+	return revCommitEvent(communityDID, posts.RemovalCollection, operation,
+		rkey, rev, "bafyreiremovalrecord", timeUS,
 		map[string]interface{}{
 			"$type":     posts.RemovalCollection,
 			"subject":   map[string]interface{}{"uri": postURI, "cid": pinnedCID},
@@ -172,6 +185,58 @@ func TestAcceptanceConsumer_MatchingCID_AcceptsAndStampsTheWatermark(t *testing.
 		"the watermark rev must be the COMMIT's rev — it is the only clock that orders acceptance against removal, since they are different record URIs about the same subject")
 	assert.Equal(t, posts.CommunityOpPut, admission.LastCommunityEvent.OpRank,
 		"a record write ranks as a put; the rank is the operation's kind, derived repo-side")
+}
+
+// TestAcceptanceConsumer_NonCanonicalRecordKeyIsRefused pins that an
+// acceptance create or update at a record key other than its subject's
+// derived key is refused permanently and accepts nothing, as a removal at a
+// non-canonical key is. The canonical-key row passes on the base and shows
+// the refusal is about the key.
+func TestAcceptanceConsumer_NonCanonicalRecordKeyIsRefused(t *testing.T) {
+	t.Parallel()
+
+	otherSubjectKey := posts.SubjectRkey(accPostURI("accrkeyotherpost"))
+	tests := []struct {
+		name      string
+		operation string
+		rkey      string // "" is the subject's canonical key
+		refused   bool
+	}{
+		{name: "create at an invented key", operation: "create", rkey: "accnoncanonical", refused: true},
+		{name: "update at another subject's key", operation: "update", rkey: otherSubjectKey, refused: true},
+		{name: "create at the canonical key", operation: "create"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			db := testkit.DB(t)
+			f := newAccFixture(t, db)
+			ctx := context.Background()
+			base := time.Now().UnixMicro()
+
+			const cid = "bafyreiaccrkey"
+			uri := f.indexPV2(t, "accrkeypost", cid, base)
+			before := readAdmissionRow(t, db, accCommunity, uri)
+			rkey := tt.rkey
+			if rkey == "" {
+				rkey = posts.SubjectRkey(uri)
+			}
+
+			err := f.consumer.HandleEvent(ctx, acceptanceEventAt(accCommunity, tt.operation, rkey, uri, cid, testkit.TID(), base+1_000_000))
+			admission, getErr := f.admissions.Get(ctx, accCommunity, uri)
+			require.NoError(t, getErr)
+			require.NotNil(t, admission)
+			if !tt.refused {
+				require.NoError(t, err)
+				assert.Equal(t, posts.AdmissionStatusAccepted, admission.Status)
+				return
+			}
+			require.ErrorIs(t, err, ErrPermanentEvent, "an acceptance at a non-canonical record key must be refused permanently")
+			assert.NotEqual(t, posts.AdmissionStatusAccepted, admission.Status, "the refused acceptance must not accept the post")
+			assert.Nil(t, admission.AcceptanceRkey, "the refused acceptance must store no acceptance rkey")
+			assert.Equal(t, before, readAdmissionRow(t, db, accCommunity, uri), "the refused acceptance must leave the admission row unchanged")
+		})
+	}
 }
 
 func TestAcceptanceConsumer_ReplayIsANoOpAndLeavesTheRowUntouched(t *testing.T) {

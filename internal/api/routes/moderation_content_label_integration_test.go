@@ -3,8 +3,10 @@
 package routes_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,13 +16,16 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	atprotopds "Coves/internal/atproto/pds"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
+	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
+	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/internal/validation"
@@ -30,6 +35,7 @@ import (
 	commentsAPI "Coves/internal/api/handlers/comments"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
+	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
@@ -41,6 +47,7 @@ type contentLabelRouteFixture struct {
 	client        *http.Client
 	instanceDID   string
 	authorDID     string
+	authorToken   string
 	communityDID  string
 	adminDID      string
 	adminToken    string
@@ -52,6 +59,9 @@ type contentLabelRouteFixture struct {
 	// insertPostBy inserts an accepted post in the fixture community by an
 	// author other than authorDID; the caller owns that author's users row.
 	insertPostBy func(authorDID, title string) string
+	// insertPostIn inserts an accepted post in another community; the caller
+	// owns that community's and author's rows.
+	insertPostIn func(communityDID, authorDID, title string) string
 }
 
 func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
@@ -65,14 +75,15 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	t.Cleanup(pds.Close)
 	t.Cleanup(func() { require.Zero(t, pdsRequests.Load(), "moderation must never contact the PDS") })
 
-	postRepo := postgres.NewPostRepository(db)
 	instanceDID := fixtures.InstanceDID()
+	accountRestriction := postgres.WithAccountRestrictionAuthority(instanceDID)
+	postRepo := postgres.NewPostRepository(db, accountRestriction)
 	moderationService := moderation.NewService(
-		moderation.NewRepositorySubjectReader(postRepo, postgres.NewCommentRepository(db)),
+		moderation.NewRepositorySubjectReader(postRepo, postgres.NewCommentRepository(db, accountRestriction)),
 		postgres.NewModerationRepository(db),
 		moderation.Config{InstanceDID: instanceDID, IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000, CursorSecret: "content-label-acceptance-secret"},
 	)
-	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed(), accountRestriction)
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo, pds.URL, instanceDID, "", nil, nil, nil, nil,
 		communities.PrivateHostOptions(true)...,
@@ -82,12 +93,15 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		posts.WithSyncAcceptance(postgres.NewAdmissionRepository(db), nil),
 	)
 	feedService := communityFeeds.NewCommunityFeedService(
-		postgres.NewCommunityFeedRepository(db, "content-label-acceptance-cursor-secret"), communityService,
+		postgres.NewCommunityFeedRepository(db, "content-label-acceptance-cursor-secret", accountRestriction), communityService,
 	)
-	commentService := comments.NewCommentService(postgres.NewCommentRepository(db), postgres.NewUserRepository(db),
-		postRepo, communityRepo, nil, nil, nil)
-	timelineService := timeline.NewTimelineService(postgres.NewTimelineRepository(db, "content-label-acceptance-cursor-secret"))
-	discoverService := discover.NewDiscoverService(postgres.NewDiscoverRepository(db, "content-label-acceptance-cursor-secret"))
+	commentService := comments.NewCommentService(postgres.NewCommentRepository(db, accountRestriction), postgres.NewUserRepository(db),
+		postRepo, communityRepo, nil, nil, nil, comments.WithInstanceDID(instanceDID))
+	accountBans := postgres.NewAccountBanReader(db, instanceDID)
+	userService := users.NewUserService(postgres.NewUserRepository(db), nil, pds.URL, nil, "",
+		users.WithAccountBans(accountBans), users.WithAccountStatusRestrictions(postgres.NewAccountStatusRepository(db)))
+	timelineService := timeline.NewTimelineService(postgres.NewTimelineRepository(db, "content-label-acceptance-cursor-secret", accountRestriction))
+	discoverService := discover.NewDiscoverService(postgres.NewDiscoverRepository(db, "content-label-acceptance-cursor-secret", accountRestriction))
 
 	authorName := testkit.UniqueIDWithPrefix(t, "labelauthor")
 	const authorDID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
@@ -102,7 +116,7 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	`, communityDID, communityName, ownerDID, instanceDID, communityName+".coves.social", pds.URL)
 	require.NoError(t, err)
 	const postCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
-	insertAcceptedPostBy := func(authorDID, title string) string {
+	insertAcceptedPostIn := func(communityDID, authorDID, title string) string {
 		t.Helper()
 		rkey := testkit.TID()
 		uri := "at://" + authorDID + "/" + moderation.PostV2Collection + "/" + rkey
@@ -118,6 +132,10 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		`, communityDID, uri, postCID)
 		require.NoError(t, err)
 		return uri
+	}
+	insertAcceptedPostBy := func(authorDID, title string) string {
+		t.Helper()
+		return insertAcceptedPostIn(communityDID, authorDID, title)
 	}
 	insertAcceptedPost := func(title string) string {
 		t.Helper()
@@ -135,6 +153,9 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	const nonAdminToken = "content-label-nonadmin-session"
 	unsealer.AddSession(nonAdminToken, nonAdminDID, "content-label-nonadmin")
 	oauthStore.AddSession(nonAdminDID, "content-label-nonadmin", "non-admin-access-token")
+	const authorToken = "content-label-author-session"
+	unsealer.AddSession(authorToken, authorDID, "content-label-author")
+	oauthStore.AddSession(authorDID, "content-label-author", "author-access-token")
 	optionalAuth := middleware.NewOAuthAuthMiddleware(unsealer, oauthStore)
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
@@ -143,6 +164,15 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	routes.RegisterActorRoutes(mux, postService, nil, nil, nil, commentService, optionalAuth, authority, instanceDID)
 	routes.RegisterTimelineRoutes(mux, timelineService, nil, nil, optionalAuth, authority, instanceDID)
 	routes.RegisterDiscoverRoutes(mux, discoverService, nil, nil, optionalAuth, authority, instanceDID)
+	mediaPipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
+	require.NoError(t, err)
+	routes.RegisterUserRoutesWithOptions(mux, userService, optionalAuth, nil, &routes.UserRouteOptions{
+		MediaPipeline: mediaPipeline,
+		PDSClientFactory: func(context.Context, *indigooauth.ClientSessionData) (atprotopds.CommitClient, error) {
+			return nil, errors.New("the moderation route fixture never updates a profile")
+		},
+	})
+	routes.RegisterViewerAuthorityRoute(mux, adminAuth, authority, routes.WithViewerAuthorityAccountBans(accountBans))
 	// Mounted as cmd/server registerCommentQueryRoute mounts it (minus its rate limit).
 	commentThread := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, authority, instanceDID)
 	mux.Handle("/xrpc/social.coves.community.comment.getComments",
@@ -151,9 +181,10 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	t.Cleanup(server.Close)
 	return contentLabelRouteFixture{
 		db: db, server: server, client: server.Client(), instanceDID: instanceDID,
-		authorDID: authorDID, communityDID: communityDID, adminDID: adminDID,
+		authorDID: authorDID, authorToken: authorToken, communityDID: communityDID, adminDID: adminDID,
 		adminToken: adminToken, nonAdminDID: nonAdminDID, nonAdminToken: nonAdminToken, postCID: postCID,
 		pdsRequests: &pdsRequests, insertPost: insertAcceptedPost, insertPostBy: insertAcceptedPostBy,
+		insertPostIn: insertAcceptedPostIn,
 	}
 }
 

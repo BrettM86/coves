@@ -262,6 +262,19 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.moderation.restoreContent", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.labelContent", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.retractContentLabel", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.banAccount", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.unbanAccount", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.removeCommunity", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.restoreCommunity", authRequired, 0, false},
+
+	// RegisterLabelRoutes — the standard atProto label query. Public by design:
+	// any AppView or client may read the instance's signed labels.
+	{http.MethodGet, "/xrpc/com.atproto.label.queryLabels", authNone, 0, false},
+
+	// RegisterLabelStreamRoutes — the standard atProto label event stream.
+	// Public for the same reason as queryLabels: subscribers replay and tail
+	// the instance's signed labels.
+	{http.MethodGet, "/xrpc/com.atproto.label.subscribeLabels", authNone, 0, false},
 
 	// RegisterViewerAuthorityRoute — whether the signed-in viewer is an instance
 	// admin. Any authenticated caller may ask about themselves; there is no
@@ -452,6 +465,8 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterCommentRoutes(mux, nil, auth)
 	RegisterAdminReportRoutes(mux, nil, auth)
 	RegisterModerationRoutes(mux, nil, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil))
+	RegisterLabelRoutes(mux, nil)
+	RegisterLabelStreamRoutes(mux, nil)
 	RegisterViewerAuthorityRoute(mux, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil), moderation.NewAllowlistAuthority(nil))
 	RegisterCommunitySuggestionRoutes(mux, nil, auth, nil)
 	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")

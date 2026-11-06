@@ -287,6 +287,44 @@ func TestQueueDriver_AFailedSubjectDoesNotAbortThePass(t *testing.T) {
 	assert.Zero(t, report.Deferred, "an error is not a deferral")
 }
 
+func TestQueueDriver_AnAccountBannedAuthorIsADeferralNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	clock := newQueueClock()
+	banned := subject("did:plc:qa", "banned")
+	subjects := &fakeSubjects{batches: [][]PendingSubject{{banned}}}
+	engine := newFakeEngine()
+	engine.errs[banned.PostURI] = fmt.Errorf("deciding %s: %w", banned.PostURI, ErrAuthorAccountBanned)
+	driver := NewQueueDriver(subjects, engine, clock.now())
+
+	report, err := driver.RunPass(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Deferred,
+		"a post waiting out its author's account ban is held back until the ban ends, which is not a bug to page on")
+	assert.Zero(t, report.Failed)
+	assert.Equal(t, 1, driver.Snapshot().DeferredSubjects, "the subject must still be backed off")
+}
+
+func TestQueueDriver_ARemovedCommunityIsADeferralNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	clock := newQueueClock()
+	held := subject("did:plc:qa", "removedcommunity")
+	subjects := &fakeSubjects{batches: [][]PendingSubject{{held}}}
+	engine := newFakeEngine()
+	engine.errs[held.PostURI] = fmt.Errorf("deciding %s: %w", held.PostURI, ErrCommunityRemovedDeferred)
+	driver := NewQueueDriver(subjects, engine, clock.now())
+
+	report, err := driver.RunPass(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Deferred,
+		"a post waiting out its community's removal is held back until the restore, which is not a bug to page on")
+	assert.Zero(t, report.Failed)
+	assert.Equal(t, 1, driver.Snapshot().DeferredSubjects, "the subject must still be backed off")
+}
+
 func TestQueueDriver_ReportsAnUnreadableBacklog(t *testing.T) {
 	t.Parallel()
 

@@ -164,6 +164,34 @@ func NewAdmissionEngineDecider(deps DeciderDeps) *AdmissionEngineDecider {
 // ListPendingSubjects excludes tombstoned and unindexed posts.
 var ErrSubjectGone = errors.New("the post this admission names no longer stands")
 
+// ErrAuthorAccountBanned reports that the post's author is under an instance
+// account ban in force, so the engine defers the subject rather than deciding
+// it.
+//
+// It travels as an ERROR, for the same reason ErrSubjectGone does. The engine
+// turns a code on a `pending` row into a rejection and on a
+// `pending_reacceptance` row into a signed removal, and both are terminal. An
+// account ban is not terminal: it can be lifted, and a timed one lapses at its
+// expiry with no further action. A post edited during a 24-hour ban must be
+// decided normally once the ban ends, so the row is left pending and the
+// queue's ordinary redrive decides it after unban or lapse. The write path
+// (CreatePost) still refuses a banned author outright; nothing is written there.
+var ErrAuthorAccountBanned = errors.New("the author's account is banned on this instance; the decision is deferred until the ban ends")
+
+// ErrCommunityRemovedDeferred reports that the post's community is under an
+// instance community removal, so the engine defers the subject rather than
+// deciding it.
+//
+// It travels as an ERROR, for the same reason ErrAuthorAccountBanned does. The
+// engine turns a code on a `pending` row into a rejection and on a
+// `pending_reacceptance` row into a signed removal, and both are terminal. A
+// community removal is not terminal: restoreCommunity reverses it, and a post
+// written or edited during the removal must be decided normally after the
+// restore, so the row is left pending and the queue's ordinary redrive decides
+// it then. The write path (CreatePost) still refuses a removed community
+// outright; nothing is written there.
+var ErrCommunityRemovedDeferred = errors.New("the community is removed on this instance; the decision is deferred until it is restored")
+
 // DecideAdmission implements AdmissionDecider.
 func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityDID, postURI string) (AdmissionDecision, error) {
 	// THE POST FIRST, and everything else after it. Two things come out of this
@@ -205,6 +233,7 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 	decision, err := evaluateAdmissionPolicy(ctx, admissionDeps{
 		communities: d.deps.Communities,
 		bans:        d.deps.Policy.Bans,
+		accountBans: d.deps.Policy.AccountBans,
 		aggregators: d.deps.Authorizer,
 		ledger:      d.deps.Policy.Ledger,
 		limits:      d.deps.Policy.Limits,
@@ -224,6 +253,16 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 		// redeciding.
 		Fingerprint: "",
 	})
+	if err == nil && decision.Code == DecisionAccountBanned {
+		// UNDECIDED, not refused: the engine's verdicts are terminal and an
+		// account ban is not. See ErrAuthorAccountBanned.
+		return undecided(fmt.Errorf("deciding %s for %s: %w", postURI, communityDID, ErrAuthorAccountBanned))
+	}
+	if err == nil && decision.Code == DecisionCommunityRemoved {
+		// UNDECIDED, not refused: the engine's verdicts are terminal and a
+		// community removal is not. See ErrCommunityRemovedDeferred.
+		return undecided(fmt.Errorf("deciding %s for %s: %w", postURI, communityDID, ErrCommunityRemovedDeferred))
+	}
 	if err != nil || !decision.Admitted() {
 		return decision, err
 	}

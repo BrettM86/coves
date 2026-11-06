@@ -11,8 +11,17 @@ var (
 	// ErrCommunityNotFound is returned when a community doesn't exist
 	ErrCommunityNotFound = errors.New("community not found")
 
+	// ErrCommunityRemoved is returned when the community is removed by the instance.
+	ErrCommunityRemoved = errors.New("community is removed")
+
 	// ErrCommunityAlreadyExists is returned when trying to create a community with duplicate DID
 	ErrCommunityAlreadyExists = errors.New("community already exists")
+
+	// ErrDIDHasAccountActivity is returned when creating a community whose DID
+	// is already an account here: it has a users row or authored a post,
+	// comment or vote. Indexing it as a community too would make its
+	// moderation subject ambiguous.
+	ErrDIDHasAccountActivity = errors.New("community DID has account activity")
 
 	// ErrHandleTaken is returned when a community handle is already in use
 	ErrHandleTaken = errors.New("community handle is already taken")

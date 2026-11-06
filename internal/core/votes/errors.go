@@ -30,4 +30,12 @@ var (
 
 	// ErrBanned indicates the user is banned from the community
 	ErrBanned = errors.New("user is banned from this community")
+
+	// ErrAccountBanned indicates the user's account has an instance account
+	// ban in force. It is distinct from ErrBanned, which is scoped to one
+	// community.
+	ErrAccountBanned = errors.New("account is banned on this instance")
+
+	// ErrCommunityRemoved indicates the community is removed by the instance.
+	ErrCommunityRemoved = errors.New("community is removed")
 )

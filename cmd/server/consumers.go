@@ -152,6 +152,10 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 		jetstream.WithUserUncachedIdentityResolver(a.uncachedIdentityResolver),
 		jetstream.WithUserIdentityRefreshFailureTTL(a.cfg.Identity.NegativeCacheTTL),
 		jetstream.WithUserIdentityRefreshLock(identityRefreshLock),
+		// #account takendown/suspended events are confirmed with the
+		// account's current PDS; see buildJetstreamInfrastructure. The
+		// recheck job in main.go shares this store and confirmer.
+		jetstream.WithUserAccountStatus(a.accountStatusStore, a.accountStatusConfirmer),
 	}
 	// Statically typed rather than asserted at runtime: a type assertion here
 	// would silently disable handle sync if the store's method set ever
@@ -188,7 +192,9 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	// federated network names, from inside this AppView's own network.
 	// BridgeTrust here gates the self-asserted `origin` on profile records: a
 	// repo on a trusted bridge PDS may claim a foreign origin (lemmy.world);
-	// anyone else may claim only their own handle's domain.
+	// anyone else may claim only their own handle's domain. It also exempts a
+	// repo on a trusted bridge PDS from the account-activity refusal, since a
+	// bridged group posts as itself before its profile arrives.
 	communityOpts := append(
 		[]jetstream.CommunityConsumerOption{
 			jetstream.WithCommunityRevGate(a.revGate),
@@ -269,7 +275,8 @@ func (a *application) buildVoteConsumer() *jetstream.VoteEventConsumer {
 	return jetstream.NewVoteEventConsumer(a.voteRepo, a.userService, a.db,
 		jetstream.WithVoteDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
 		jetstream.WithVoteBridgeTrust(a.bridgeTrust),
-		jetstream.WithVoteNotifications(a.notificationRepo))
+		jetstream.WithVoteNotifications(a.notificationRepo),
+		jetstream.WithVoteAccountBanAuthority(a.cfg.Instance.DID))
 }
 
 // buildCommentConsumer builds the comment consumer registered on the feed.
@@ -278,6 +285,8 @@ func (a *application) buildCommentConsumer() *jetstream.CommentEventConsumer {
 		jetstream.WithCommentBridgeTrust(a.bridgeTrust),
 		jetstream.WithCommentMediaReconciler(a.mediaReconciler),
 		jetstream.WithCommentNotifications(a.notificationRepo),
+		jetstream.WithCommentCommunityRemovals(a.communityCommentRemovals),
+		jetstream.WithCommentAccountBanAuthority(a.cfg.Instance.DID),
 		jetstream.WithCommentBlobReferences(a.blobReferenceRepo))
 }
 
@@ -298,6 +307,8 @@ func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
 		jetstream.WithPostBridgeTrust(a.bridgeTrust),
 		jetstream.WithPostIdentityResolver(a.identityResolver),
 		jetstream.WithAdmissions(a.admissionRepo),
+		jetstream.WithPostCommunityCommentRemovals(a.communityCommentRemovals),
+		jetstream.WithPostCommunityBans(postgresRepo.NewCommunityBanRepository(a.db)),
 		jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
 		jetstream.WithPostRecordFetcher(postFetcher),
 		jetstream.WithPostMediaReconciler(a.mediaReconciler),

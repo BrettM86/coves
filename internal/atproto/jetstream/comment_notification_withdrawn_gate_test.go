@@ -29,7 +29,7 @@ func removeNotificationReferencePost(t *testing.T, db *sql.DB, uri string) {
 
 func TestCommentConsumer_WithdrawnReferencesSuppressCreate(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"removed root", "deleted root", "deleted parent comment", "removed distinct parent post", "live distinct parent post", "pending root"} {
+	for _, kind := range []string{"removed root", "deleted root", "deleted parent comment", "removed distinct parent post", "live distinct parent post", "pending root", "commenter banned in the community"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			f := newCommentAuthorDeleteFixture(t)
@@ -60,6 +60,14 @@ func TestCommentConsumer_WithdrawnReferencesSuppressCreate(t *testing.T) {
 				_, err := f.db.Exec(`UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, rootURI)
 				require.NoError(t, err)
 			}
+			if kind == "commenter banned in the community" {
+				// The ban history row the ban consumer records for ban(C, commenter).
+				_, err := f.db.Exec(`INSERT INTO community_ban_history
+					(community_did, subject_did, record_key, record_cid, index_order)
+					VALUES ($1, $2, 'bankey', 'bafyreiwithdrawnban', nextval('coves_index_order'))`,
+					revTestCommunity, revTestCommenter)
+				require.NoError(t, err)
+			}
 			mentioned, handle := f.mentionRecipient(t)
 			key := testkit.TID()
 			uri := "at://" + revTestCommenter + "/" + CommentCollection + "/" + key
@@ -70,6 +78,10 @@ func TestCommentConsumer_WithdrawnReferencesSuppressCreate(t *testing.T) {
 			require.NoError(t, f.consumer.HandleEvent(context.Background(), revCommitEvent(revTestCommenter, CommentCollection, "create", key,
 				testkit.TID(), "bafyreiwithdrawncomment", time.Now().UnixMicro(), record)))
 			require.Equal(t, 1, countRows(t, f.db, `SELECT count(*) FROM comments WHERE uri = $1`, uri))
+			if kind == "commenter banned in the community" {
+				require.Equal(t, 1, countRows(t, f.db, `SELECT count(*) FROM comments WHERE uri = $1 AND hide_reason = 'community_ban'`, uri),
+					"fixture: the comment must be recorded ban-hidden")
+			}
 			if kind == "pending root" {
 				require.Equal(t, 1, countRows(t, f.db, `SELECT count(*) FROM notifications WHERE record_uri = $1 AND recipient_did = $2 AND reason = 'postReply'`, uri, revTestAuthor))
 				return
@@ -79,7 +91,7 @@ func TestCommentConsumer_WithdrawnReferencesSuppressCreate(t *testing.T) {
 				return
 			}
 			require.Zero(t, countRows(t, f.db, `SELECT count(*) FROM notifications WHERE record_uri = $1`, uri),
-				"withdrawn root or parent must suppress both reply and mention")
+				"withdrawn root or parent, or a ban-hidden comment, must suppress both reply and mention")
 		})
 	}
 }

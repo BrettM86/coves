@@ -53,12 +53,16 @@ func (q *quotaCommunities) GetByDID(context.Context, string) (*communities.Commu
 	return q.community, nil
 }
 
-// quotaBans reports no membership, which is the ordinary case: posting in a
+// quotaBans reports no membership and no ban, which is the ordinary case: posting in a
 // public community has never required joining it.
 type quotaBans struct{}
 
 func (quotaBans) GetMembership(context.Context, string, string) (*communities.Membership, error) {
 	return nil, communities.ErrMembershipNotFound
+}
+
+func (quotaBans) GetCommunityBan(context.Context, string, string) (*communities.CommunityBan, error) {
+	return nil, communities.ErrCommunityBanNotFound
 }
 
 // quotaPosts serves whichever post the subject names.
@@ -126,8 +130,9 @@ func newQuotaFixture(t *testing.T) *quotaFixture {
 		Communities: &quotaCommunities{community: &communities.Community{DID: communityDID, Visibility: "public"}},
 		Admissions:  f.admissions,
 		Policy: posts.AdmissionPolicy{
-			Ledger: posts.NewAllowAllAdmissionPolicyForTests().Ledger,
-			Bans:   quotaBans{},
+			Ledger:      posts.NewAllowAllAdmissionPolicyForTests().Ledger,
+			Bans:        quotaBans{},
+			AccountBans: noAccountBans{},
 			Limits: posts.SubmissionLimits{
 				MaxPerAuthorPerCommunity: quotaLimit,
 				Window:                   time.Hour,

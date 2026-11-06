@@ -58,8 +58,8 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 			if stored.Fingerprint != fingerprint {
 				return fail(ErrIdempotencyConflict)
 			}
-			copy := stored.Result
-			result = &copy
+			storedResult := stored.Result
+			result = &storedResult
 			return nil
 		}
 		count, err := tx.CountLiveIdempotencyKeys(ctx, actorDID, now)
@@ -82,6 +82,11 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if removal.Action != ActionRemove || removal.AuthorityDID != s.config.InstanceDID || removal.ScopeKind != ScopeInstance {
 			return fail(ErrInvalidDecision)
 		}
+		// An account ban or community removal has a bare at://<did> subject;
+		// unbanAccount and restoreCommunity are the operations that reverse them.
+		if _, isDIDSubject := accountSubjectDID(removal.SubjectURI); isDIDSubject {
+			return fail(fmt.Errorf("%w: actionId names an account ban or community removal; unbanAccount or restoreCommunity reverses it", ErrInvalidRequest))
+		}
 		version, err := tx.LockSubject(ctx, removal.SubjectURI)
 		if err != nil {
 			return unavailable(err)
@@ -103,6 +108,7 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if err != nil && !errors.Is(err, ErrSubjectNotIndexed) {
 			return unavailable(err)
 		}
+		subjectIndexed := err == nil
 		recordState := RecordStateUnavailable
 		var current *StrongRef
 		var observedCID string
@@ -142,6 +148,13 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		}
 		if err := tx.SetRemovalDecision(ctx, s.config.InstanceDID, removal.SubjectURI, removal.ID, false); err != nil {
 			return unavailable(err)
+		}
+		// A subject whose indexed row is gone is restricted: its reversal is
+		// not published.
+		if subjectIndexed {
+			if err := s.publishLabel(ctx, tx, removal.SubjectURI, takedownLabelValue, true, action.ID, now); err != nil {
+				return unavailable(err)
+			}
 		}
 		if err := tx.SetSubjectVersion(ctx, removal.SubjectURI, version+1); err != nil {
 			return unavailable(err)

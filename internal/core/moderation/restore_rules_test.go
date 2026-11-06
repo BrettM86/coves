@@ -318,3 +318,52 @@ func TestRestoreContentRetainsReversedRemovalReasonAcrossIdempotentReplay(t *tes
 		})
 	}
 }
+
+// restoreContent reverses content removals only. An account ban or a
+// community removal is an instance ActionRemove on a bare DID subject, which
+// restoreContent must refuse as a client error rather than fail as an outage;
+// unbanAccount and restoreCommunity are the operations that reverse them.
+func TestRestoreContentRefusesAccountAndCommunityRemovals(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		subject string
+		remove  func(*testing.T, moderation.Service) (*moderation.MutationResult, error)
+	}{
+		{name: "account ban", subject: "at://did:plc:bannedaccount", remove: func(t *testing.T, service moderation.Service) (*moderation.MutationResult, error) {
+			return service.BanAccount(t.Context(), accountBanAdminDID, moderation.BanAccountRequest{
+				Subject: "did:plc:bannedaccount", ExpectedVersion: "v0", IdempotencyKey: "ban-before-restore",
+				Reason: accountBanSpam, PrivateNote: "n",
+			})
+		}},
+		{name: "community removal", subject: "at://did:plc:hostedcommunity", remove: func(t *testing.T, service moderation.Service) (*moderation.MutationResult, error) {
+			return service.RemoveCommunity(t.Context(), accountBanAdminDID, moderation.RemoveCommunityRequest{
+				Subject: "did:plc:hostedcommunity", ExpectedVersion: "v0", IdempotencyKey: "community-removal-before-restore",
+				Reason: accountBanSpam, PrivateNote: "n",
+			})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := newInMemoryModerationStore(accountBanClock())
+			service := newAccountBanService(store)
+			removed, err := test.remove(t, service)
+			require.NoError(t, err)
+			require.NotNil(t, removed)
+			require.NotNil(t, removed.Action)
+			require.Equal(t, moderation.ActionRemove, removed.Action.Action)
+			require.Equal(t, test.subject, removed.Action.SubjectURI)
+			require.Empty(t, removed.Action.SubjectCollection)
+			store.writeCalls = nil
+			before := store.state.copy()
+
+			result, err := service.RestoreContent(t.Context(), restoreRulesAdminDID, moderation.RestoreContentRequest{
+				ActionID: removed.Action.ID, ExpectedVersion: removed.State.Version,
+				IdempotencyKey: "restore-content-of-did-subject", Reason: accountBanSpam, PrivateNote: "n",
+			})
+			require.ErrorIs(t, err, moderation.ErrInvalidRequest)
+			assert.NotErrorIs(t, err, moderation.ErrModerationUnavailable, "a refused restore is a client error, not an outage")
+			assert.Nil(t, result)
+			assert.Equal(t, before, store.state, "a refused restore must leave actions, decisions, versions and idempotency records unchanged")
+			assert.Empty(t, store.writeCalls, "a refused restore must not attempt a write")
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"Coves/internal/api/xrpc"
+	"Coves/internal/core/labels"
 	"Coves/internal/core/moderation"
 )
 
@@ -45,7 +46,7 @@ func (h *GetSubjectStateHandler) HandleGetSubjectState(w http.ResponseWriter, r 
 		view.CurrentSubject = &strongRefView{URI: state.CurrentSubject.URI, CID: state.CurrentSubject.CID}
 	}
 	if state.LocalRemoval != nil {
-		view.LocalRemoval = &actionRefView{ServiceDID: state.LocalRemoval.ServiceDID, ActionID: state.LocalRemoval.ActionID}
+		view.LocalRemoval = newLocalRemovalView(*state.LocalRemoval)
 	}
 	for _, label := range state.LocalLabels {
 		view.LocalLabels = append(view.LocalLabels, localLabelView{
@@ -106,6 +107,16 @@ type strongRefView struct {
 type actionRefView struct {
 	ServiceDID string `json:"serviceDid"`
 	ActionID   string `json:"actionId"`
+	// ExpiresAt is a temporary account ban's expiry.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+func newLocalRemovalView(ref moderation.ActionRef) *actionRefView {
+	view := &actionRefView{ServiceDID: ref.ServiceDID, ActionID: ref.ActionID}
+	if ref.ExpiresAt != nil {
+		view.ExpiresAt = ref.ExpiresAt.UTC().Format(labels.CreatedAtLayout)
+	}
+	return view
 }
 
 type localLabelView struct {

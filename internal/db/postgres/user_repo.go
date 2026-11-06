@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"Coves/internal/atproto/embedblobs"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/users"
 	"Coves/internal/validation"
@@ -36,15 +37,58 @@ func NewUserRepository(db *sql.DB) users.UserRepository {
 // a DID that still has a marker, whose content the ingestion gate goes on
 // dropping, exactly as the erasure promised.
 func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
+	source := user.IndexSource
+	if source == "" {
+		source = users.IndexSourceAccount
+	}
 	query := `
-		INSERT INTO users (did, handle, pds_url)
-		VALUES ($1, $2, $3)
-		RETURNING did, handle, pds_url, created_at, updated_at, origin, origin_username, origin_url, origin_software`
+		INSERT INTO users (did, handle, pds_url, index_source)
+		VALUES ($1, $2, $3, $4)
+		RETURNING did, handle, pds_url, created_at, updated_at, origin, origin_username, origin_url, origin_software, index_source`
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start user create transaction: %w", err)
+	}
+	defer tx.Rollback()
+	// The ban subject lock on the DID, taken before any write. Community
+	// indexing (communityRepo.Create) and moderation LockSubject hold it while
+	// they read the DID's account activity, so a users row, or its upgrade to
+	// an account row below, commits either before that read sees it or after
+	// the community or the moderation decision commits. Of the other activity
+	// writers, the firehose post, comment and vote consumers take it too.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(`+communities.BanSubjectLockKeySQL+`)`, user.DID); err != nil {
+		return nil, fmt.Errorf("failed to lock user DID: %w", err)
+	}
+
+	// An account indexing a DID first seen only as an author makes the row an
+	// account row. The upgrade never runs the other way: author hydration of a
+	// DID already indexed as an account leaves the row as it is.
+	if source == users.IndexSourceAccount {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE users SET index_source = 'account'
+			WHERE did = $1 AND index_source = 'author_hydration'
+		`, user.DID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upgrade hydrated author row to an account: %w", err)
+		}
+		upgraded, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read hydrated author upgrade result: %w", err)
+		}
+		if upgraded > 0 {
+			if err := tx.Commit(); err != nil {
+				return nil, fmt.Errorf("failed to commit user create transaction: %w", err)
+			}
+			// The upgrade committed; the sentinel routes the caller into its existing-row read.
+			return nil, users.ErrUserAlreadyExists
+		}
+	}
 
 	var origin, originUsername, originURL, originSoftware sql.NullString
-	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
+	err = tx.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL, source).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&origin, &originUsername, &originURL, &originSoftware)
+			&origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 	if err != nil {
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -57,6 +101,9 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit user create transaction: %w", err)
+	}
 
 	user.Origin, user.OriginUsername, user.OriginURL, user.OriginSoftware =
 		origin.String, originUsername.String, originURL.String, originSoftware.String
@@ -66,12 +113,12 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 // GetByDID retrieves a user by their DID
 func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software, index_source FROM users WHERE did = $1`
 
 	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -93,12 +140,12 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 // GetByHandle retrieves a user by their handle
 func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE handle = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software, index_source FROM users WHERE handle = $1`
 
 	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, handle).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -193,12 +240,12 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		UPDATE users
 		SET handle = $2, updated_at = NOW()
 		WHERE did = $1
-		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software, index_source`
 
 	var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did, newHandle).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
@@ -246,7 +293,7 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 
 	// Build parameterized query with IN clause
 	// Use ANY($1) for PostgreSQL array support with pq.Array() for type conversion
-	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software FROM users WHERE did = ANY($1)`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software, index_source FROM users WHERE did = ANY($1)`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(dids))
 	if err != nil {
@@ -264,7 +311,7 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 		user := &users.User{}
 		var displayName, description, avatarCID, bannerCID, origin, originUsername, originURL, originSoftware sql.NullString
 		err := rows.Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware)
+			&displayName, &description, &avatarCID, &bannerCID, &origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user row: %w", err)
 		}
@@ -308,14 +355,14 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	//
 	// post_count counts VISIBLE posts only: a profile advertising posts no reader
 	// can reach is a side channel onto non-accepted content (docs/POSTS.md §6.2). It runs
-	// THE read-path predicate (visiblePostsJoin) rather than a copy of it — an
-	// earlier revision inlined the rule here, and a reviewer showed three
+	// the read-path admission predicate (admittedPostsPredicate) rather than a copy
+	// of it — an earlier revision inlined the rule here, and a reviewer showed three
 	// mutations of that copy (dropping the collection check, the pinned-CID
 	// equality, or the community half of the join key) that no test could catch,
-	// because a count nobody cross-checks against a feed is unfalsifiable. $2 is
-	// bound to the empty viewer, which is exactly what makes this the PUBLIC
-	// count: the author self-view branches turn on `p.author_did = $2`, and no
-	// DID is "".
+	// because a count nobody cross-checks against a feed is unfalsifiable — plus
+	// visiblePostsPredicate's active-removal exclusion. $2 is bound to the empty
+	// viewer, which is exactly what makes this the PUBLIC count: the author
+	// self-view branches turn on `p.author_did = $2`, and no DID is "".
 	//
 	// comment_count counts exactly what actor.getComments lists
 	// (ListByCommenterWithCursor): the actor's undeleted comments, minus any
@@ -326,11 +373,20 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// comment under a pending or community-removed root is still the actor's own
 	// public speech and is listed and counted. Only instance removals, which hide
 	// the root from everyone, take its comments out of both.
-	visJoin, visWhere := visiblePostsJoin(2)
+	//
+	// Neither count applies the account restriction (accountRestrictedSQL), which
+	// is why post_count does not run visiblePostsPredicate itself: the restricted
+	// account's own profile keeps its real counts, and the user service's
+	// GetProfileForViewer zeroes every other viewer's (suspendedProfile).
+	visJoin, visWhere := admittedPostsPredicate("$2")
 	query := `
 		SELECT
 			(SELECT COUNT(*) FROM posts p` + visJoin + `
-				WHERE p.author_did = $1 AND p.deleted_at IS NULL AND ` + visWhere + `) as post_count,
+				WHERE p.author_did = $1 AND p.deleted_at IS NULL AND ` + visWhere + `
+					AND NOT EXISTS (
+						SELECT 1 FROM moderation_decisions d
+						WHERE d.subject_uri = p.uri AND d.kind = 'removal' AND d.active
+					)) as post_count,
 			(SELECT COUNT(*) FROM comments c
 				WHERE c.commenter_did = $1 AND c.deleted_at IS NULL
 					AND NOT EXISTS (
@@ -338,7 +394,7 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 						WHERE d.subject_uri IN (c.uri, c.root_uri) AND d.kind = 'removal' AND d.active
 					)) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
-			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
+			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1) as membership_count,
 			(SELECT COALESCE(SUM(reputation_score), 0) FROM community_memberships WHERE user_did = $1) as reputation
 	`
 
@@ -760,7 +816,7 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 		UPDATE users
 		SET %s
 		WHERE did = $%d
-		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software`,
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, description, avatar_cid, banner_cid, origin, origin_username, origin_url, origin_software, index_source`,
 		strings.Join(setClauses, ", "), argNum)
 
 	user := &users.User{}
@@ -787,7 +843,7 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 
 	err = tx.QueryRowContext(ctx, query, args...).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
-			&displayNameVal, &descriptionVal, &avatarCIDVal, &bannerCIDVal, &origin, &originUsername, &originURL, &originSoftware)
+			&displayNameVal, &descriptionVal, &avatarCIDVal, &bannerCIDVal, &origin, &originUsername, &originURL, &originSoftware, &user.IndexSource)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound

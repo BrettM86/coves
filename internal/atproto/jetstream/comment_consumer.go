@@ -53,6 +53,16 @@ type CommentEventConsumer struct {
 	// comment's notifications and repoints its upvote groups, all inside the event's
 	// transaction. nil means notifications are neither written nor removed.
 	notifications notifications.Repository
+	// communityRemovals applies community removals held for a newly indexed
+	// comment. nil disables that path.
+	communityRemovals moderation.CommunityCommentRemovalStore
+	// now is the Coves clock read when a comment is classified against the
+	// community ban history.
+	now func() time.Time
+	// accountBanAuthorityDID is the instance whose in-force account bans hide
+	// a comment at index time and suppress its edit fan-out. Empty applies no
+	// account ban.
+	accountBanAuthorityDID string
 	// nil disables blob reference writes.
 	blobReferences blobreferences.Repository
 }
@@ -218,6 +228,7 @@ func NewCommentEventConsumer(
 	c := &CommentEventConsumer{
 		commentRepo: commentRepo,
 		db:          db,
+		now:         time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -353,6 +364,13 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	createEventTime, _ := eventTime(timeUS)
 	if err := c.indexCommentAndUpdateCounts(ctx, comment, commit.Rev, createEventTime); err != nil {
 		return fmt.Errorf("failed to index comment and update counts: %w", err)
+	}
+	// After the index commit, and also on a rev-gated replay, so a failure
+	// here is repaired by redelivery.
+	if c.communityRemovals != nil {
+		if err := c.communityRemovals.ApplyHeldForComment(ctx, uri); err != nil {
+			return fmt.Errorf("applying held community removals of %s: %w", uri, err)
+		}
 	}
 
 	log.Printf("✓ Indexed comment: %s (on %s)", uri, comment.ParentURI)
@@ -577,6 +595,12 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		return nil
 	}
 	if c.notifications != nil {
+		// The ban subject lock, before the comment row (lock order on
+		// lockBanSubjectTx in community_ban_hides.go), so the account-ban check
+		// of the edit fan-out below serializes with a ban or unban of the author.
+		if err := lockBanSubjectTx(ctx, tx, repoDID); err != nil {
+			return err
+		}
 		err = tx.QueryRowContext(ctx,
 			`SELECT COALESCE(content_facets::text, ''), created_at, parent_uri, root_uri
 			 FROM comments WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri,
@@ -621,13 +645,22 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	}
 
 	if c.notifications != nil && !erased {
-		editEventTime, _ := eventTime(timeUS)
-		if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
-			URI: uri, CID: commit.CID, AuthorDID: repoDID,
-			ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
-			EditEventTime: editEventTime,
-		}, facetsJSON, storedFacets); err != nil {
-			return err
+		// An edit by an account under an in-force account ban or a stored
+		// PDS-confirmed status restriction notifies no one, as a comment it
+		// creates while restricted does not.
+		accountRestricted, err := accountRestrictionSuppressesFanoutTx(ctx, tx, repoDID, c.accountBanAuthorityDID, c.now().UTC())
+		if err != nil {
+			return fmt.Errorf("check account restriction before comment edit notifications: %w", err)
+		}
+		if !accountRestricted {
+			editEventTime, _ := eventTime(timeUS)
+			if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
+				URI: uri, CID: commit.CID, AuthorDID: repoDID,
+				ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
+				EditEventTime: editEventTime,
+			}, facetsJSON, storedFacets); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -841,6 +874,15 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		log.Printf("INFO: dropping %s create under a deleted community post root: %s", CommentCollection, comment.URI)
 		return nil
 	}
+	// Ban subject lock, then thread root lock, both before any comment row
+	// (lock order on lockBanSubjectTx in community_ban_hides.go). Held until
+	// commit; the index order classifyIndexedComment draws is drawn under them.
+	if err := lockBanSubjectTx(ctx, tx, comment.CommenterDID); err != nil {
+		return err
+	}
+	if err := lockThreadRootTx(ctx, tx, comment.RootURI); err != nil {
+		return err
+	}
 
 	// 1. Check if comment exists and handle resurrection case
 	// In atProto, deleted records' rkeys become available - users can recreate with same rkey
@@ -921,13 +963,22 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				}
 				// An active re-create is an edit: use the pre-update creation time for
 				// activation, and let edit fan-out suppress the unchanged reply recipient.
+				// Like an edit, it notifies no one while the commenter's account ban is
+				// in force (checked under the ban subject lock taken above) or its
+				// PDS-confirmed status restriction is stored.
 				if c.notifications != nil && !erased {
-					if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
-						URI: comment.URI, CID: comment.CID, AuthorDID: comment.CommenterDID,
-						ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
-						EditEventTime: editEventTime,
-					}, comment.ContentFacets, storedFacets); err != nil {
-						return err
+					accountRestricted, err := accountRestrictionSuppressesFanoutTx(ctx, tx, comment.CommenterDID, c.accountBanAuthorityDID, c.now().UTC())
+					if err != nil {
+						return fmt.Errorf("check account restriction before re-created comment notifications: %w", err)
+					}
+					if !accountRestricted {
+						if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
+							URI: comment.URI, CID: comment.CID, AuthorDID: comment.CommenterDID,
+							ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
+							EditEventTime: editEventTime,
+						}, comment.ContentFacets, storedFacets); err != nil {
+							return err
+						}
 					}
 				}
 				// Parent unchanged and the row was never decounted, so parent counts
@@ -1092,6 +1143,25 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		}
 	}
 
+	// 1.2. Classify the new (or re-created) record against the community ban
+	// history. Only here: a replay or redelivery keeps the recorded value.
+	hideReason, err := c.classifyIndexedComment(ctx, tx, commentID, comment.URI, comment.CommenterDID)
+	if err != nil {
+		return err
+	}
+	// A comment recorded ban-hidden (community or account ban) notifies no one, as if the AppView had
+	// refused the write. A pending comment fans out now; the read path keeps its
+	// notifications hidden until the root arrives and it is classified.
+	skipCreateFanout := erased || hideReason.String == hideReasonCommunityBan || hideReason.String == hideReasonAccountBan
+	// A comment by an account with a stored PDS-confirmed status restriction
+	// also notifies no one; that source records no hide_reason.
+	if !skipCreateFanout {
+		skipCreateFanout, err = accountStatusRestrictedTx(ctx, tx, comment.CommenterDID, c.accountBanAuthorityDID)
+		if err != nil {
+			return err
+		}
+	}
+
 	// 1.5. Reconcile reply_count for this newly inserted comment
 	// In case any replies arrived out-of-order before this parent was indexed
 	// NOTE: Counts include deleted comments since they're shown as "[deleted]" placeholders
@@ -1141,7 +1211,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// Test coverage: TestPostConsumer_CommentCountReconciliation in post_consumer_test.go
 	if isResurrectionWithSameParent {
 		log.Printf("Resurrection with same parent - skipping parent count increment for: %s", comment.URI)
-		if c.notifications != nil && !erased {
+		if c.notifications != nil && !skipCreateFanout {
 			if err := c.writeCommentCreateNotifications(ctx, tx, comment); err != nil {
 				return err
 			}
@@ -1233,7 +1303,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		// Unknown or unsupported parent collection
 		// Comment is still indexed, we just don't update parent counts
 		log.Printf("Comment parent has unsupported collection: %s (comment indexed, parent count not updated)", collection)
-		if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, erased, repairKeptNotifications); err != nil {
+		if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, skipCreateFanout, repairKeptNotifications); err != nil {
 			return err
 		}
 		if commitErr := c.commitCommentWrite(ctx, tx, comment.URI); commitErr != nil {
@@ -1242,7 +1312,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		return nil
 	}
 
-	if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, erased, repairKeptNotifications); err != nil {
+	if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, skipCreateFanout, repairKeptNotifications); err != nil {
 		return err
 	}
 
@@ -1277,11 +1347,12 @@ func (c *CommentEventConsumer) writeCommentEditNotifications(ctx context.Context
 // is touched, the order account erasure also uses, so the repair cannot deadlock
 // with erasure of that recipient.
 //
+// skipFanout (an erased actor or a ban-hidden comment) writes no new rows.
 // With repairKeptRows, the kept rows are repaired before fan-out, whether or not
-// the actor is erased. A mention is removed only after fan-out, and only
+// fan-out is skipped. A mention is removed only after fan-out, and only
 // when the same recipient now holds a reply row for the record, so a recipient
 // whose reply was gated out keeps its mention.
-func (c *CommentEventConsumer) writeCreateNotificationsAfterCounts(ctx context.Context, tx *sql.Tx, comment *comments.Comment, erased, repairKeptRows bool) error {
+func (c *CommentEventConsumer) writeCreateNotificationsAfterCounts(ctx context.Context, tx *sql.Tx, comment *comments.Comment, skipFanout, repairKeptRows bool) error {
 	if c.notifications == nil {
 		return nil
 	}
@@ -1296,7 +1367,7 @@ func (c *CommentEventConsumer) writeCreateNotificationsAfterCounts(ctx context.C
 			return fmt.Errorf("repair resurrected comment notifications: %w", err)
 		}
 	}
-	if !erased {
+	if !skipFanout {
 		if err := c.writeCommentCreateNotifications(ctx, tx, comment); err != nil {
 			return err
 		}

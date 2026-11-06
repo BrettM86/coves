@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/labels"
 	"Coves/internal/core/moderation"
 )
 
@@ -105,6 +106,10 @@ type inMemoryModerationStore struct {
 	// failActiveLabelsAfterLabelDecision fails ActiveLabels reads made after
 	// the transaction has changed a label decision.
 	failActiveLabelsAfterLabelDecision error
+	// accountSubjectFacts are the facts AccountSubjectFacts returns per DID;
+	// a DID with no entry has no account activity and no community row.
+	accountSubjectFacts     map[string]moderation.AccountSubjectFacts
+	failAccountSubjectFacts error
 }
 
 func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
@@ -187,6 +192,8 @@ type inMemoryModerationTransaction struct {
 	store                *inMemoryModerationStore
 	state                *inMemoryModerationState
 	labelDecisionWritten bool
+	// lockedSubjects are the subject URIs LockSubject has locked.
+	lockedSubjects map[string]bool
 }
 
 func (*inMemoryModerationTransaction) LockActor(context.Context, string) error {
@@ -220,9 +227,25 @@ func (transaction *inMemoryModerationTransaction) SaveIdempotencyRecord(_ contex
 }
 
 func (transaction *inMemoryModerationTransaction) LockSubject(_ context.Context, subjectURI string) (int64, error) {
+	if transaction.lockedSubjects == nil {
+		transaction.lockedSubjects = make(map[string]bool)
+	}
+	transaction.lockedSubjects[subjectURI] = true
 	version := transaction.state.versions[subjectURI]
 	transaction.state.versions[subjectURI] = version
 	return version, nil
+}
+
+// AccountSubjectFacts refuses a read made before LockSubject on at://<did>:
+// facts read outside the subject lock are not serialized with first activity.
+func (transaction *inMemoryModerationTransaction) AccountSubjectFacts(_ context.Context, did string) (moderation.AccountSubjectFacts, error) {
+	if !transaction.lockedSubjects["at://"+did] {
+		return moderation.AccountSubjectFacts{}, fmt.Errorf("account subject facts of %s read before LockSubject on at://%s", did, did)
+	}
+	if transaction.store.failAccountSubjectFacts != nil {
+		return moderation.AccountSubjectFacts{}, transaction.store.failAccountSubjectFacts
+	}
+	return transaction.store.accountSubjectFacts[did], nil
 }
 
 func (transaction *inMemoryModerationTransaction) ReadIndexedComment(_ context.Context, subjectURI string) (*moderation.IndexedComment, error) {
@@ -395,6 +418,8 @@ func (transaction *inMemoryModerationTransaction) DeactivateMediaBlocks(_ contex
 	}
 	return nil
 }
+
+func (*inMemoryModerationTransaction) InsertLabel(context.Context, labels.Issue) error { return nil }
 
 var (
 	_ moderation.Store       = (*inMemoryModerationStore)(nil)

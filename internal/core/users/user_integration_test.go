@@ -609,8 +609,8 @@ func TestProfileStats(t *testing.T) {
 
 		// Insert membership with reputation
 		_, err := db.Exec(`
-			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_banned, is_moderator, joined_at, last_active_at)
-			VALUES ($1, $2, 150, 10, false, false, NOW(), NOW())
+			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_moderator, joined_at, last_active_at)
+			VALUES ($1, $2, 150, 10, false, NOW(), NOW())
 		`, testDID, testCommunityDID)
 		if err != nil {
 			t.Fatalf("Failed to insert test membership: %v", err)
@@ -627,22 +627,6 @@ func TestProfileStats(t *testing.T) {
 		if profile.Stats.Reputation != 150 {
 			t.Errorf("Expected reputation 150, got %d", profile.Stats.Reputation)
 		}
-
-		// Test that banned memberships are not counted
-		_, err = db.Exec(`UPDATE community_memberships SET is_banned = true WHERE user_did = $1`, testDID)
-		if err != nil {
-			t.Fatalf("Failed to ban user: %v", err)
-		}
-
-		profile, err = userService.GetProfile(ctx, testDID)
-		if err != nil {
-			t.Fatalf("Failed to get profile: %v", err)
-		}
-
-		if profile.Stats.MembershipCount != 0 {
-			t.Errorf("Expected membershipCount 0 after ban, got %d", profile.Stats.MembershipCount)
-		}
-		// Note: Reputation still counts from banned memberships (this is intentional per lexicon spec)
 	})
 }
 
@@ -1145,8 +1129,8 @@ func TestAccountDeletion_Integration(t *testing.T) {
 
 		// Community membership
 		_, err = db.Exec(`
-			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_banned, is_moderator, joined_at, last_active_at)
-			VALUES ($1, $2, 100, 5, false, false, NOW(), NOW())
+			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_moderator, joined_at, last_active_at)
+			VALUES ($1, $2, 100, 5, false, NOW(), NOW())
 		`, testDID, testCommunityDID)
 		if err != nil {
 			t.Fatalf("Failed to insert membership: %v", err)

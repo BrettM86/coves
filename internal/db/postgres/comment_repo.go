@@ -19,11 +19,14 @@ import (
 
 type postgresCommentRepo struct {
 	db *sql.DB
+	accountRestriction
 }
 
-// NewCommentRepository creates a new PostgreSQL comment repository
-func NewCommentRepository(db *sql.DB) comments.Repository {
-	return &postgresCommentRepo{db: db}
+// NewCommentRepository creates a new PostgreSQL comment repository. Its read
+// paths treat accounts restricted by the WithAccountRestrictionAuthority
+// option's instance as restricted.
+func NewCommentRepository(db *sql.DB, options ...AccountRestrictionOption) comments.Repository {
+	return &postgresCommentRepo{db: db, accountRestriction: newAccountRestriction(options)}
 }
 
 // Create inserts a new comment into the comments table
@@ -160,7 +163,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by, hide_reason,
 			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE uri = $1
@@ -173,7 +176,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 		&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 		&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 		&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-		&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+		&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 		&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 	)
 
@@ -319,7 +322,7 @@ func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, li
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by, hide_reason,
 			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE root_uri = $1
@@ -346,7 +349,7 @@ func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, li
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -373,7 +376,7 @@ func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by, hide_reason,
 			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE parent_uri = $1
@@ -400,7 +403,7 @@ func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -445,7 +448,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by, hide_reason,
 			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE commenter_did = $1 AND deleted_at IS NULL
@@ -472,7 +475,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -494,7 +497,8 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 // Used for user profile comment history (social.coves.actor.getComments)
 // Supports optional community filtering and returns next page cursor
 // Uses chronological ordering (newest first) with composite key cursor for stable pagination
-// Excludes comments removed directly or under a removed root before pagination.
+// Excludes comments removed directly or under a removed root before pagination,
+// except that the author viewing their own activity keeps community-removed comments.
 func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req comments.ListByCommenterRequest) ([]*comments.Comment, *string, error) {
 	// Parse cursor for pagination
 	cursorFilter, cursorValues, err := r.parseCommenterCursor(req.Cursor)
@@ -525,22 +529,36 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 	// predicate is a second thing to forget to update.
 	var communityFilter string
 	var communityValue []interface{}
+	var communityParam, viewerParam int
 	paramOffset := 2 + len(cursorValues) // Start after $1, $2, and any cursor params
-	if req.CommunityDID != nil && *req.CommunityDID != "" {
+	filterByCommunity := req.CommunityDID != nil && *req.CommunityDID != ""
+	if filterByCommunity {
 		paramOffset++
-		communityParam := paramOffset
+		communityParam = paramOffset
 		paramOffset++
-		viewerParam := paramOffset
-
-		visJoin, visWhere := visiblePostsJoin(viewerParam)
+		viewerParam = paramOffset
+		communityValue = append(communityValue, *req.CommunityDID, req.ViewerDID)
+	}
+	// The author keeps their own community-removed comments and comments with a
+	// recorded hide reason (community ban, or a ban check still pending) in their
+	// activity (the comment service attributes a removal); instance removals and
+	// removed roots stay hidden from everyone. A restricted commenter's
+	// comments (accountRestrictedSQL), and comments whose parent chain reaches a
+	// post in a community under an active instance removal
+	// (commentChainCommunitySQL, communityRemovedSQL), are listed only to the
+	// commenter.
+	authorViewerParam := paramOffset + 1
+	authorityParam := paramOffset + 2
+	if filterByCommunity {
+		visJoin, visWhere := visiblePostsJoin(viewerParam, authorityParam)
 		communityFilter = fmt.Sprintf(`AND c.root_uri IN (
 				SELECT p.uri
 				FROM posts p%s
 				WHERE p.community_did = $%d
 					AND p.deleted_at IS NULL
 					AND %s
-			)`, visJoin, communityParam, visWhere)
-		communityValue = append(communityValue, *req.CommunityDID, req.ViewerDID)
+			)
+			AND %s`, visJoin, communityParam, visWhere, commentServedUnderDeclaredRootPredicate(viewerParam))
 	}
 
 	// Build complete query with JOINs and filters
@@ -550,7 +568,7 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
@@ -559,18 +577,26 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			AND c.deleted_at IS NULL
 			AND NOT EXISTS (
 				SELECT 1 FROM moderation_decisions d
-				WHERE d.subject_uri IN (c.uri, c.root_uri) AND d.kind = 'removal' AND d.active
+				WHERE d.kind = 'removal' AND d.active
+					AND (d.subject_uri = c.root_uri
+						OR (d.subject_uri = c.uri AND NOT (d.scope_kind = 'community' AND $%[1]d = c.commenter_did)))
 			)
-			%s
-			%s
+			AND (c.hide_reason IS NULL OR $%[1]d = c.commenter_did)
+			AND %[4]s
+			AND ($%[1]d = c.commenter_did OR NOT %[5]s)
+			%[2]s
+			%[3]s
 		ORDER BY c.created_at DESC, c.uri DESC
 		LIMIT $2
-	`, communityFilter, cursorFilter)
+	`, authorViewerParam, communityFilter, cursorFilter,
+		visibleToViewerUnlessRestrictedSQL("c.commenter_did", fmt.Sprintf("$%d", authorViewerParam), fmt.Sprintf("$%d", authorityParam)),
+		communityRemovedSQL(commentChainCommunitySQL("c"), fmt.Sprintf("$%d", authorityParam)))
 
 	// Prepare query arguments
 	args := []interface{}{req.CommenterDID, req.Limit + 1} // +1 to detect next page
 	args = append(args, cursorValues...)
 	args = append(args, communityValue...)
+	args = append(args, req.ViewerDID, r.authorityDID)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -594,7 +620,7 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 			&authorHandle,
 		)
@@ -755,6 +781,8 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 		}
 	}
 	args = append(args, cursorValues...)
+	args = append(args, r.authorityDID)
+	authorityExpr := fmt.Sprintf("$%d", len(args))
 
 	// Build SELECT clause - compute hot_rank for "hot" sort
 	// Hot rank formula (Lemmy algorithm):
@@ -775,26 +803,29 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			%s as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle
-		FROM comments c`, commentHotRankSQL("c", "$3::timestamptz"))
+			COALESCE(u.handle, c.commenter_did) as author_handle,
+			%s AS commenter_restricted
+		FROM comments c`, commentHotRankSQL("c", "$3::timestamptz"), accountRestrictedSQL("c.commenter_did", authorityExpr))
 	} else {
 		selectClause = `
 		SELECT
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle,
+			` + accountRestrictedSQL("c.commenter_did", authorityExpr) + ` AS commenter_restricted
 		FROM comments c`
 	}
 
 	// Build optional viewer block filter (only when authenticated viewer is present).
-	// The viewer is bound after the rank clock and the cursor values, whichever are present.
+	// The viewer is bound after the rank clock, the cursor values and the
+	// account-ban authority, whichever are present.
 	var viewerFilter string
 	if viewerDID != "" {
 		args = append(args, viewerDID)
@@ -838,9 +869,9 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&hotRank, &authorHandle,
+			&hotRank, &authorHandle, &comment.CommenterRestricted,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1133,6 +1164,47 @@ func (r *postgresCommentRepo) buildCommentCursor(comment *comments.Comment, sort
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
 }
 
+// commentServedUnderDeclaredRootPredicate returns a predicate on comments alias c
+// that is true when c may be served under its declared root_uri to the viewer
+// bound at viewerParam. The root is chosen by the commenter; community-ban
+// classification resolves the community through the parent chain instead (the
+// same resolution as CommunityBanRepository.ContentCommunity). A comment whose
+// chain reaches an indexed post in a different community than its declared
+// root was classified against that other community, so for everyone but its
+// author it is not served under the root. A chain that does not resolve is
+// left to the comment's recorded pending hide reason.
+func commentServedUnderDeclaredRootPredicate(viewerParam int) string {
+	return fmt.Sprintf(`($%d = c.commenter_did OR (
+				SELECT resolved.chain_community IS NULL
+					OR resolved.chain_community IS NOT DISTINCT FROM (
+						SELECT root_post.community_did FROM posts root_post WHERE root_post.uri = c.root_uri
+					)
+				FROM (SELECT %s AS chain_community) resolved
+			))`, viewerParam, commentChainCommunitySQL("c"))
+}
+
+// commentChainCommunitySQL returns a scalar SQL subquery on comments alias
+// commentAlias giving the community_did of the indexed post the comment's
+// parent chain reaches; the commenter-chosen root_uri is not used. It is NULL
+// while any link of the chain is not indexed, or the chain cycles. Same
+// resolution as CommunityBanRepository.ContentCommunity and the comment
+// consumer's ban classification. Each step is one probe of the comments.uri
+// unique index, then one probe of the posts.uri unique index, so a row costs
+// O(thread depth) index lookups. commentAlias must be a fixed SQL alias,
+// never a caller-supplied value.
+func commentChainCommunitySQL(commentAlias string) string {
+	return `(WITH RECURSIVE chain (uri, parent_uri) AS (
+					SELECT ` + commentAlias + `.uri, ` + commentAlias + `.parent_uri
+					UNION
+					SELECT chain_comment.uri, chain_comment.parent_uri
+					FROM comments chain_comment JOIN chain ON chain_comment.uri = chain.parent_uri
+				)
+				SELECT chain_post.community_did
+				FROM chain
+				JOIN posts chain_post ON chain_post.uri = chain.parent_uri
+				WHERE NOT EXISTS (SELECT 1 FROM comments chain_parent WHERE chain_parent.uri = chain.parent_uri))`
+}
+
 // GetByRootAndRkey retrieves a comment within a thread (root post) by its record key
 // Used to resolve the parentRkey parameter of getComments (comment permalinks)
 // Includes deleted comments so a deleted parent still renders as a "[deleted]" placeholder
@@ -1147,11 +1219,12 @@ func (r *postgresCommentRepo) buildCommentCursor(comment *comments.Comment, sort
 // (indexed_at ASC, id ASC) and a warning is logged.
 func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rkey, viewerDID string) (*comments.Comment, error) {
 	// Build optional viewer block filter (only when authenticated viewer is present)
+	// $3 is the viewer DID, "" for an anonymous read, who is never the author;
+	// $4 is the account-ban authority DID.
 	var viewerFilter string
-	args := []interface{}{rootURI, rkey}
+	args := []interface{}{rootURI, rkey, viewerDID, r.authorityDID}
 	if viewerDID != "" {
 		viewerFilter = "AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $3 AND blocked_did = c.commenter_did)"
-		args = append(args, viewerDID)
 	}
 
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet
@@ -1162,16 +1235,18 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			COALESCE(u.handle, c.commenter_did) as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle,
+			%s AS commenter_restricted
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.root_uri = $1 AND c.rkey = $2
+			AND %s
 			%s
 		ORDER BY c.indexed_at ASC, c.id ASC
 		LIMIT 2
-	`, viewerFilter)
+	`, accountRestrictedSQL("c.commenter_did", "$4"), commentServedUnderDeclaredRootPredicate(3), viewerFilter)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1193,9 +1268,9 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&authorHandle,
+			&authorHandle, &comment.CommenterRestricted,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1238,7 +1313,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
@@ -1266,7 +1341,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 			&authorHandle,
 		)
@@ -1332,11 +1407,11 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 	}
 
 	// Build optional viewer block filter (only when authenticated viewer is present)
-	// Parameter index computed dynamically: $1=parentURIs, $2=limitPerParent, $3+=viewer
+	// $1=parentURIs, $2=limitPerParent, $3=the account-ban authority, $4=viewer
 	var viewerFilter string
 	var viewerArgs []interface{}
 	if viewerDID != "" {
-		viewerParamIdx := 3 // after $1=parentURIs and $2=limitPerParent
+		viewerParamIdx := 4 // after $1=parentURIs, $2=limitPerParent and $3=the authority
 		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = c.commenter_did)", viewerParamIdx)
 		viewerArgs = append(viewerArgs, viewerDID)
 	}
@@ -1349,16 +1424,17 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
-			c.hot_rank, COALESCE(u.handle, c.commenter_did) AS author_handle
+			c.hot_rank, COALESCE(u.handle, c.commenter_did) AS author_handle,
+			%s AS commenter_restricted
 		FROM (SELECT DISTINCT unnest($1::text[]) AS uri) AS parent
 		CROSS JOIN LATERAL (
 			SELECT
 				c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 				c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 				c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-				c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+				c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 				c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 				%s AS hot_rank
 			FROM comments c
@@ -1369,9 +1445,9 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		) c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		ORDER BY c.parent_uri, %s
-	`, rankColumn, viewerFilter, innerOrderBy, outerOrderBy)
+	`, accountRestrictedSQL("c.commenter_did", "$3"), rankColumn, viewerFilter, innerOrderBy, outerOrderBy)
 
-	queryArgs := []interface{}{pq.Array(parentURIs), limitPerParent}
+	queryArgs := []interface{}{pq.Array(parentURIs), limitPerParent, r.authorityDID}
 	queryArgs = append(queryArgs, viewerArgs...)
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
@@ -1395,9 +1471,9 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&hotRank, &authorHandle,
+			&hotRank, &authorHandle, &comment.CommenterRestricted,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1424,7 +1500,7 @@ func (r *postgresCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []s
 		return removals, nil
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT subject_uri, authority_did, scope_kind
+		SELECT subject_uri, authority_did, scope_kind, COALESCE(scope_community_did, '')
 		FROM moderation_decisions
 		WHERE subject_uri = ANY($1) AND kind = 'removal' AND active
 		ORDER BY subject_uri, authority_did, scope_kind, scope_community_did
@@ -1436,7 +1512,7 @@ func (r *postgresCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []s
 	for rows.Next() {
 		var uri string
 		var source comments.RemovalSource
-		if err := rows.Scan(&uri, &source.AuthorityDID, &source.ScopeKind); err != nil {
+		if err := rows.Scan(&uri, &source.AuthorityDID, &source.ScopeKind, &source.CommunityDID); err != nil {
 			return nil, fmt.Errorf("scan active comment removal: %w", err)
 		}
 		removals[uri] = append(removals[uri], source)

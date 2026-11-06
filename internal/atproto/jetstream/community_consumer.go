@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -1114,13 +1115,23 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 			community.DescriptionFacets = facetsJSON
 		}
 	}
+	// A trusted bridge's group posts and comments as itself before its
+	// profile arrives, so only a repo whose verified resolved PDS is a
+	// trusted bridge host, and whose verified handle is under that host's
+	// registrable domain, may be indexed despite account activity. The
+	// record's own origin or hostedBy never exempts it. BanAccount applies
+	// the same BridgeTrust.TrustsCommunity rule to the stored handle and PDS.
+	var createOptions []communities.CreateOption
+	if resolved != nil && c.bridgeTrust.TrustsCommunity(profile.Handle, resolved.PDSURL) {
+		createOptions = append(createOptions, communities.AllowAccountActivityForTrustedBridge)
+	}
 
 	// Index in AppView database.
 	//
 	// THE TWO CONFLICTS MEAN OPPOSITE THINGS, and treating them alike is what
 	// turned one handle collision into a flood of unrelated dead letters.
 	// communities.IsConflict matches both, so it is too wide to switch on here.
-	_, err = c.repo.Create(ctx, community)
+	_, err = c.repo.Create(ctx, community, createOptions...)
 	if err != nil {
 		switch {
 		case errors.Is(err, communities.ErrCommunityAlreadyExists):
@@ -1139,6 +1150,14 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 			}
 			log.Printf("Community already indexed: %s (%s)", community.Handle, community.DID)
 			return nil
+
+		case errors.Is(err, communities.ErrDIDHasAccountActivity):
+			// The DID is an account here (a users row, or an authored post,
+			// comment or vote): indexing it as a community too would make its
+			// moderation subject ambiguous. PERMANENT: that history does not
+			// go away on replay.
+			slog.Warn("security: refusing community profile from a DID with account activity", "did", community.DID)
+			return fmt.Errorf("%w: cannot index community %s: %w", ErrPermanentEvent, community.DID, err)
 
 		case errors.Is(err, communities.ErrHandleTaken):
 			// A DIFFERENT DID already holds this handle. Nothing about that is

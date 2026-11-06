@@ -128,7 +128,6 @@ func TestLexiconPublishingRunbookSafety(t *testing.T) {
 	runbook := string(raw)
 
 	heldBackPaths := []string{
-		"moderation/ban.json",
 		"moderation/banUser.json",
 		"moderation/getBanStatus.json",
 		"moderation/listBans.json",

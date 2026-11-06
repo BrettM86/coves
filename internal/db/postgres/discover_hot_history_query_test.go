@@ -69,7 +69,7 @@ func TestQueryDiscoverHotHistory_EligiblePublicCohort(t *testing.T) {
 		require.NoError(t, err)
 		defer tx.Rollback()
 
-		history, err := queryDiscoverHotHistory(ctx, tx, rankingTime)
+		history, err := queryDiscoverHotHistory(ctx, tx, rankingTime, "")
 		require.NoError(t, err)
 		require.NoError(t, tx.Commit())
 		return history

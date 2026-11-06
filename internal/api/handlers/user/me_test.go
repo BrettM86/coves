@@ -34,7 +34,7 @@ func TestHandleMe_Success(t *testing.T) {
 			Reputation:     42,
 		},
 	}
-	mockService.On("GetProfile", mock.Anything, testDID).Return(profile, nil)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(profile, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
@@ -79,7 +79,7 @@ func TestHandleMe_NilStats(t *testing.T) {
 		CreatedAt: time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
 		Stats:     nil,
 	}
-	mockService.On("GetProfile", mock.Anything, testDID).Return(profile, nil)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(profile, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
@@ -118,7 +118,7 @@ func TestHandleMe_Unauthenticated(t *testing.T) {
 	assert.Equal(t, "AuthRequired", errResp["error"])
 	assert.Equal(t, "Authentication required", errResp["message"])
 
-	mockService.AssertNotCalled(t, "GetProfile", mock.Anything, mock.Anything)
+	mockService.AssertNotCalled(t, "GetProfileForViewer", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestHandleMe_UserNotFound(t *testing.T) {
@@ -126,7 +126,7 @@ func TestHandleMe_UserNotFound(t *testing.T) {
 	handler := NewMeHandler(mockService)
 
 	testDID := "did:plc:nonexistent"
-	mockService.On("GetProfile", mock.Anything, testDID).Return(nil, users.ErrUserNotFound)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(nil, users.ErrUserNotFound)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
@@ -146,7 +146,7 @@ func TestHandleMe_InternalError(t *testing.T) {
 	handler := NewMeHandler(mockService)
 
 	testDID := "did:plc:erroruser"
-	mockService.On("GetProfile", mock.Anything, testDID).Return(nil, assert.AnError)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(nil, assert.AnError)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
@@ -166,7 +166,7 @@ func TestHandleMe_Timeout(t *testing.T) {
 	handler := NewMeHandler(mockService)
 
 	testDID := "did:plc:timeoutuser"
-	mockService.On("GetProfile", mock.Anything, testDID).Return(nil, context.DeadlineExceeded)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(nil, context.DeadlineExceeded)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)
@@ -186,7 +186,7 @@ func TestHandleMe_ContextCanceled(t *testing.T) {
 	handler := NewMeHandler(mockService)
 
 	testDID := "did:plc:canceluser"
-	mockService.On("GetProfile", mock.Anything, testDID).Return(nil, context.Canceled)
+	mockService.On("GetProfileForViewer", mock.Anything, testDID, testDID).Return(nil, context.Canceled)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	ctx := middleware.SetTestUserDID(req.Context(), testDID)

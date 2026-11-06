@@ -6,7 +6,7 @@
 
 **Scope:** Coves AppView. When an admin confirms a removal is apparent CSAM, Coves contains the content at the Coves PDS, preserves it outside the database, records a case, and prepares the NCMEC report for an admin to submit.
 
-**Related:** [Moderation](MODERATION.md), [Moderation gaps](PRD_MODERATION_GAPS.md) (G1, G5, D6, D7), [Media](MEDIA.md), [Production backups](PRODUCTION_BACKUPS.md), [Lexicon publishing](LEXICON_PUBLISHING.md), the removed `PRD_CSAM_SCANNING.md` Workstream 4 (`git show 5e419b8^:docs/PRD_CSAM_SCANNING.md`)
+**Related:** [Moderation](MODERATION.md), the moderation-gaps PRD (G1, G5, D6, D7; not in the repo, its built parts are described in [Moderation](MODERATION.md)), [Media](MEDIA.md), [Production backups](PRODUCTION_BACKUPS.md), [Lexicon publishing](LEXICON_PUBLISHING.md), the removed `PRD_CSAM_SCANNING.md` Workstream 4 (`git show 5e419b8^:docs/PRD_CSAM_SCANNING.md`)
 
 ## 1. Summary
 
@@ -24,7 +24,7 @@ An `illegal-content` removal today blocks the image CIDs for every owner, purges
 
 - **D1 (2026-10-19, revised 2026-10-25). A separate CSAM confirmation starts the pipeline.** `illegal-content` covers more than CSAM, and a false NCMEC report or a year of retained user data must not follow from a non-CSAM removal. The admin sets a private flag on the removal; the public reason stays `illegal-content`. The flag can be set on the first removal or later, by calling `removeContent` again on a subject that already has an active `illegal-content` removal (R1). There is no separate confirm endpoint.
 - **D2 (2026-10-19). Steps 1–3 are automatic; step 4 is prepared automatically and submitted by an admin.** No NCMEC API integration (§ 5).
-- **D3 (2026-10-19). Confirmed CSAM takes the author's account down at the Coves PDS.** Recorded in PRD_MODERATION_GAPS as D7. Instance account bans in the AppView stay G5 (gaps D6).
+- **D3 (2026-10-19). Confirmed CSAM takes the author's account down at the Coves PDS.** Recorded in the moderation-gaps PRD as D7. Instance account bans in the AppView are a separate decision (MODERATION.md § Account bans).
 - **D4 (2026-10-19). No new storage infrastructure.** Preservation writes under a dedicated prefix in an existing S3 bucket, never in Postgres or the PDS.
 - **D5 (2026-10-19). Preservation is operator configuration.** Self-hosted Coves servers may have no object storage. Preservation is on when its environment variables are set, like `CLOUDFLARE_CACHE_PURGE_*`, and the other steps run either way.
 - **D6 (2026-10-19, revised 2026-10-25). Restore lifts only the takedowns this case applied.** A CSAM-confirmed removal stays restorable, because restore is the only way to undo a mistaken confirmation. Restore marks the case retracted and lifts a record, blob or account takedown only if this case applied it and no other open case references the same subject. A takedown that was already in place when the case started, including one an operator applied by hand, is never lifted. Any filed report stays, since it cannot be undone.
@@ -66,7 +66,7 @@ An `illegal-content` removal today blocks the image CIDs for every owner, purges
 
 - "Hosted here" means that resolving the DID with the configured identity resolver gives a PDS endpoint equal to `PDS_URL`. It is checked separately for the repo DID and the author DID. `PDS_ADMIN_PASSWORD` and every admin call go only to `PDS_URL`, never to a resolved endpoint.
 - **Record and blobs.** When the repo is hosted here, call `com.atproto.admin.updateSubjectStatus` with `takedown` for the record and for each blob. These target the repo that holds them, which for a legacy post is the community repo.
-- **Account.** When the author is hosted here and is not a community account, take the author's account down. A community account is never taken down. The account takedown blocks login, stops the PDS serving the repo and its blobs, and emits a `#account` `takendown` event to the network. Coves itself ignores that event until G5, so the author's other posts stay visible in Coves.
+- **Account.** When the author is hosted here and is not a community account, take the author's account down. A community account is never taken down. The account takedown blocks login, stops the PDS serving the repo and its blobs, and emits a `#account` `takendown` event to the network. Coves confirms that event with the PDS and then hides the author's other content from other viewers (MODERATION.md § Account status restrictions).
 - **Partial containment.** The record, each blob and the account are separate takedowns, each attempted even if another one failed. A case is contained when every takedown that applies has succeeded.
 - **Already taken down.** A subject that is already taken down records `already-taken-down`. That counts as contained, and the takedown is kept on restore (D6).
 - **Not hosted here.** Content on any other PDS is recorded as not hosted here, and the existing every-owner block and edge purge remain its containment. The report package names the hosting PDS so its operator can be contacted. A Tidepool bridge PDS subject is also recorded as `tidepool-withhold-pending-G1`.
@@ -145,7 +145,7 @@ The test author writes these per requirement before production code.
 - NCMEC CyberTipline API integration.
 - Automatic deletion of PDS bytes or preserved bundles.
 - Tidepool bridged media: depends on G1's withhold and delete endpoint.
-- Hiding the account's other content in Coves: G5.
+- Hiding the account's other content in Coves: built separately, from the `#account` takedown (MODERATION.md § Account status restrictions).
 - Hash matching at upload (CSAM phase 2).
 - IP addresses. The reference PDS does not expose them. Coves logs `client_ip` on XRPC requests (`internal/api/xrpc/decode.go`), but the report package does not collect them.
 

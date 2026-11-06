@@ -50,6 +50,14 @@ type Post struct {
 	BridgedUpvoteCount   int        `json:"bridgedUpvoteCount" db:"bridged_upvote_count"`
 	BridgedDownvoteCount int        `json:"bridgedDownvoteCount" db:"bridged_downvote_count"`
 	BridgedStatsAsOf     *time.Time `json:"bridgedStatsAsOf,omitempty" db:"bridged_stats_as_of"`
+
+	// Set by the batched raw read: the post's community is under an active
+	// instance removal, so post.get serves it to non-authors as notFound.
+	CommunityRemoved bool `json:"-"`
+
+	// Set by the batched raw read: the post's author is account-restricted on
+	// this instance, so post.get serves it to non-authors as notFound.
+	AuthorRestricted bool `json:"-"`
 }
 
 // CreatePostRequest represents input for creating a new post

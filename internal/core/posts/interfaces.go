@@ -113,8 +113,10 @@ type Repository interface {
 	// GetRawIndexedRowsByURIs is the batched GetRawIndexedRow: same ungated raw
 	// rows, one round trip. THE SAME DANGER APPLIES — read the banner above
 	// before calling it. URIs with no indexed row are absent from the map.
-	// Rows also carry community handle/name when available; a missing community
-	// row does not remove an indexed post from the result.
+	// Rows also carry community handle/name when available and whether the
+	// community is under an active instance removal (Post.CommunityRemoved),
+	// and whether the author is account-restricted (Post.AuthorRestricted); a
+	// missing community row does not remove an indexed post from the result.
 	//
 	// It exists because the post.get removal path needs the community and
 	// soft-delete state of every absent URI in a caller-supplied batch, and

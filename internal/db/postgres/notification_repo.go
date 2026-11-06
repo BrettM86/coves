@@ -34,9 +34,13 @@ var ErrNotificationActivationMissing = errors.New("notification activation row i
 type postgresNotificationRepo struct {
 	db                  *sql.DB
 	bridgedUpvoteTotals bool
-	countUnreadSQL      string
-	listSQL             string
-	listUpvotesSQL      string
+	// accountBanAuthorityDID is the instance whose in-force account bans make
+	// referenced content read removedByServerAdmin (accountRestrictedSQL). Empty
+	// restricts no account.
+	accountBanAuthorityDID string
+	countUnreadSQL         string
+	listSQL                string
+	listUpvotesSQL         string
 }
 
 // NotificationRepositoryOption configures NewNotificationRepository.
@@ -47,6 +51,12 @@ type NotificationRepositoryOption func(*postgresNotificationRepo)
 // groups; turning it back on does not restore deleted groups.
 func WithBridgedUpvoteTotals() NotificationRepositoryOption {
 	return func(r *postgresNotificationRepo) { r.bridgedUpvoteTotals = true }
+}
+
+// WithNotificationAccountRestrictionAuthority makes content by an account under
+// an in-force account ban made by instanceDID read removedByServerAdmin.
+func WithNotificationAccountRestrictionAuthority(instanceDID string) NotificationRepositoryOption {
+	return func(r *postgresNotificationRepo) { r.accountBanAuthorityDID = instanceDID }
 }
 
 // NewNotificationRepository returns the Postgres notifications repository.
@@ -120,7 +130,7 @@ func (r *postgresNotificationRepo) ErasureGateTx(ctx context.Context, tx *sql.Tx
 }
 
 func (r *postgresNotificationRepo) LookupsTx(tx *sql.Tx) notifications.Lookups {
-	return notificationLookups{tx: tx, indexTime: new(time.Time)}
+	return notificationLookups{tx: tx, indexTime: new(time.Time), authorityDID: r.accountBanAuthorityDID}
 }
 
 // ReplaceUpvoteGroupRootTx repoints recipientDID's upvote group on subjectURI
@@ -385,6 +395,9 @@ type notificationLookups struct {
 	// trip. LookupsTx always allocates it; the zero value means neither
 	// ActivatedAt nor IndexTime has read it yet.
 	indexTime *time.Time
+	// authorityDID is the instance whose community removals withdraw a
+	// reference (ReferenceStates); empty withdraws none.
+	authorityDID string
 }
 
 func (l notificationLookups) LegacyPostAuthor(ctx context.Context, postURI string) (string, bool, error) {
@@ -508,7 +521,9 @@ var (
 const qualifyingUpvoteReservedAliasPrefix = "qualifying_upvote_"
 
 // qualifyingUpvoteSQL is the condition under which the votes row aliased
-// voteAlias is a live qualifying upvote on subjectExpr for recipientExpr.
+// voteAlias is a live qualifying upvote on subjectExpr for recipientExpr. A
+// vote with a hide_reason (hidden by a community ban, or still pending that
+// check) is not in the subject's tallies and never qualifies.
 //
 // The arguments are spliced into SQL, so they are constants, never values.
 // voteAlias is a lowercase identifier. subjectExpr and recipientExpr are each a
@@ -531,6 +546,7 @@ func qualifyingUpvoteSQL(voteAlias, subjectExpr, recipientExpr string) string {
 	requireQualifyingUpvoteOuterExpression("recipient", recipientExpr, voteAlias)
 	return fmt.Sprintf(`(%[1]s.subject_uri = %[2]s
 		AND %[1]s.deleted_at IS NULL
+		AND %[1]s.hide_reason IS NULL
 		AND %[1]s.direction = 'up'
 		AND %[1]s.voter_did <> %[3]s
 		AND NOT EXISTS (SELECT 1 FROM deleted_accounts qualifying_upvote_erasure
@@ -624,7 +640,7 @@ var _ notifications.RetentionSweeper = (*postgresNotificationRepo)(nil)
 // states only, so a row hidden by a block, a disabled preference or the upvote
 // alive rule is kept; placeholders (deleted, removed) never read hidden.
 var sweepHiddenReferenceNotificationsSQL = func() string {
-	visibility := notificationVisibility(false)
+	visibility := notificationVisibility(false, "$3::text")
 	return `DELETE FROM notifications WHERE id IN (
 		SELECT n.id FROM notifications n` + visibility.joins + `
 		WHERE n.sort_at < now() - ($1::bigint * INTERVAL '1 hour')
@@ -642,7 +658,7 @@ var sweepHiddenReferenceNotificationsSQL = func() string {
 // RetentionBatchSize.
 func (r *postgresNotificationRepo) SweepHiddenReferenceNotifications(ctx context.Context) (int64, error) {
 	return r.sweepNotificationDelete(ctx, sweepHiddenReferenceNotificationsSQL,
-		int64(notifications.RetentionHiddenReferenceWindow/time.Hour), notifications.RetentionBatchSize)
+		int64(notifications.RetentionHiddenReferenceWindow/time.Hour), notifications.RetentionBatchSize, r.accountBanAuthorityDID)
 }
 
 // SweepEmptyUpvoteGroups locks empty candidates, then re-checks eligibility in
@@ -709,7 +725,15 @@ func (r *postgresNotificationRepo) SweepEmptyUpvoteGroups(ctx context.Context) (
 // RemovedByServerAdmin under an active instance removal, else
 // RemovedByModerator; a deleted row stays Deleted; otherwise any active
 // instance removal is RemovedByServerAdmin and community-scope-only removals are
-// RemovedByModerator. Label decisions and inactive removals add nothing.
+// RemovedByModerator. A post in a community under an active instance removal
+// by l.authorityDID (communityRemovedSQL), or a comment whose parent chain
+// reaches a post in one (commentChainCommunitySQL), is RemovedByServerAdmin,
+// also over its own community's removal. A live comment recorded hidden at
+// index time withdraws like a removal: hide_reason 'account_ban' as
+// RemovedByServerAdmin, 'community_ban' as RemovedByModerator unless an
+// instance removal or removed community makes it RemovedByServerAdmin. A
+// comment still pending its ban check is not withdrawn, so it fans out.
+// Label decisions and inactive removals add nothing.
 func (l notificationLookups) ReferenceStates(ctx context.Context, uris []string) (map[string]notifications.ReferenceState, error) {
 	states := make(map[string]notifications.ReferenceState)
 	if len(uris) == 0 {
@@ -722,11 +746,15 @@ func (l notificationLookups) ReferenceStates(ctx context.Context, uris []string)
 			WHERE d.subject_uri = ANY($1::text[]) AND d.kind = 'removal' AND d.active
 			GROUP BY d.subject_uri
 		), indexed AS (
-			SELECT c.uri, c.deleted_at IS NOT NULL AS deleted, false AS community_removed
+			SELECT c.uri, c.deleted_at IS NOT NULL AS deleted, false AS community_removed,
+				`+communityRemovedSQL(commentChainCommunitySQL("c"), "$7::text")+` AS in_removed_community,
+				c.hide_reason
 			FROM comments c
 			WHERE c.uri = ANY($1::text[])
 			UNION ALL
-			SELECT p.uri, p.deleted_at IS NOT NULL, COALESCE(a.status = 'removed', false)
+			SELECT p.uri, p.deleted_at IS NOT NULL, COALESCE(a.status = 'removed', false),
+				`+communityRemovedSQL("p.community_did", "$7::text")+`,
+				NULL::text
 			FROM posts p
 			LEFT JOIN community_post_admissions a
 				ON a.community_did = p.community_did AND a.post_uri = p.uri
@@ -734,10 +762,10 @@ func (l notificationLookups) ReferenceStates(ctx context.Context, uris []string)
 		)
 		SELECT uri, state FROM (
 			SELECT requested.uri, CASE
-				WHEN i.community_removed THEN CASE WHEN r.by_instance THEN $4::int ELSE $3::int END
+				WHEN i.community_removed THEN CASE WHEN r.by_instance OR i.in_removed_community THEN $4::int ELSE $3::int END
 				WHEN i.deleted THEN $2::int
-				WHEN r.by_instance THEN $4::int
-				WHEN r.uri IS NOT NULL THEN $3::int
+				WHEN r.by_instance OR i.in_removed_community OR i.hide_reason = '`+commentHideReasonAccountBan+`' THEN $4::int
+				WHEN r.uri IS NOT NULL OR i.hide_reason = '`+commentHideReasonCommunityBan+`' THEN $3::int
 				WHEN i.uri IS NULL AND split_part(requested.uri, '/', 4) = ANY($6::text[]) THEN $5::int
 			END AS state
 			FROM (SELECT DISTINCT unnest($1::text[]) AS uri) requested
@@ -747,7 +775,7 @@ func (l notificationLookups) ReferenceStates(ctx context.Context, uris []string)
 		WHERE state IS NOT NULL`,
 		pq.Array(uris), int(notifications.ReferenceDeleted), int(notifications.ReferenceRemovedByModerator),
 		int(notifications.ReferenceRemovedByServerAdmin), int(notifications.ReferenceUnindexed),
-		pq.Array([]string{posts.PostV2Collection, posts.LegacyPostCollection, "social.coves.community.comment"}))
+		pq.Array([]string{posts.PostV2Collection, posts.LegacyPostCollection, "social.coves.community.comment"}), l.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("query notification reference states: %w", err)
 	}

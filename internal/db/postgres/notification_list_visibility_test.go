@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"Coves/internal/core/posts"
+	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/require"
@@ -365,7 +366,7 @@ func TestNotificationList_RecipientSortIndexWithMostlyBlocked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var raw []byte
 			require.NoError(t, f.db.QueryRowContext(context.Background(), "EXPLAIN (FORMAT JSON) "+listNotificationsSQL,
-				f.recipient, tc.sortAt, tc.id, 51).Scan(&raw))
+				f.recipient, tc.sortAt, tc.id, 51, fixtures.InstanceDID()).Scan(&raw))
 			var plans []struct {
 				Plan map[string]any `json:"Plan"`
 			}

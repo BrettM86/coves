@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/accountbans"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -866,4 +867,102 @@ func TestEngine_PassesTheSubjectToThePolicyUnchanged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, engineCommunityDID, h.decider.lastCommunityDID)
 	assert.Equal(t, enginePostURI, h.decider.lastPostURI)
+}
+
+func TestEngine_AccountBanDefersUntilTheBanEnds(t *testing.T) {
+	t.Parallel()
+
+	// An instance account ban ends by being lifted or by lapsing at its expiry,
+	// with no further action. The engine's verdicts are terminal — a rejection on
+	// a pending row, a signed community removal on a pending_reacceptance row —
+	// so a banned author's post must be deferred, and decided normally once the
+	// ban is no longer in force. The real decider runs here so the account-ban
+	// read is the actual policy, not a scripted code.
+	for _, status := range []AdmissionStatus{
+		AdmissionStatusPending,
+		AdmissionStatusPendingReacceptance,
+	} {
+		for _, ending := range []string{"lifted", "lapsed"} {
+			t.Run(string(status)+"/"+ending, func(t *testing.T) {
+				t.Parallel()
+
+				policy := newDeciderHarness()
+				policy.communities.community.DID = engineCommunityDID
+				banExpiresAt := policy.now.Add(24 * time.Hour)
+				policy.accountBans.bans = map[string]*accountbans.Ban{
+					deciderAuthorDID: {ActionID: "action-ban", Reason: "social.coves.moderation.defs#reasonSpam", ExpiresAt: &banExpiresAt},
+				}
+
+				h := newEngineHarness(status, cidPtr(engineIndexedCID))
+				h.engine = NewAcceptanceEngine(h.admissions, policy.decider(), h.writer, h.refresher)
+
+				outcome, err := h.process(t)
+				assert.Equal(t, EngineDeferred, outcome, "a ban in force must defer, never decide")
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrAuthorAccountBanned)
+				assertWroteNothing(t, h.rec)
+				assert.Empty(t, h.writer.removalCmds, "an account ban must not produce a community removal")
+				assert.Empty(t, h.admissions.rejectionCmds, "an account ban must not produce a rejection")
+				assert.Equal(t, status, h.admissions.row.Status)
+
+				switch ending {
+				case "lifted":
+					policy.accountBans.bans = nil
+				case "lapsed":
+					policy.advance(24 * time.Hour)
+				}
+				h.rec.calls = nil
+
+				outcome, err = h.process(t)
+				require.NoError(t, err)
+				assert.Equal(t, EngineAccepted, outcome, "once the ban has ended the post is decided normally")
+				// The real decider does not write to the shared call log.
+				assert.Equal(t, []string{"Get", "WriteAcceptance", "ApplyAcceptance"}, h.rec.calls)
+			})
+		}
+	}
+}
+
+func TestEngine_CommunityRemovalDefersUntilTheCommunityIsRestored(t *testing.T) {
+	t.Parallel()
+
+	// restoreCommunity reverses a community removal. The engine's verdicts are
+	// terminal — a rejection on a pending row, a signed community removal on a
+	// pending_reacceptance row — so a post in a removed community must be
+	// deferred, and decided normally once the community is restored. The real
+	// decider runs here so the community-removed read is the actual policy, not
+	// a scripted code.
+	for _, status := range []AdmissionStatus{
+		AdmissionStatusPending,
+		AdmissionStatusPendingReacceptance,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+
+			policy := newDeciderHarness()
+			policy.communities.community.DID = engineCommunityDID
+			policy.communities.community.Status = "removed"
+
+			h := newEngineHarness(status, cidPtr(engineIndexedCID))
+			h.engine = NewAcceptanceEngine(h.admissions, policy.decider(), h.writer, h.refresher)
+
+			outcome, err := h.process(t)
+			assert.Equal(t, EngineDeferred, outcome, "a removed community must defer, never decide")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrCommunityRemovedDeferred)
+			assertWroteNothing(t, h.rec)
+			assert.Empty(t, h.writer.removalCmds, "a community removal must not produce a signed post removal")
+			assert.Empty(t, h.admissions.rejectionCmds, "a community removal must not produce a rejection")
+			assert.Equal(t, status, h.admissions.row.Status)
+
+			policy.communities.community.Status = ""
+			h.rec.calls = nil
+
+			outcome, err = h.process(t)
+			require.NoError(t, err)
+			assert.Equal(t, EngineAccepted, outcome, "once the community is restored the post is decided normally")
+			// The real decider does not write to the shared call log.
+			assert.Equal(t, []string{"Get", "WriteAcceptance", "ApplyAcceptance"}, h.rec.calls)
+		})
+	}
 }

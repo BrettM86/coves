@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"Coves/internal/atproto/embedblobs"
@@ -28,31 +29,55 @@ import (
 // it runs the same predicate the feed runs. See visiblePostCountSubquery.
 //
 // Two spellings only because the queries differ in whether `communities` carries
-// an alias. Both come from the one predicate builder.
-var (
-	communityPostCountUnqualified = visiblePostCountSubquery("communities.did")
-	communityPostCountAliasedC    = visiblePostCountSubquery("c.did")
-)
+// an alias. Both come from the one predicate builder. authorityParam is the
+// query's bind parameter for the repository's account-ban authority DID.
+func communityPostCountUnqualified(authorityParam int) string {
+	return visiblePostCountSubquery("communities.did", fmt.Sprintf("$%d", authorityParam))
+}
+
+func communityPostCountAliasedC(authorityParam int) string {
+	return visiblePostCountSubquery("c.did", fmt.Sprintf("$%d", authorityParam))
+}
 
 type postgresCommunityRepo struct {
 	db     *sql.DB
 	cipher *credentialcipher.Cipher
+	accountRestriction
 }
 
 func communityProfileSubjectURI(did string) string {
 	return "at://" + did + "/social.coves.community.profile/self"
 }
 
-// NewCommunityRepository creates a new PostgreSQL community repository
-func NewCommunityRepository(db *sql.DB, cipher *credentialcipher.Cipher) communities.Repository {
+// NewCommunityRepository creates a new PostgreSQL community repository. The
+// served postCount leaves out the posts of accounts restricted by the
+// WithAccountRestrictionAuthority option's instance.
+func NewCommunityRepository(db *sql.DB, cipher *credentialcipher.Cipher, options ...AccountRestrictionOption) communities.Repository {
 	if cipher == nil {
 		panic("NewCommunityRepository: credential cipher is required")
 	}
-	return &postgresCommunityRepo{db: db, cipher: cipher}
+	return &postgresCommunityRepo{db: db, cipher: cipher, accountRestriction: newAccountRestriction(options)}
+}
+
+// accountActivitySQL is the SQL boolean "the DID didExpr has account activity":
+// an account-sourced users row, or an authored post, comment or vote.
+// communityRepo.Create refuses a new community on it and AccountSubjectFacts
+// reports it, so a ban and a community index always agree on what an account is.
+//
+// A users row with index_source 'author_hydration' does not count. Such a row
+// is only ever written after the DID authored a post, and that post counts on
+// its own. The row outlives the post, though: when a community is deleted its
+// posts cascade away, and counting the leftover hydrated author row would then
+// refuse the deleted community's re-creation as an account.
+func accountActivitySQL(didExpr string) string {
+	return `(EXISTS (SELECT 1 FROM users WHERE did = ` + didExpr + ` AND index_source = 'account')
+	     OR EXISTS (SELECT 1 FROM posts WHERE author_did = ` + didExpr + `)
+	     OR EXISTS (SELECT 1 FROM comments WHERE commenter_did = ` + didExpr + `)
+	     OR EXISTS (SELECT 1 FROM votes WHERE voter_did = ` + didExpr + `))`
 }
 
 // Create inserts a new community into the communities table
-func (r *postgresCommunityRepo) Create(ctx context.Context, community *communities.Community) (*communities.Community, error) {
+func (r *postgresCommunityRepo) Create(ctx context.Context, community *communities.Community, options ...communities.CreateOption) (*communities.Community, error) {
 	// Validate that handle is always provided (constructed by consumer)
 	if community.Handle == "" {
 		return nil, fmt.Errorf("handle is required (should be constructed by consumer before insert)")
@@ -84,6 +109,30 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		return nil, fmt.Errorf("failed to start community create transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// The ban subject lock on the DID, which user creation and the firehose
+	// post, comment and vote consumers hold while they write the DID's account
+	// activity: such a users row or authored record commits either before the
+	// check below sees it or after this community commits. cmd/reindex-votes and
+	// the repository-level post, comment and vote Create methods do not take it.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(`+communities.BanSubjectLockKeySQL+`)`, community.DID); err != nil {
+		return nil, fmt.Errorf("failed to lock community DID: %w", err)
+	}
+	// A DID with account activity is an account: indexing it as a community
+	// as well would make its moderation subject ambiguous. Only a trusted
+	// bridge's community, whose posts and author row can precede its profile,
+	// is exempt. An existing community skips the check and is refused as a
+	// duplicate below.
+	if !slices.Contains(options, communities.AllowAccountActivityForTrustedBridge) {
+		var hasAccountActivity bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT NOT EXISTS (SELECT 1 FROM communities WHERE did = $1)
+			   AND `+accountActivitySQL("$1"), community.DID).Scan(&hasAccountActivity); err != nil {
+			return nil, fmt.Errorf("failed to check community DID for account activity: %w", err)
+		}
+		if hasAccountActivity {
+			return nil, communities.ErrDIDHasAccountActivity
+		}
+	}
 
 	query := `
 		INSERT INTO communities (
@@ -187,10 +236,11 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 			pds_access_token_encrypted, pds_refresh_token_encrypted,
 			pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified(2) + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, origin,
-			COALESCE(origin_url, ''), COALESCE(origin_software, '')
+			COALESCE(origin_url, ''), COALESCE(origin_software, ''),
+			` + communityRemovedSQL("did", "$2") + ` AS removed
 		FROM communities
 		WHERE did = $1`
 
@@ -200,8 +250,9 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	var pdsPasswordCiphertext, pdsAccessTokenCiphertext, pdsRefreshTokenCiphertext []byte
 	var descFacets []byte
 	var contentWarnings []string
+	var removed bool
 
-	err := r.db.QueryRowContext(ctx, query, did).Scan(
+	err := r.db.QueryRowContext(ctx, query, did, r.authorityDID).Scan(
 		&community.ID, &community.DID, &community.Handle, &community.Name,
 		&displayName, &description, &descFacets,
 		&avatarCID, &bannerCID,
@@ -213,7 +264,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&federatedFrom, &federatedID,
 		&community.CreatedAt, &community.UpdatedAt,
 		&recordURI, &recordCID, &origin,
-		&community.OriginURL, &community.OriginSoftware,
+		&community.OriginURL, &community.OriginSoftware, &removed,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -256,6 +307,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	community.RecordURI = recordURI.String
 	community.RecordCID = recordCID.String
 	community.Origin = origin.String
+	community.Status = communityStatus(removed)
 	if descFacets != nil {
 		community.DescriptionFacets = descFacets
 	}
@@ -328,10 +380,11 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified(2) + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, origin,
-			COALESCE(origin_url, ''), COALESCE(origin_software, '')
+			COALESCE(origin_url, ''), COALESCE(origin_software, ''),
+			` + communityRemovedSQL("did", "$2") + ` AS removed
 		FROM communities
 		WHERE handle = $1`
 
@@ -339,8 +392,9 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 	var federatedFrom, federatedID, recordURI, recordCID, origin sql.NullString
 	var descFacets []byte
 	var contentWarnings []string
+	var removed bool
 
-	err := r.db.QueryRowContext(ctx, query, handle).Scan(
+	err := r.db.QueryRowContext(ctx, query, handle, r.authorityDID).Scan(
 		&community.ID, &community.DID, &community.Handle, &community.Name,
 		&displayName, &description, &descFacets,
 		&avatarCID, &bannerCID,
@@ -351,7 +405,7 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 		&federatedFrom, &federatedID,
 		&community.CreatedAt, &community.UpdatedAt,
 		&recordURI, &recordCID, &origin,
-		&community.OriginURL, &community.OriginSoftware,
+		&community.OriginURL, &community.OriginSoftware, &removed,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -373,6 +427,7 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 	community.RecordURI = recordURI.String
 	community.RecordCID = recordCID.String
 	community.Origin = origin.String
+	community.Status = communityStatus(removed)
 	if descFacets != nil {
 		community.DescriptionFacets = descFacets
 	}
@@ -393,15 +448,16 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified(3) + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, origin,
-			COALESCE(origin_url, ''), COALESCE(origin_software, '')
+			COALESCE(origin_url, ''), COALESCE(origin_software, ''),
+			` + communityRemovedSQL("did", "$3") + ` AS removed
 		FROM communities
 		WHERE lower(name) = lower($1) AND origin = $2
 		LIMIT 2`
 
-	rows, err := r.db.QueryContext(ctx, query, name, origin)
+	rows, err := r.db.QueryContext(ctx, query, name, origin, r.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get community by name and origin: %w", err)
 	}
@@ -414,6 +470,7 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 		var federatedFrom, federatedID, recordURI, recordCID, rowOrigin sql.NullString
 		var descFacets []byte
 		var contentWarnings []string
+		var removed bool
 
 		if err := rows.Scan(
 			&community.ID, &community.DID, &community.Handle, &community.Name,
@@ -426,7 +483,7 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
 			&recordURI, &recordCID, &rowOrigin,
-			&community.OriginURL, &community.OriginSoftware,
+			&community.OriginURL, &community.OriginSoftware, &removed,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan community by name and origin: %w", err)
 		}
@@ -442,6 +499,7 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 		community.RecordURI = recordURI.String
 		community.RecordCID = recordCID.String
 		community.Origin = rowOrigin.String
+		community.Status = communityStatus(removed)
 		if descFacets != nil {
 			community.DescriptionFacets = descFacets
 		}
@@ -743,6 +801,11 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		argCount++
 	}
 
+	// A removed community is not listed.
+	whereClauses = append(whereClauses, "NOT "+communityRemovedSQL("c.did", fmt.Sprintf("$%d", argCount)))
+	args = append(args, r.authorityDID)
+	argCount++
+
 	// TODO: Add category filter when DB schema supports it
 	// if req.Category != "" { ... }
 
@@ -792,7 +855,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		SELECT c.id, c.did, c.handle, c.name, c.display_name, c.description, c.description_facets,
 			c.avatar_cid, c.banner_cid, c.owner_did, c.created_by_did, c.hosted_by_did,
 			c.visibility, c.allow_external_discovery, c.moderation_type, c.content_warnings,
-			c.member_count, c.subscriber_count, `+communityPostCountAliasedC+` AS post_count,
+			c.member_count, c.subscriber_count, `+communityPostCountAliasedC(argCount+2)+` AS post_count,
 			c.federated_from, c.federated_id, c.created_at, c.updated_at,
 			c.record_uri, c.record_cid, c.pds_url, c.origin,
 			COALESCE(c.origin_url, ''), COALESCE(c.origin_software, '')
@@ -803,7 +866,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		LIMIT $%d OFFSET $%d`,
 		joinClause, whereClause, sortColumn, sortOrder, argCount, argCount+1)
 
-	args = append(args, req.Limit, req.Offset)
+	args = append(args, req.Limit, req.Offset, r.authorityDID)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -882,6 +945,11 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		argCount++
 	}
 
+	// A removed community is neither a result nor counted in the total.
+	whereClauses = append(whereClauses, "NOT "+communityRemovedSQL("did", fmt.Sprintf("$%d", argCount)))
+	args = append(args, r.authorityDID)
+	argCount++
+
 	whereClause := "WHERE " + strings.Join(whereClauses, " AND ")
 
 	// Get total count
@@ -905,7 +973,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, `+communityPostCountUnqualified+` AS post_count,
+			member_count, subscriber_count, `+communityPostCountUnqualified(argCount+2)+` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, pds_url, origin,
 			COALESCE(origin_url, ''), COALESCE(origin_software, ''),
@@ -916,7 +984,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		LIMIT $%d OFFSET $%d`,
 		whereClause, argCount, argCount+1)
 
-	args = append(args, req.Limit, req.Offset)
+	args = append(args, req.Limit, req.Offset, r.authorityDID)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

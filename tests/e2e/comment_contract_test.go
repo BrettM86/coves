@@ -133,7 +133,14 @@ type commentView struct {
 	Record     map[string]any `json:"record"`
 	Embed      map[string]any `json:"embed"`
 	Moderation *struct {
-		State string `json:"state"`
+		State   string `json:"state"`
+		Sources []struct {
+			AuthorityDID string `json:"authorityDid"`
+			Scope        struct {
+				Kind         string `json:"kind"`
+				CommunityDID string `json:"communityDid"`
+			} `json:"scope"`
+		} `json:"sources"`
 	} `json:"moderation"`
 	Post           *strongRef   `json:"post"`
 	Parent         *strongRef   `json:"parent"`

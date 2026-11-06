@@ -22,6 +22,12 @@ var publicReasonRefs = []string{
 	"social.coves.moderation.defs#reasonModeratorDiscretion",
 }
 
+// actionReasonRefs is the vocabulary a recorded action may carry: the six
+// moderator-choosable reasons plus the system-only reasonSubjectMoved.
+var actionReasonRefs = append(append([]string{}, publicReasonRefs...),
+	"social.coves.moderation.defs#reasonSubjectMoved",
+)
+
 type moderationPropertyExpectation struct {
 	schemaType    string
 	reference     string
@@ -63,6 +69,7 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 			properties: map[string]moderationPropertyExpectation{
 				"serviceDid": formattedString("did"),
 				"actionId":   opaqueString,
+				"expiresAt":  formattedString("datetime"),
 			},
 		},
 		"scopeView": {
@@ -97,12 +104,13 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 				"createdAt":       formattedString("datetime"),
 				"origin":          stringProperty(64, "local", "inherited"),
 				"subject":         reference("#subjectRef"),
-				"reason":          reference("#reasonType"),
+				"reason":          reference("#actionReasonType"),
 				"labelValue":      {schemaType: "string", minLength: 1, maxLength: 128, knownValues: []string{"nsfw"}},
 				"actor":           reference("#actorRef"),
 				"reverses":        reference("#actionRef"),
 				"issuedAt":        formattedString("datetime"),
 				"contentSnapshot": reference("#contentSnapshot"),
+				"expiresAt":       formattedString("datetime"),
 			},
 		},
 		"adminActionView": {
@@ -130,7 +138,7 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 				"authorityDid": formattedString("did"),
 				"scope":        reference("#scopeView"),
 				"action":       reference("#actionRef"),
-				"reason":       reference("#reasonType"),
+				"reason":       reference("#actionReasonType"),
 				"label":        reference("com.atproto.label.defs#label"),
 			},
 		},
@@ -282,20 +290,30 @@ func TestLexiconModerationDefinitionShapes(t *testing.T) {
 }
 
 // TestLexiconModerationReasonTypes keeps public reasons extensible and pins the
-// vocabulary to exactly the six public tokens: there is no separate CSAM
-// classification, so CSAM removals are recorded as reasonIllegalContent.
+// request vocabulary to exactly the six moderator-choosable tokens: there is no
+// separate CSAM classification, so CSAM removals are recorded as
+// reasonIllegalContent. The system-only reasonSubjectMoved appears only in
+// actionReasonType, which recorded actions use.
 func TestLexiconModerationReasonTypes(t *testing.T) {
 	doc := readLexiconJSON(t, moderationDefsPath)
-	reasonType := definitionMap(t, doc, "reasonType")
-	assert.Equal(t, "string", reasonType["type"], "reasonType must be represented as a token-ref string")
-	assert.Equal(t, float64(640), reasonType["maxLength"], "reasonType must allow fully-qualified token refs")
-	assert.NotContains(t, reasonType, "format", "fragment-bearing token refs are not NSIDs")
-	knownValues := asStrings(t, reasonType["knownValues"], "reasonType knownValues")
-	assert.ElementsMatch(t, publicReasonRefs, knownValues, "reasonType must list exactly the six public reason tokens")
+	for name, expectedValues := range map[string][]string{
+		"reasonType":       publicReasonRefs,
+		"actionReasonType": actionReasonRefs,
+	} {
+		t.Run(name, func(t *testing.T) {
+			definition := definitionMap(t, doc, name)
+			assert.Equal(t, "string", definition["type"], "%s must be represented as a token-ref string", name)
+			assert.Equal(t, float64(640), definition["maxLength"], "%s must allow fully-qualified token refs", name)
+			assert.NotContains(t, definition, "format", "fragment-bearing token refs are not NSIDs")
+			knownValues := asStrings(t, definition["knownValues"], name+" knownValues")
+			assert.ElementsMatch(t, expectedValues, knownValues, "%s must list exactly its reason tokens", name)
+		})
+	}
 }
 
 // TestLexiconModerationReasonTokens requires every reason reference to resolve
-// to a documented token and rejects any token outside the public six.
+// to a documented token and rejects any token outside the public six and the
+// system reasonSubjectMoved.
 func TestLexiconModerationReasonTokens(t *testing.T) {
 	doc := readLexiconJSON(t, moderationDefsPath)
 	tokens := []string{
@@ -305,6 +323,7 @@ func TestLexiconModerationReasonTokens(t *testing.T) {
 		"reasonIllegalContent",
 		"reasonRuleViolation",
 		"reasonModeratorDiscretion",
+		"reasonSubjectMoved",
 	}
 	for _, name := range tokens {
 		t.Run(name, func(t *testing.T) {

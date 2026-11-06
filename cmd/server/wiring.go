@@ -15,6 +15,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/config"
+	"Coves/internal/core/accountbans"
 	"Coves/internal/core/adminreports"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobreferences"
@@ -27,6 +28,7 @@ import (
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/labels"
 	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/notifications"
@@ -105,6 +107,10 @@ type application struct {
 	// allowlist instanceAdminAuth checks, shared with the read paths that
 	// hydrate viewer.moderation and with getViewerAuthority.
 	moderationAuthority moderation.Authority
+	// accountBans reads this instance's account bans for the read paths that
+	// show a banned account's profile as suspended and its ban notice
+	// (actor.getProfile, getViewerAuthority). nil serves no notice.
+	accountBans accountbans.Reader
 
 	// Repositories reused outside their own service (Jetstream consumers,
 	// route options).
@@ -129,6 +135,9 @@ type application struct {
 	// admissionRepo is shared by the ingestion consumer, which WRITES the
 	// per-(community, post) decisions, and the status query, which reads them.
 	admissionRepo posts.AdmissionRepository
+	// communityCommentRemovals is shared by the post consumer (removal records
+	// and root arrival) and the comment consumer (comment arrival).
+	communityCommentRemovals moderation.CommunityCommentRemovalStore
 
 	// Domain services
 	userService      users.UserService
@@ -155,6 +164,8 @@ type application struct {
 	userBlockService           userblocks.Service
 	adminReportService         adminreports.Service
 	moderationService          moderation.Service
+	labelPublisher             *labels.Publisher // nil when LABEL_SIGNING_KEY is unset
+	labelStream                *labels.Stream    // nil when LABEL_SIGNING_KEY is unset; Close ends its subscriptions
 	mediaReconciler            *moderation.MediaReconciler
 	cdnPurgeQueue              *moderation.CDNPurgeQueue
 	communitySuggestionService communitysuggestions.Service
@@ -170,6 +181,11 @@ type application struct {
 	jetstreamState *jetstream.PostgresStateStore
 	revGate        *jetstream.RevGate
 	bridgeTrust    *jetstream.BridgeTrust
+	// accountStatusStore and accountStatusConfirmer are shared by the users
+	// consumer (#account events) and the account status recheck job, which
+	// retries the confirmations that failed.
+	accountStatusStore     *postgresRepo.AccountStatusRepository
+	accountStatusConfirmer *jetstream.PDSRepoStatusConfirmer
 
 	// bridgedVotePoller is nil unless TRUSTED_BRIDGE_PDS_HOSTS is set.
 	bridgedVotePoller *bridgedvotes.Poller
@@ -258,6 +274,7 @@ func buildApplication(
 		mediaPurger:       purger,
 		communityResolver: app.communityService,
 		handleResolver:    app.identityResolver,
+		communities:       app.communityRepo,
 		cdnPurgeQueue:     app.cdnPurgeQueue,
 	})
 	if err != nil {
@@ -270,12 +287,30 @@ func buildApplication(
 	return app, nil
 }
 
+// startLabelPublisher builds and starts the label publisher and its stream.
+// It reads the database, so it runs after buildApplication, which must not,
+// and before the routes are registered and the HTTP listener starts.
+func (a *application) startLabelPublisher(ctx context.Context) error {
+	publisher, err := buildLabelPublisher(ctx, a.cfg, a.db)
+	if err != nil {
+		return err
+	}
+	a.labelPublisher = publisher
+	if publisher != nil {
+		a.labelStream = labels.NewStream(postgresRepo.NewLabelRepository(a.db), labels.StreamOptions{})
+	}
+	return nil
+}
+
 // Close releases resources owned by the application that are not tied to the
 // process lifetime. It is safe to call more than once and from more than one
 // goroutine — both serve and run's deferred cleanup reach it.
 func (a *application) Close() {
 	a.closeOnce.Do(func() {
 		a.stopImageProxyCleanup()
+		if a.labelStream != nil {
+			a.labelStream.Close()
+		}
 	})
 }
 
@@ -400,21 +435,27 @@ func oauthScopes() []string {
 }
 
 func (a *application) buildRepositories() {
+	// Content of an account under this instance's in-force account ban is
+	// hidden from every other viewer on these read paths.
+	accountRestriction := postgresRepo.WithAccountRestrictionAuthority(a.cfg.Instance.DID)
 	a.userRepo = postgresRepo.NewUserRepository(a.db)
-	a.communityRepo = postgresRepo.NewCommunityRepository(a.db, a.credentialCipher)
-	a.postRepo = postgresRepo.NewPostRepository(a.db)
+	a.communityRepo = postgresRepo.NewCommunityRepository(a.db, a.credentialCipher, accountRestriction)
+	a.postRepo = postgresRepo.NewPostRepository(a.db, accountRestriction)
 	a.voteRepo = postgresRepo.NewVoteRepository(a.db)
-	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
+	a.commentRepo = postgresRepo.NewCommentRepository(a.db, accountRestriction)
 	a.blobReferenceRepo = postgresRepo.NewBlobReferenceRepository(a.db)
-	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
-		a.notificationRepo = postgresRepo.NewNotificationRepository(a.db, postgresRepo.WithBridgedUpvoteTotals())
-	} else {
-		a.notificationRepo = postgresRepo.NewNotificationRepository(a.db)
+	notificationOptions := []postgresRepo.NotificationRepositoryOption{
+		postgresRepo.WithNotificationAccountRestrictionAuthority(a.cfg.Instance.DID),
 	}
+	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
+		notificationOptions = append(notificationOptions, postgresRepo.WithBridgedUpvoteTotals())
+	}
+	a.notificationRepo = postgresRepo.NewNotificationRepository(a.db, notificationOptions...)
 	a.notificationRetentionSweeper = a.notificationRepo.(notifications.RetentionSweeper)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
 	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db, a.credentialCipher)
-	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
+	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db, postgresRepo.WithAccountBanAuthority(a.cfg.Instance.DID))
+	a.communityCommentRemovals = postgresRepo.NewCommunityCommentRemovalRepository(a.db)
 }
 
 func (a *application) buildServices(ctx context.Context) error {
@@ -431,6 +472,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	// social.coves.actor.profile from their PDS asynchronously while the user
 	// is indexed, by either door: the firehose's IndexUser and the OAuth
 	// callback's IndexAuthenticatedUser share that tail.
+	a.accountBans = postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)
 	a.userService = users.NewUserService(
 		a.userRepo,
 		a.identityResolver,
@@ -443,6 +485,11 @@ func (a *application) buildServices(ctx context.Context) error {
 		// where every PDS a developer indexes against is on loopback.
 		users.WithProfileBackfill(users.NewProfileBackfillClient(a.allowPrivateHosts())),
 		users.WithInstanceDomain(a.cfg.Instance.Domain),
+		// A banned account's profile reads as suspended to every other viewer
+		// and carries the ban notice on the account's own read.
+		users.WithAccountBans(a.accountBans),
+		// So does an account whose PDS confirmed it takendown or suspended.
+		users.WithAccountStatusRestrictions(postgresRepo.NewAccountStatusRepository(a.db)),
 	)
 
 	// The OAuth handler indexes users into the AppView after login, so it
@@ -594,8 +641,9 @@ func (a *application) buildServices(ctx context.Context) error {
 		// buildAcceptanceEngine above is what populated it.
 		posts.WithAcceptanceWithdrawal(a.communityWriter),
 		posts.WithAdmissionPolicy(posts.AdmissionPolicy{
-			Ledger: postgresRepo.NewSubmissionLedger(a.db),
-			Bans:   a.communityService,
+			Ledger:      postgresRepo.NewSubmissionLedger(a.db),
+			Bans:        postgresRepo.NewCommunityBanRepository(a.db),
+			AccountBans: postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID),
 			Limits: posts.SubmissionLimits{
 				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
 				Window:                   a.cfg.Submissions.Window,
@@ -615,11 +663,18 @@ func (a *application) buildServices(ctx context.Context) error {
 	// the user's own PDS regardless, and the Jetstream consumer only updates
 	// counts for subjects that still exist. Checking here would trade a
 	// harmless orphan vote for a race against eventual consistency.
-	a.voteService = votes.NewService(a.voteRepo, a.oauthClient, a.oauthStore, nil)
+	a.voteService = votes.NewService(a.voteRepo, a.oauthClient, a.oauthStore, nil,
+		votes.WithCommunityBans(postgresRepo.NewCommunityBanRepository(a.db)),
+		votes.WithCommunityRemovals(postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID)),
+		votes.WithAccountBans(postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)))
 
 	a.commentService = comments.NewCommentService(
 		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,
 		a.oauthClient, a.oauthStore, nil,
+		comments.WithCommunityBans(postgresRepo.NewCommunityBanRepository(a.db)),
+		comments.WithCommunityRemovals(postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID)),
+		comments.WithAccountBans(postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)),
+		comments.WithInstanceDID(a.cfg.Instance.DID),
 		comments.WithLexiconValidator(lexiconValidator),
 	)
 	a.notificationService = notifications.NewService(a.notificationRepo.(notifications.ReadRepository))
@@ -637,13 +692,14 @@ func (a *application) buildServices(ctx context.Context) error {
 		postgresRepo.NewCommunitySuggestionRepository(a.db),
 	)
 
+	accountRestriction := postgresRepo.WithAccountRestrictionAuthority(a.cfg.Instance.DID)
 	a.feedService = communityFeeds.NewCommunityFeedService(
-		postgresRepo.NewCommunityFeedRepository(a.db, a.cfg.CursorSecret), a.communityService,
+		postgresRepo.NewCommunityFeedRepository(a.db, a.cfg.CursorSecret, accountRestriction), a.communityService,
 	)
 	a.timelineService = timeline.NewTimelineService(
-		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret),
+		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret, accountRestriction),
 	)
-	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret)
+	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret, accountRestriction)
 	discoverHotStateCleaner, ok := discoverRepository.(discover.DiscoverHotStateCleaner)
 	if !ok {
 		return fmt.Errorf("discover repository does not support expired Hot state cleanup")
@@ -684,8 +740,9 @@ func (a *application) buildDeciderDeps() posts.DeciderDeps {
 		Admissions:  a.admissionRepo,
 		Aggregators: a.aggregatorService,
 		Policy: posts.AdmissionPolicy{
-			Ledger: postgresRepo.NewSubmissionLedger(a.db),
-			Bans:   a.communityService,
+			Ledger:      postgresRepo.NewSubmissionLedger(a.db),
+			Bans:        postgresRepo.NewCommunityBanRepository(a.db),
+			AccountBans: postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID),
 			Limits: posts.SubmissionLimits{
 				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
 				Window:                   a.cfg.Submissions.Window,
@@ -811,38 +868,42 @@ func adminReportAlertOptions() ([]adminreports.ServiceOption, error) {
 // productionPLCResolver, which has to stay guarded in dev. Do not inline it
 // back.
 //
-// # ORDERING
+// # DID_WEB_HOSTS
 //
-// BaseDirectory.HTTPClient is a VALUE, so the shared constructor's pointer is
-// dereferenced here — and the timeout has to be applied BEFORE the copy is
-// taken, since anything set afterwards is set on a client nobody holds.
+// didWebHosts (nil outside dev and CI) maps a did:web host to a local
+// host:port, so a mapped `iss` resolves against the local host serving its DID
+// document. The directory comes from identity.NewIndigoDirectory, the
+// constructor label clients share.
 //
-// The copy itself is safe, though not for the reason it is tempting to give:
-// http.Client carries NO LOCK of its own — its four fields are a Transport
-// interface, two funcs and a Duration — so `go vet`'s copylocks has nothing to
-// say here and would not have caught a type that did. What makes it safe is
-// that the copy shares rather than duplicates: both values hold the same
-// *ssrfSafeTransport pointer, so the guard, the resolver and the connection
-// pool behind it are one instance. A transport copied BY VALUE would be the
-// bug, and it is not what this line does.
+// # TIMEOUT
 //
-// identityHTTPTimeout (10s) survives the shared client's own
-// 15s ceiling because it bounds a fetch an unauthenticated caller can trigger,
-// which makes it a denial-of-service bound and not just a latency one.
-func serviceJWTIdentityDirectory(plcURL string, allowPrivateHosts bool) *indigoidentity.BaseDirectory {
-	client := oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(allowPrivateHosts)...)
-	client.Timeout = identityHTTPTimeout
-	return &indigoidentity.BaseDirectory{
-		PLCURL:     plcURL,
-		HTTPClient: *client,
-	}
+// BaseDirectory.HTTPClient is a VALUE, not a pointer: NewIndigoDirectory
+// copies its client into the directory it returns, so the timeout is set here
+// on the directory's own HTTPClient, after that copy. Setting it on any other
+// client would not reach the requests the directory makes.
+//
+// The copy shares rather than duplicates the transport: http.Client holds a
+// Transport interface, two funcs and a Duration, and no lock, so the copied
+// value points at the same transport (the SSRF-safe transport, or the
+// DID_WEB_HOSTS rewrite wrapping it) and the guard and connection pool behind
+// it stay one instance.
+//
+// identityHTTPTimeout and the shared constructor's own timeout are both 10s.
+// It is set explicitly anyway because it bounds a fetch an unauthenticated
+// caller can trigger, which makes it a denial-of-service bound and not just a
+// latency one, and must not drift if the shared default changes.
+func serviceJWTIdentityDirectory(plcURL string, allowPrivateHosts bool, didWebHosts map[string]string) *indigoidentity.BaseDirectory {
+	directory := identity.NewIndigoDirectory(plcURL, allowPrivateHosts, didWebHosts)
+	directory.HTTPClient.Timeout = identityHTTPTimeout
+	return directory
 }
 
 // buildDualAuth wires the middleware that accepts all three credential types:
 // sealed OAuth session tokens (users), PDS-signed service JWTs (aggregators),
 // and API keys (aggregator bots).
 func (a *application) buildDualAuth() {
-	identityDir := serviceJWTIdentityDirectory(a.cfg.Identity.PLCURL, a.allowPrivateHosts())
+	identityDir := serviceJWTIdentityDirectory(a.cfg.Identity.PLCURL, a.allowPrivateHosts(),
+		a.cfg.Identity.DIDWebHosts)
 	serviceValidator := &indigoauth.ServiceAuthValidator{
 		// The instance DID is the audience aggregator JWTs must be issued for.
 		Audience:        a.cfg.Instance.DID,
@@ -1021,6 +1082,16 @@ func (a *application) buildJetstreamInfrastructure() {
 	// replay them once the cause is fixed.
 	a.jetstreamState = jetstream.NewPostgresStateStore(a.db)
 	a.revGate = jetstream.NewRevGate(a.db)
+
+	// #account takendown/suspended events are confirmed with the account's
+	// current PDS (uncached resolution) before the stored restriction changes.
+	// The PDS is named by an attacker-writable DID document, so the SSRF guard
+	// stays on outside dev; the decision goes through
+	// PrivateRepoStatusConfirmerOptions for the reason documented at the post
+	// fetcher in buildPostConsumer.
+	a.accountStatusStore = postgresRepo.NewAccountStatusRepository(a.db)
+	a.accountStatusConfirmer = jetstream.NewPDSRepoStatusConfirmer(a.uncachedIdentityResolver,
+		jetstream.PrivateRepoStatusConfirmerOptions(a.allowPrivateHosts())...)
 
 	a.bridgeTrust = jetstream.NewBridgeTrust(a.cfg.Instance.TrustedBridgePDSHosts)
 	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {

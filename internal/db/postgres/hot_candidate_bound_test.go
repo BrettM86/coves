@@ -168,7 +168,7 @@ type hotBoundRead func(t *testing.T, sort string, limit int, cursor *string) ([]
 // places communityDID in viewerDID's view of that feed and applies candidateLimit.
 type hotBoundFeed struct {
 	name string
-	open func(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int) hotBoundRead
+	open func(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int, options ...AccountRestrictionOption) hotBoundRead
 }
 
 func hotBoundFeeds() []hotBoundFeed {
@@ -178,11 +178,11 @@ func hotBoundFeeds() []hotBoundFeed {
 	}
 }
 
-func openHotBoundTimeline(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int) hotBoundRead {
+func openHotBoundTimeline(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int, options ...AccountRestrictionOption) hotBoundRead {
 	t.Helper()
 
 	subscribeToCommunity(t, db, viewerDID, communityDID)
-	repository := NewTimelineRepository(db, "hot-bound-secret").(*postgresTimelineRepo)
+	repository := NewTimelineRepository(db, "hot-bound-secret", options...).(*postgresTimelineRepo)
 	repository.hotCandidateLimit = candidateLimit
 	return func(t *testing.T, sort string, limit int, cursor *string) ([]string, *string) {
 		t.Helper()
@@ -197,10 +197,10 @@ func openHotBoundTimeline(t *testing.T, db *sql.DB, viewerDID, communityDID stri
 	}
 }
 
-func openHotBoundCommunityFeed(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int) hotBoundRead {
+func openHotBoundCommunityFeed(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int, options ...AccountRestrictionOption) hotBoundRead {
 	t.Helper()
 
-	repository := NewCommunityFeedRepository(db, "hot-bound-secret").(*postgresFeedRepo)
+	repository := NewCommunityFeedRepository(db, "hot-bound-secret", options...).(*postgresFeedRepo)
 	repository.hotCandidateLimit = candidateLimit
 	return func(t *testing.T, sort string, limit int, cursor *string) ([]string, *string) {
 		t.Helper()
@@ -388,4 +388,126 @@ func TestCommunityFeedRepo_HotCandidateBoundCountsOnlyTheViewersVisiblePosts(t *
 			"a pending post is hidden from the public and takes no public slot")
 		assert.Nil(t, cursor)
 	})
+}
+
+// hotBoundAuthority is the instance whose account bans and community removals
+// the authority-aware bound tests configure their repository with.
+const hotBoundAuthority = "did:plc:hotboundinstance"
+
+// seedHotBoundBannedAuthor creates an author under an active account ban by
+// hotBoundAuthority.
+func seedHotBoundBannedAuthor(t *testing.T, db *sql.DB, did string) string {
+	t.Helper()
+
+	createTestUser(t, db, did+".test", did)
+	seedAccountBan(t, db, hotBoundAuthority, did)
+	return did
+}
+
+// The bound's own visibility check must use the repository's account-ban
+// authority: the newest posts are by an account-banned author in a live
+// community, so a bound that does not see the ban fills both slots with posts
+// the feed then hides.
+func TestCommunityFeedRepo_HotCandidateBoundAppliesTheAccountBanAuthority(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	cast := seedBlockFilterCast(t, db, "boundcommunityban")
+	const communityDID = "did:plc:hotboundcommunityban"
+	createTestCommunity(t, db, communityDID, "c-hotboundcommunityban.coves.social", cast.viewer)
+	banned := seedHotBoundBannedAuthor(t, db, "did:plc:hotboundcommunitybanned")
+	now := time.Now().Truncate(time.Second)
+
+	seedHotBoundPost(t, db, communityDID, banned, "banned-newest", now.Add(-10*time.Minute), 0)
+	seedHotBoundPost(t, db, communityDID, banned, "banned-next", now.Add(-20*time.Minute), 0)
+	newerKept := seedHotBoundPost(t, db, communityDID, cast.thirdParty, "newer-kept", now.Add(-time.Hour), 10)
+	olderKept := seedHotBoundPost(t, db, communityDID, cast.thirdParty, "older-kept", now.Add(-2*time.Hour), 1_000)
+	seedHotBoundPost(t, db, communityDID, cast.thirdParty, "excluded", now.Add(-3*time.Hour), hotBoundExcludedScore)
+
+	for _, viewer := range []struct{ name, did string }{
+		{name: "signed-in viewer", did: cast.viewer},
+		{name: "anonymous viewer", did: ""},
+	} {
+		t.Run(viewer.name, func(t *testing.T) {
+			read := openHotBoundCommunityFeed(t, db, viewer.did, communityDID, 2,
+				WithAccountRestrictionAuthority(hotBoundAuthority))
+			uris, cursor := read(t, "hot", 10, nil)
+			assert.Equal(t, []string{olderKept, newerKept}, uris,
+				"a banned author's posts must take no bound slot")
+			assert.Nil(t, cursor)
+		})
+	}
+}
+
+// As above for the timeline, with the newest posts in a subscribed community
+// under an active instance community removal, then by an account-banned
+// author in a live subscribed community.
+func TestTimelineRepo_HotCandidateBoundAppliesTheAccountBanAuthority(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	cast := seedBlockFilterCast(t, db, "boundtimelineban")
+	const (
+		liveCommunity    = "did:plc:hotboundtimelinelive"
+		removedCommunity = "did:plc:hotboundtimelineremoved"
+	)
+	createTestCommunity(t, db, liveCommunity, "c-hotboundtimelinelive.coves.social", cast.viewer)
+	createTestCommunity(t, db, removedCommunity, "c-hotboundtimelineremoved.coves.social", cast.viewer)
+	subscribeToCommunity(t, db, cast.viewer, removedCommunity)
+	seedCommunityRemoval(t, db, hotBoundAuthority, removedCommunity)
+	banned := seedHotBoundBannedAuthor(t, db, "did:plc:hotboundtimelinebanned")
+	now := time.Now().Truncate(time.Second)
+
+	seedHotBoundPost(t, db, removedCommunity, cast.thirdParty, "removed-newest", now.Add(-10*time.Minute), 0)
+	seedHotBoundPost(t, db, removedCommunity, cast.thirdParty, "removed-next", now.Add(-20*time.Minute), 0)
+	seedHotBoundPost(t, db, liveCommunity, banned, "banned-newest", now.Add(-30*time.Minute), 0)
+	seedHotBoundPost(t, db, liveCommunity, banned, "banned-next", now.Add(-40*time.Minute), 0)
+	newerKept := seedHotBoundPost(t, db, liveCommunity, cast.thirdParty, "newer-kept", now.Add(-time.Hour), 10)
+	olderKept := seedHotBoundPost(t, db, liveCommunity, cast.thirdParty, "older-kept", now.Add(-2*time.Hour), 1_000)
+	seedHotBoundPost(t, db, liveCommunity, cast.thirdParty, "excluded", now.Add(-3*time.Hour), hotBoundExcludedScore)
+
+	read := openHotBoundTimeline(t, db, cast.viewer, liveCommunity, 2,
+		WithAccountRestrictionAuthority(hotBoundAuthority))
+	uris, cursor := read(t, "hot", 10, nil)
+	assert.Equal(t, []string{olderKept, newerKept}, uris,
+		"posts in a removed community and by a banned author must take no bound slot")
+	assert.Nil(t, cursor)
+}
+
+// As above for Discover Hot, whose candidate query is the bound.
+func TestDiscoverRepo_HotCandidateBoundAppliesTheAccountBanAuthority(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	cast := seedBlockFilterCast(t, db, "bounddiscban")
+	banned := seedHotBoundBannedAuthor(t, db, "did:plc:hotbounddiscbanned")
+	now := time.Now().Truncate(time.Second)
+
+	for _, rkey := range []string{"removednewest", "removednext"} {
+		age := 10 * time.Minute
+		if rkey == "removednext" {
+			age = 20 * time.Minute
+		}
+		seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, rkey, now.Add(-age), 0)
+		seedCommunityRemoval(t, db, hotBoundAuthority, "did:plc:hotbound"+rkey)
+	}
+	seedHotBoundDiscoverPost(t, db, cast.viewer, banned, "bannednewest", now.Add(-30*time.Minute), 0)
+	seedHotBoundDiscoverPost(t, db, cast.viewer, banned, "bannednext", now.Add(-40*time.Minute), 0)
+	newerKept := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "newerkept", now.Add(-time.Hour), 10)
+	olderKept := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "olderkept", now.Add(-2*time.Hour), 1_000)
+	seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "excluded", now.Add(-3*time.Hour), hotBoundExcludedScore)
+
+	repository := NewDiscoverRepository(db, "hot-bound-secret",
+		WithAccountRestrictionAuthority(hotBoundAuthority)).(*postgresDiscoverRepo)
+	repository.discoverHotCandidateLimit = 2
+
+	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+		ViewerDID: cast.viewer,
+		Sort:      "hot",
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{olderKept, newerKept}, discoverURIs(feed),
+		"posts in a removed community and by a banned author must take no bound slot")
+	assert.Nil(t, cursor)
 }

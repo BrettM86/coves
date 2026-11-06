@@ -125,19 +125,22 @@ Published: `richtext.*`, `embed.*`, `actor.*` except
 `community.*` (including `post.*` and `comment.*`) except the held-back files
 below, and `notification/defs.json` with its five endpoint files (notifications
 release, 2026-11-05). Once the moderation release runs, also the reviewed moderation package:
-`moderation/defs.json` and the seven endpoint files
+`moderation/defs.json` and the eleven endpoint files
 `moderation/removeContent.json`, `moderation/restoreContent.json`,
 `moderation/labelContent.json`, `moderation/retractContentLabel.json`,
+`moderation/banAccount.json`, `moderation/unbanAccount.json`,
+`moderation/removeCommunity.json`, `moderation/restoreCommunity.json`,
 `moderation/listActions.json`, `moderation/listAdminActions.json`,
 `moderation/getSubjectState.json`, plus `actor/getViewerAuthority.json`, which
-tells clients whether the viewer is an instance admin and ships with them; and,
+tells clients whether the viewer is an instance admin and ships with them, and
+the community ban record `moderation/ban.json`, which Tidepool writes to a
+community's repo and the AppView indexes; and,
 once the media release below runs, `media/uploadImage.json`.
 
 Held back, because the governance and tribunal design has not landed. Paths
 are relative to `internal/atproto/lexicon/social/coves/`, and the test fails if
 a publish command names any of them:
 
-- `moderation/ban.json`
 - `moderation/banUser.json`
 - `moderation/getBanStatus.json`
 - `moderation/listBans.json`
@@ -211,8 +214,9 @@ goat account login -u coves.social -p '<password>' --pds-host https://pds.coves.
 #      (never pass --skip-dns-check)
 #    - skips schemas identical to what is live; --update is required to
 #      overwrite changed ones
-#    community/comment/defs.json and community/post/defs.json are not here:
-#    they reference moderation.defs and move to step 3. community/post/get.json
+#    actor/defs.json, community/comment/defs.json and community/post/defs.json
+#    are not here: they reference moderation.defs (actor.defs#accountBanNotice
+#    uses moderation.defs#reasonType) and move to step 3d. community/post/get.json
 #    is deferred to step 3d too: its output union references post.defs#moderatedPost.
 goat lex publish --update \
   internal/atproto/lexicon/social/coves/richtext/facet.json \
@@ -222,7 +226,6 @@ goat lex publish --update \
   internal/atproto/lexicon/social/coves/embed/imagesWithAttachment.json \
   internal/atproto/lexicon/social/coves/embed/video.json \
   internal/atproto/lexicon/social/coves/actor/block.json \
-  internal/atproto/lexicon/social/coves/actor/defs.json \
   internal/atproto/lexicon/social/coves/actor/getComments.json \
   internal/atproto/lexicon/social/coves/actor/getPosts.json \
   internal/atproto/lexicon/social/coves/actor/getProfile.json \
@@ -292,23 +295,32 @@ goat lex publish \
 #    3c. Dependency closure: every ref in moderation.defs must resolve over
 #        DNS/PDS before anything that references it is published.
 goat lex resolve social.coves.moderation.defs
-#    3d. Content-view definitions that reference moderation.defs (the
-#        commentView.record exception is expected in `goat lex breaking`),
-#        then community.post.get, whose output union references
-#        post.defs#moderatedPost and so must follow post.defs:
+#    3d. Definitions that reference moderation.defs: actor.defs (its
+#        accountBanNotice uses moderation.defs#reasonType) and the content
+#        views (the commentView.record exception is expected in
+#        `goat lex breaking`), then community.post.get, whose output union
+#        references post.defs#moderatedPost and so must follow post.defs:
 goat lex publish --update \
+  internal/atproto/lexicon/social/coves/actor/defs.json \
   internal/atproto/lexicon/social/coves/community/comment/defs.json \
   internal/atproto/lexicon/social/coves/community/post/defs.json
+goat lex resolve social.coves.actor.defs
 goat lex resolve social.coves.community.comment.defs
 goat lex resolve social.coves.community.post.defs
 goat lex publish --update internal/atproto/lexicon/social/coves/community/post/get.json
 goat lex resolve social.coves.community.post.get
-#    3e. The seven reviewed endpoints and actor.getViewerAuthority, last:
+#    3e. The ban record, the eleven reviewed endpoints and
+#        actor.getViewerAuthority, last:
 goat lex publish \
+  internal/atproto/lexicon/social/coves/moderation/ban.json \
   internal/atproto/lexicon/social/coves/moderation/removeContent.json \
   internal/atproto/lexicon/social/coves/moderation/restoreContent.json \
   internal/atproto/lexicon/social/coves/moderation/labelContent.json \
   internal/atproto/lexicon/social/coves/moderation/retractContentLabel.json \
+  internal/atproto/lexicon/social/coves/moderation/banAccount.json \
+  internal/atproto/lexicon/social/coves/moderation/unbanAccount.json \
+  internal/atproto/lexicon/social/coves/moderation/removeCommunity.json \
+  internal/atproto/lexicon/social/coves/moderation/restoreCommunity.json \
   internal/atproto/lexicon/social/coves/moderation/listActions.json \
   internal/atproto/lexicon/social/coves/moderation/listAdminActions.json \
   internal/atproto/lexicon/social/coves/moderation/getSubjectState.json \

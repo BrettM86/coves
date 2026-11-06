@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"Coves/internal/core/moderation"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,10 +61,38 @@ func indexedModerationComment(t *testing.T, db *sql.DB, indexedRoot bool, embed 
 }
 
 func newPostgresModerationService(db *sql.DB) moderation.Service {
+	return newPostgresModerationServiceWith(db, postgres.NewModerationRepository(db), nil)
+}
+
+// newPostgresModerationServiceWith is newPostgresModerationService over store,
+// publishing labels signed with labelSigningKey when it is not nil.
+func newPostgresModerationServiceWith(db *sql.DB, store moderation.Store, labelSigningKey atcrypto.PrivateKey) moderation.Service {
+	return newPostgresModerationServiceWithConfig(db, store, postgresModerationConfig(labelSigningKey))
+}
+
+// newPostgresAccountModerationService is newPostgresModerationServiceWith with
+// the indexed community repository as Config.Communities and now as the
+// service clock; a nil now keeps the wall clock.
+func newPostgresAccountModerationService(db *sql.DB, store moderation.Store, labelSigningKey atcrypto.PrivateKey, now func() time.Time) moderation.Service {
+	config := postgresModerationConfig(labelSigningKey)
+	config.Communities = postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+	config.Now = now
+	config.CursorSecret = "account-ban-cursor-secret"
+	return newPostgresModerationServiceWithConfig(db, store, config)
+}
+
+func postgresModerationConfig(labelSigningKey atcrypto.PrivateKey) moderation.Config {
+	return moderation.Config{
+		InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000,
+		LabelSigningKey: labelSigningKey,
+	}
+}
+
+func newPostgresModerationServiceWithConfig(db *sql.DB, store moderation.Store, config moderation.Config) moderation.Service {
 	return moderation.NewService(
 		moderation.NewRepositorySubjectReader(postgres.NewPostRepository(db), postgres.NewCommentRepository(db)),
-		postgres.NewModerationRepository(db),
-		moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000},
+		store,
+		config,
 	)
 }
 

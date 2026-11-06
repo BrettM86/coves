@@ -10,6 +10,17 @@ const (
 	DeletionReasonModerator = "moderator" // Community moderator removed the comment
 )
 
+// HideReasonCommunityBan marks a comment (or vote) recorded hidden at index
+// time because a community ban on its author was in force then. A ban-hidden
+// comment is served as a placeholder in threads and left out of its author's
+// activity for everyone but the author.
+const HideReasonCommunityBan = "community_ban"
+
+// HideReasonAccountBan marks a comment (or vote) recorded hidden at index time
+// because an instance account ban on its author was in force then. It hides
+// like HideReasonCommunityBan, and stays after the ban is lifted or lapses.
+const HideReasonAccountBan = "account_ban"
+
 // Comment represents a comment in the AppView database
 // Comments are indexed from the firehose after being written to user repositories
 type Comment struct {
@@ -19,6 +30,7 @@ type Comment struct {
 	DeletedAt       *time.Time `json:"deletedAt,omitempty" db:"deleted_at"`
 	DeletionReason  *string    `json:"deletionReason,omitempty" db:"deletion_reason"`
 	DeletedBy       *string    `json:"deletedBy,omitempty" db:"deleted_by"`
+	HideReason      *string    `json:"hideReason,omitempty" db:"hide_reason"`
 	ContentLabels   *string    `json:"labels,omitempty" db:"content_labels"`
 	Embed           *string    `json:"embed,omitempty" db:"embed"`
 	CommenterHandle string     `json:"commenterHandle,omitempty" db:"-"`
@@ -44,6 +56,12 @@ type Comment struct {
 	BridgedUpvoteCount   int        `json:"bridgedUpvoteCount" db:"bridged_upvote_count"`
 	BridgedDownvoteCount int        `json:"bridgedDownvoteCount" db:"bridged_downvote_count"`
 	BridgedStatsAsOf     *time.Time `json:"bridgedStatsAsOf,omitempty" db:"bridged_stats_as_of"`
+
+	// CommenterRestricted is true when the commenter's account is restricted
+	// on this instance at read time (an in-force instance account ban). It is
+	// read, never stored, and set only by the thread reads (replies by parent
+	// and the permalink anchor).
+	CommenterRestricted bool `json:"-" db:"-"`
 }
 
 // CommentRecord represents the atProto record structure indexed from Jetstream
@@ -102,4 +120,26 @@ type ListByCommenterRequest struct {
 	ViewerDID string
 	Limit     int     // Max comments to return (1-100)
 	Cursor    *string // Pagination cursor from previous response
+}
+
+// IsHiddenFromViewer reports whether a thread serves the comment to viewerDID
+// as a placeholder because of its recorded hide reason. A community-ban or
+// account-ban hide applies to every viewer. Any other recorded reason (a ban check still
+// pending, possibly for good) fails closed: only the author sees the comment.
+func (c *Comment) IsHiddenFromViewer(viewerDID *string) bool {
+	if c.HideReason == nil {
+		return false
+	}
+	if *c.HideReason == HideReasonCommunityBan || *c.HideReason == HideReasonAccountBan {
+		return true
+	}
+	return viewerDID == nil || *viewerDID != c.CommenterDID
+}
+
+// IsHiddenByAccountRestriction reports whether a thread serves the comment to
+// viewerDID as a placeholder because its commenter's account is restricted.
+// The commenter still sees its own comment; every other viewer, signed in or
+// not, gets the placeholder until the restriction ends.
+func (c *Comment) IsHiddenByAccountRestriction(viewerDID *string) bool {
+	return c.CommenterRestricted && (viewerDID == nil || *viewerDID != c.CommenterDID)
 }

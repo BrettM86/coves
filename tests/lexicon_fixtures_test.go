@@ -39,6 +39,8 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"admin-action-view-invalid-note-too-many-bytes.json":     "string length outside specified range",
 	"admin-action-view-invalid-note-too-many-graphemes.json": "graphemes",
 	"ban-view-invalid-missing-cid.json":                      "cid",
+	"ban-invalid-missing-subject.json":                       "required field missing: subject",
+	"ban-invalid-non-did-subject.json":                       "DID syntax didn't validate via regex",
 	"comment-invalid-content.json":                           "content",
 	"moderated-post-invalid-missing-moderation.json":         "moderation",
 	"label-content-input-invalid-empty-label-value.json":     "string length outside specified range",
@@ -436,5 +438,30 @@ func TestLexiconRecordShapes(t *testing.T) {
 		reason := requireStringProperty(t, record, "reason")
 		require.NotNil(t, reason.MaxGraphemes, "removal reason must bound its grapheme length")
 		assert.Equal(t, 1000, *reason.MaxGraphemes, "removal reason maxGraphemes")
+	})
+
+	t.Run("social.coves.moderation.ban", func(t *testing.T) {
+		record := resolveRecordSchema(t, catalog, "social.coves.moderation.ban")
+
+		assert.Equal(t, "any", record.Key, "a ban is keyed by the subject it bans")
+		assert.ElementsMatch(t, []string{"subject", "createdAt"}, record.Record.Required,
+			"ban required fields")
+
+		propertyNames := make([]string, 0, len(record.Record.Properties))
+		for name := range record.Record.Properties {
+			propertyNames = append(propertyNames, name)
+		}
+		assert.ElementsMatch(t, []string{"subject", "createdAt", "reason", "expiresAt"}, propertyNames,
+			"ban properties")
+
+		subject := requireStringProperty(t, record, "subject")
+		require.NotNil(t, subject.Format, "ban subject must declare a format")
+		assert.Equal(t, "did", *subject.Format, "ban subject format")
+
+		expiresAt := requireStringProperty(t, record, "expiresAt")
+		require.NotNil(t, expiresAt.Format, "ban expiresAt must declare a format")
+		assert.Equal(t, "datetime", *expiresAt.Format, "ban expiresAt format")
+
+		requireDatetimeCreatedAt(t, record)
 	})
 }

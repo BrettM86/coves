@@ -150,9 +150,18 @@ func TestNestedBlobReferencesBackfill065_IgnoresOtherDecisionsAndOwners(t *testi
 func nestedBackfillSnapshot(t *testing.T, db *sql.DB, table, predicate string, arguments ...any) string {
 	t.Helper()
 	require.Contains(t, []string{"posts", "comments", "blob_references", "moderation_actions", "moderation_decisions", "moderation_subjects", "moderation_media_blocks", "moderation_media_purges"}, table)
+	row := `(to_jsonb(r)` + laterMigrationColumns[table] + `)`
 	var snapshot string
-	require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text), '[]'::jsonb)::text FROM `+table+` r `+predicate, arguments...).Scan(&snapshot))
+	require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(`+row+` ORDER BY `+row+`::text), '[]'::jsonb)::text FROM `+table+` r `+predicate, arguments...).Scan(&snapshot))
 	return snapshot
+}
+
+// laterMigrationColumns removes, per table, the columns that migrations after
+// 066 add, so a snapshot taken at one schema version compares with one taken
+// at another. Those columns are unset on the rows these tests seed.
+var laterMigrationColumns = map[string]string{
+	"comments":           ` - 'hide_reason' - 'coves_index_order' - 'coves_index_time'`,
+	"moderation_actions": ` - 'expires_at' - 'subject_kind'`,
 }
 
 func TestNestedBlobReferencesBackfill065_InsertOnlyDownAndRerun(t *testing.T) {
@@ -220,6 +229,26 @@ func TestNestedBlobReferencesBackfill065_InsertOnlyDownAndRerun(t *testing.T) {
 			assert.Equal(t, before, nestedBackfillSnapshot(t, db, table, ""), "%s changed on Down or rerun", table)
 		}
 	}
+	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
+		"076 (account status rechecks) must be rolled back first")
+	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
+		"075 (moderation subject kind) must be rolled back first")
+	require.EqualValues(t, 74, testkit.MigrateDownOne(t, db, 74),
+		"074 (account status restrictions) must be rolled back first")
+	require.EqualValues(t, 73, testkit.MigrateDownOne(t, db, 73),
+		"073 (account ban hide reason) must be rolled back first")
+	require.EqualValues(t, 72, testkit.MigrateDownOne(t, db, 72),
+		"072 (account moderation subjects) must be rolled back first")
+	require.EqualValues(t, 71, testkit.MigrateDownOne(t, db, 71),
+		"071 (labels) must be rolled back first")
+	require.EqualValues(t, 70, testkit.MigrateDownOne(t, db, 70),
+		"070 (pending ban-check indexes) must be rolled back first")
+	require.EqualValues(t, 69, testkit.MigrateDownOne(t, db, 69),
+		"069 (ban hide markers) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 68, testkit.MigrateDownOne(t, db, 68),
+		"068 (community ban index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 67, testkit.MigrateDownOne(t, db, 67),
+		"067 (community comment removals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
 	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
 	checkUnchanged()

@@ -267,7 +267,7 @@ func TestDeleteVoteHandler_ServiceError(t *testing.T) {
 			name:           "banned",
 			serviceError:   votes.ErrBanned,
 			expectedStatus: http.StatusForbidden,
-			expectedError:  "NotAuthorized", // Banned maps to NotAuthorized per lexicon
+			expectedError:  "Banned",
 		},
 	}
 

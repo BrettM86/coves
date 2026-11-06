@@ -24,6 +24,10 @@ var errorMapper = xrpc.NewMapper("post",
 		"NotAuthorized", "You are not authorized to post in this community"),
 	xrpc.Sentinel(posts.ErrBanned, http.StatusForbidden,
 		"Banned", "You are banned from this community"),
+	xrpc.Sentinel(posts.ErrAccountBanned, http.StatusForbidden,
+		"Banned", "Your account is banned on this instance"),
+	xrpc.Sentinel(posts.ErrCommunityRemoved, http.StatusForbidden,
+		"CommunityRemoved", "This community has been removed by the instance"),
 
 	// A content rule violation names the rule the post broke, which is the
 	// whole point of returning it — the client shows it to the author.

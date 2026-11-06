@@ -83,6 +83,7 @@ var feedSortClauses = map[string]string{
 type feedRepoBase struct {
 	db           *sql.DB
 	cursorSecret string // HMAC secret for cursor integrity protection
+	accountRestriction
 
 	hotCandidateLimit int
 }
@@ -98,8 +99,9 @@ func (r *feedRepoBase) effectiveHotCandidateLimit() int {
 // the newest visible posts in scope, and the argument to bind at $limitParam.
 // Any other sort gets no fragment and no argument.
 //
-// scopeSQL selects the feed's posts. viewerParam and blockFilter are the outer
-// query's own, so a post the viewer cannot see never takes a slot in the bound.
+// scopeSQL selects the feed's posts. viewerParam, authorityParam and
+// blockFilter are the outer query's own, so a post the viewer cannot see never
+// takes a slot in the bound.
 //
 // The caller must keep the cursor filter outside this fragment: a bound computed
 // after the cursor would slide older posts into later pages.
@@ -107,12 +109,12 @@ func (r *feedRepoBase) effectiveHotCandidateLimit() int {
 // The fragment is = ANY(ARRAY(...)) rather than IN (...) because the array is
 // evaluated once and then probed through posts_uri_key. Given an IN subquery the
 // planner reads every post in scope and hash-joins it to the bound.
-func (r *feedRepoBase) hotCandidateBoundFilter(sort, scopeSQL string, viewerParam int, blockFilter string, limitParam int) (string, []interface{}) {
+func (r *feedRepoBase) hotCandidateBoundFilter(sort, scopeSQL string, viewerParam, authorityParam int, blockFilter string, limitParam int) (string, []interface{}) {
 	if sort != "hot" {
 		return "", nil
 	}
 
-	visJoin, visWhere := visiblePostsJoin(viewerParam)
+	visJoin, visWhere := visiblePostsJoin(viewerParam, authorityParam)
 	filter := fmt.Sprintf(`AND p.uri = ANY(ARRAY(
 			SELECT p.uri
 			FROM posts p%s
@@ -158,10 +160,11 @@ func hotRankSQL(alias, nowExpr string) string {
 }
 
 // newFeedRepoBase creates a new base repository with shared feed logic
-func newFeedRepoBase(db *sql.DB, cursorSecret string) *feedRepoBase {
+func newFeedRepoBase(db *sql.DB, cursorSecret string, options []AccountRestrictionOption) *feedRepoBase {
 	return &feedRepoBase{
-		db:           db,
-		cursorSecret: cursorSecret,
+		db:                 db,
+		cursorSecret:       cursorSecret,
+		accountRestriction: newAccountRestriction(options),
 	}
 }
 

@@ -59,11 +59,27 @@ import (
 
 type postgresAdmissionRepo struct {
 	db *sql.DB
+	// accountBanAuthorityDID is the instance whose in-force account bans
+	// ListPendingSubjects excludes; empty means no exclusion.
+	accountBanAuthorityDID string
+}
+
+// AdmissionRepositoryOption configures NewAdmissionRepository.
+type AdmissionRepositoryOption func(*postgresAdmissionRepo)
+
+// WithAccountBanAuthority makes ListPendingSubjects leave out posts whose
+// author has an instance account ban in force by instanceDID.
+func WithAccountBanAuthority(instanceDID string) AdmissionRepositoryOption {
+	return func(r *postgresAdmissionRepo) { r.accountBanAuthorityDID = instanceDID }
 }
 
 // NewAdmissionRepository creates a PostgreSQL admission repository.
-func NewAdmissionRepository(db *sql.DB) posts.AdmissionRepository {
-	return &postgresAdmissionRepo{db: db}
+func NewAdmissionRepository(db *sql.DB, options ...AdmissionRepositoryOption) posts.AdmissionRepository {
+	r := &postgresAdmissionRepo{db: db}
+	for _, option := range options {
+		option(r)
+	}
+	return r
 }
 
 // admissionColumns is the ordered column list every query in this file

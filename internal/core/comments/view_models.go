@@ -109,5 +109,6 @@ type ModerationSourceView struct {
 
 // ModerationScopeView is a removal's scope (social.coves.moderation.defs#scopeView).
 type ModerationScopeView struct {
-	Kind string `json:"kind"`
+	Kind         string `json:"kind"`
+	CommunityDID string `json:"communityDid,omitempty"`
 }

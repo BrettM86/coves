@@ -13,8 +13,9 @@ import (
 
 const maximumNotificationListLimit = 100
 
-// listNotificationsSQL has four parameters: recipient DID ($1), optional cursor
-// sort time ($2) and ID ($3), and probe-inclusive row limit ($4).
+// listNotificationsSQL has five parameters: recipient DID ($1), optional cursor
+// sort time ($2) and ID ($3), probe-inclusive row limit ($4), and the
+// account-ban authority DID ($5).
 // The combined CASE prevents the planner from multiplying selectivity guesses
 // for each dependent reference state and choosing an unordered index plus Sort.
 // With NULL seen_at, only the recipient's newest visible row of any reason is unread.
@@ -39,7 +40,7 @@ func buildListNotificationUpvotesSQL(bridgedTotals bool) string {
 }
 
 func buildListNotificationsSQL(bridgedTotals bool) string {
-	visibility := notificationVisibility(bridgedTotals)
+	visibility := notificationVisibility(bridgedTotals, "$5::text")
 	return `SELECT n.id, n.reason, n.record_uri, n.actor_did, n.subject_uri,
 		n.root_post_uri, n.record_created_at, n.sort_at,
 		CASE WHEN state.seen_at IS NOT NULL THEN n.sort_at <= state.seen_at
@@ -65,7 +66,7 @@ func buildListNotificationsSQL(bridgedTotals bool) string {
 
 var _ notifications.ReadRepository = (*postgresNotificationRepo)(nil)
 
-// List pages all visible notifications with the four parameters of listNotificationsSQL.
+// List pages all visible notifications with the five parameters of listNotificationsSQL.
 // With NULL seen_at, only the newest visible row of any reason is
 // unread. A repeatable-read snapshot keeps SeenAt and row read states aligned.
 func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, cursor string, limit int) (notifications.ListPage, error) {
@@ -97,7 +98,7 @@ func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, curso
 		page.SeenAt = &seenTime
 	}
 
-	rows, err := transaction.QueryContext(ctx, r.listSQL, recipientDID, sortAt, id, limit+1)
+	rows, err := transaction.QueryContext(ctx, r.listSQL, recipientDID, sortAt, id, limit+1, r.accountBanAuthorityDID)
 	if err != nil {
 		return notifications.ListPage{}, fmt.Errorf("list notifications: %w", err)
 	}

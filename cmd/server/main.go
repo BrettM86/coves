@@ -17,6 +17,7 @@ import (
 
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
+	"Coves/internal/core/accountstatus"
 	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/observability"
@@ -108,6 +109,9 @@ func run() error {
 		return err
 	}
 	defer app.Close()
+	if err := app.startLabelPublisher(ctx); err != nil {
+		return err
+	}
 
 	// Background work runs on its own context so shutdown can stop producing
 	// new work before it starts draining in-flight requests.
@@ -129,6 +133,11 @@ func run() error {
 	startNotificationRetentionJob(backgroundCtx, &backgroundWG, app.notificationRetentionSweeper, notificationRetentionInterval)
 	startModerationIdempotencySweepJob(backgroundCtx, &backgroundWG,
 		postgresRepo.NewModerationRepository(db), moderationIdempotencySweepInterval)
+	// Retries the #account confirmations that failed, with the store and
+	// confirmer the users consumer uses.
+	startAccountStatusRecheckJob(backgroundCtx, &backgroundWG,
+		accountstatus.NewReconciler(app.accountStatusStore, app.accountStatusConfirmer, time.Now),
+		accountStatusRecheckInterval)
 	if app.cdnPurgeQueue != nil {
 		startCDNPurgeSweepJob(backgroundCtx, &backgroundWG, app.cdnPurgeQueue, cdnPurgeSweepInterval)
 	}

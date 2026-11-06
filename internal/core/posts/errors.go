@@ -21,6 +21,14 @@ var (
 	// ErrBanned is returned when user is banned from community (Beta)
 	ErrBanned = errors.New("user is banned from this community")
 
+	// ErrAccountBanned is returned when the author's account has an instance
+	// account ban in force. It is distinct from ErrBanned, which is scoped to
+	// one community.
+	ErrAccountBanned = errors.New("account is banned on this instance")
+
+	// ErrCommunityRemoved is returned when the community is removed by the instance.
+	ErrCommunityRemoved = errors.New("community is removed")
+
 	// ErrInvalidContent is returned for general content violations
 	ErrInvalidContent = errors.New("invalid post content")
 

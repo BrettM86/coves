@@ -20,9 +20,9 @@ type postgresDiscoverRepo struct {
 }
 
 // NewDiscoverRepository creates a new PostgreSQL discover repository.
-func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository {
+func NewDiscoverRepository(db *sql.DB, cursorSecret string, options ...AccountRestrictionOption) discover.Repository {
 	return &postgresDiscoverRepo{
-		feedRepoBase: newFeedRepoBase(db, cursorSecret),
+		feedRepoBase: newFeedRepoBase(db, cursorSecret, options),
 	}
 }
 
@@ -60,7 +60,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 	// Its viewer parameter ($visibilityParam) is empty for the anonymous public,
 	// which sees accepted content only.
 	visibilityParam := 2 + len(cursorValues)
-	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+	visJoin, visWhere := visiblePostsJoin(visibilityParam, visibilityParam+1)
 
 	// The viewer block filter reuses that same viewer parameter; only meaningful
 	// for an authenticated viewer, absent for the public.
@@ -76,18 +76,20 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		INNER JOIN communities c ON p.community_did = c.did%s
 		WHERE p.deleted_at IS NULL
 			AND %s
+			AND NOT %s
 			%s
 			%s
 			%s
 		ORDER BY %s
 		LIMIT $1
-	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, viewerFilter, orderBy)
+	`, selectClause, visJoin, visWhere, communityRemovedSQL("p.community_did", fmt.Sprintf("$%d", visibilityParam+1)),
+		timeFilter, cursorFilter, viewerFilter, orderBy)
 
 	// Prepare query arguments. The viewer DID is bound once at $visibilityParam
 	// and reused by the block filter above.
 	args := []interface{}{req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
-	args = append(args, req.ViewerDID)
+	args = append(args, req.ViewerDID, r.authorityDID)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

@@ -8,7 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/fixtures/communityremovalfixture"
 	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -261,4 +266,58 @@ func TestService_WriteForwardResolvesEveryIdentifierForm(t *testing.T) {
 	record := f.user.GetRecord(t, "social.coves.community.subscription", rkeyOf(t, subscription.RecordURI))
 	assert.Equal(t, f.community.DID, record.Value["subject"],
 		"a subscription created by handle must still record the community's DID")
+}
+
+// TestService_SubscribeToARemovedCommunityIsRefusedUntilRestored is the
+// subscribe write path wired to the real community repository bound to the
+// instance authority, with the removal written by the real moderation
+// service: a new subscription to a removed community is refused with
+// communities.ErrCommunityRemoved before anything reaches the subscriber's
+// PDS, and a subscription indexed before the removal is left in place. After
+// restore the subscription is written.
+func TestService_SubscribeToARemovedCommunityIsRefusedUntilRestored(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	name := testkit.UniqueIDWithPrefix(t, "subremoved")
+	communityDID, err := fixtures.Community(ctx, db, name, "owner"+name)
+	require.NoError(t, err)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed(),
+		postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
+	const existingSubscriberDID = "did:plc:existingsubscriber00000"
+	_, err = repo.SubscribeWithCount(ctx, &communities.Subscription{
+		UserDID:           existingSubscriberDID,
+		CommunityDID:      communityDID,
+		SubscribedAt:      time.Now(),
+		RecordURI:         "at://" + existingSubscriberDID + "/social.coves.community.subscription/" + testkit.TID(),
+		RecordCID:         "bafyexistingsubscription",
+		ContentVisibility: 3,
+	})
+	require.NoError(t, err)
+
+	userPDS := &fakeUserPDS{t: t, did: subscriberDID}
+	service := communities.NewCommunityServiceWithPDSFactory(
+		repo, "http://pds.invalid", fixtures.InstanceDID(), "coves.social", nil,
+		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return userPDS, nil }, nil, nil,
+		communities.PrivateHostOptions(true)...)
+
+	moderator := communityremovalfixture.New(db)
+	moderator.Remove(t, communityDID)
+
+	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3)
+	require.ErrorIs(t, err, communities.ErrCommunityRemoved)
+	assert.Nil(t, subscription)
+	assert.Empty(t, userPDS.created, "a refused subscribe must not write to the PDS")
+	existing, err := repo.GetSubscription(ctx, existingSubscriberDID, communityDID)
+	require.NoError(t, err, "a removal leaves the subscriptions indexed before it in place")
+	assert.Equal(t, communityDID, existing.CommunityDID)
+
+	moderator.Restore(t, communityDID)
+	subscription, err = service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3)
+	require.NoError(t, err)
+	require.NotNil(t, subscription)
+	require.Len(t, userPDS.created, 1, "the subscribe accepted after restore is written to the subscriber's PDS")
+	assert.Equal(t, "social.coves.community.subscription", userPDS.created[0].collection)
+	assert.Equal(t, communityDID, userPDS.created[0].record["subject"])
 }

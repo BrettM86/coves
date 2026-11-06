@@ -35,6 +35,10 @@ type Service interface {
 	RestoreContent(ctx context.Context, actorDID string, request RestoreContentRequest) (*MutationResult, error)
 	LabelContent(ctx context.Context, actorDID string, request LabelContentRequest) (*MutationResult, error)
 	RetractContentLabel(ctx context.Context, actorDID string, request RetractContentLabelRequest) (*MutationResult, error)
+	BanAccount(ctx context.Context, actorDID string, request BanAccountRequest) (*MutationResult, error)
+	UnbanAccount(ctx context.Context, actorDID string, request UnbanAccountRequest) (*MutationResult, error)
+	RemoveCommunity(ctx context.Context, actorDID string, request RemoveCommunityRequest) (*MutationResult, error)
+	RestoreCommunity(ctx context.Context, actorDID string, request RestoreCommunityRequest) (*MutationResult, error)
 	ListActions(ctx context.Context, params ListActionsParams) (*ActionPage, error)
 	ListAdminActions(ctx context.Context, params ListAdminActionsParams) (*AdminActionPage, error)
 }

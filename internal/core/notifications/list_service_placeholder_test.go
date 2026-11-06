@@ -19,11 +19,8 @@ type recordingPlaceholderPosts struct {
 	requested []string
 }
 
-func (p *recordingPlaceholderPosts) GetViewsByURIs(_ context.Context, uris []string, viewer string) (map[string]*posts.PostView, error) {
+func (p *recordingPlaceholderPosts) GetViewsByURIs(_ context.Context, uris []string, _ string) (map[string]*posts.PostView, error) {
 	p.requested = append(p.requested, uris...)
-	if viewer != "" {
-		return nil, nil
-	}
 	return p.views, nil
 }
 

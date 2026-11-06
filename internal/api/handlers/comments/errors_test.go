@@ -105,6 +105,8 @@ func TestCommentErrorCodesUnchanged(t *testing.T) {
 		{comments.ErrInvalidFacets, http.StatusBadRequest, "InvalidFacets"},
 		{comments.ErrInvalidCursor, http.StatusBadRequest, "InvalidRequest"},
 		{comments.ErrBanned, http.StatusForbidden, "Banned"},
+		{comments.ErrAccountBanned, http.StatusForbidden, "Banned"},
+		{comments.ErrCommunityRemoved, http.StatusForbidden, "CommunityRemoved"},
 	}
 
 	for _, tt := range tests {
@@ -112,6 +114,28 @@ func TestCommentErrorCodesUnchanged(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handleServiceError(rec, fmt.Errorf("service: %w", tt.err))
 			assertXRPCError(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+// A community ban and an instance account ban share the Banned code, but the
+// message must say which one refused the comment.
+func TestBannedMessagesNameTheBanScope(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantMessage string
+	}{
+		{comments.ErrBanned, "User is banned from this community"},
+		{comments.ErrAccountBanned, "Your account is banned on this instance"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, fmt.Errorf("service: %w", tt.err))
+			body := assertXRPCError(t, rec, http.StatusForbidden, "Banned")
+			if body.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", body.Message, tt.wantMessage)
+			}
 		})
 	}
 }

@@ -267,6 +267,15 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 			// will not list it at all.
 			report.Deferred++
 			d.deferSubject(subject, startedAt)
+		case errors.Is(err, ErrAuthorAccountBanned), errors.Is(err, ErrCommunityRemovedDeferred):
+			// Also NOT A FAILURE: the author's instance account ban is in force,
+			// and the decider holds the post until the ban is lifted or lapses
+			// rather than rejecting or removing it; likewise a community removal
+			// in force until the community is restored. Backing it off is the whole
+			// remedy; a warning per backoff for the length of the ban would bury
+			// the failures this counter exists to surface.
+			report.Deferred++
+			d.deferSubject(subject, startedAt)
 		case err != nil:
 			report.Failed++
 			log.Printf("[ACCEPTANCE-QUEUE] Warning: %s in %s could not be settled: %v",

@@ -10,7 +10,7 @@ Coves needed five changes for this, and this doc covers them:
 4. Origin fields (`origin`, `originUsername`, `originUrl`, `originSoftware`) on bridged profiles, admitted only from a trusted bridge, and served on profile views, author views and notifications.
 5. Resolving a bridged user by `name@host`.
 
-Bridged-account detection is unchanged: it uses `TRUSTED_BRIDGE_PDS_HOSTS` against the PDS, never the handle. The `hostedBy` registrable domain is still `tdpl.io`, so community `hostedBy` checks pass after the rename.
+Bridged-account detection is unchanged: it uses `TRUSTED_BRIDGE_PDS_HOSTS` against the PDS, never the handle. The exception is the moderation exemption for bridge communities (`BridgeTrust.TrustsCommunity`): it requires both a trusted bridge PDS host and a verified handle under that PDS host's registrable domain, since the DID controller writes its own PDS endpoint; see [MODERATION.md](MODERATION.md#community-removal). The `hostedBy` registrable domain is still `tdpl.io`, so community `hostedBy` checks pass after the rename.
 
 ## Identity events
 

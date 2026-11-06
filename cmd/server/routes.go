@@ -6,12 +6,15 @@ import (
 	"time"
 
 	"Coves/internal/api/handlers/aggregator"
+	"Coves/internal/api/handlers/community"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/routes"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
 	defaultavatarhandlers "Coves/internal/api/handlers/defaultavatars"
+	labelhandlers "Coves/internal/api/handlers/labels"
+	postgresRepo "Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -85,7 +88,8 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 		app.oauthClient.ClientApp, app.userRouteOptions())
 
 	routes.RegisterCommunityRoutes(r, app.communityService, app.communityRepo,
-		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
+		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators,
+		community.WithCommunityBans(postgresRepo.NewCommunityBanRepository(app.db)))
 
 	// Posts accept dual auth so aggregator bots can publish with a service
 	// JWT or API key rather than a user's OAuth session.
@@ -101,7 +105,15 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterNotificationPreferenceRoutes(r, app.preferencesService, app.authMiddleware)
 	routes.RegisterAdminReportRoutes(r, app.adminReportService, app.authMiddleware)
 	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
-	routes.RegisterViewerAuthorityRoute(r, app.instanceAdminAuth, app.moderationAuthority)
+	routes.RegisterLabelRoutes(r, postgresRepo.NewLabelRepository(app.db))
+	if app.labelStream != nil {
+		routes.RegisterLabelStreamRoutes(r, app.labelStream)
+	}
+	var viewerAuthorityOptions []routes.ViewerAuthorityRouteOption
+	if app.accountBans != nil {
+		viewerAuthorityOptions = append(viewerAuthorityOptions, routes.WithViewerAuthorityAccountBans(app.accountBans))
+	}
+	routes.RegisterViewerAuthorityRoute(r, app.instanceAdminAuth, app.moderationAuthority, viewerAuthorityOptions...)
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,
 		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
 
@@ -189,6 +201,11 @@ func oauthAllowedOrigins(app *application) []string {
 // mobile captcha page, static assets, and the mobile deep-linking manifests.
 func registerWebRoutes(r chi.Router, app *application) {
 	routes.RegisterWellKnownRoutes(r)
+	// The instance DID document is served here only while label publication
+	// is enabled, so its #atproto_label key is the key labels are signed with.
+	if app.labelPublisher != nil {
+		r.Method(http.MethodGet, "/.well-known/did.json", labelhandlers.NewDIDDocumentHandler(app.labelPublisher))
+	}
 	routes.RegisterWebRoutes(r, app.oauthClient, app.userService, app.cfg.Signup.TurnstileSiteKey)
 	slog.Info("web and well-known endpoints registered")
 }

@@ -1,5 +1,13 @@
 // cmd/reindex-votes/main.go
-// Quick tool to reindex votes from PDS to AppView database
+// Quick tool to reindex votes from PDS to AppView database.
+//
+// Operator warning: a full rebuild deletes every vote row and re-inserts each
+// vote with no hide marker, so it erases the community-ban, account-ban and
+// pending-ban-check hides and counts every vote in the tallies. Nothing
+// re-hides them afterwards: the consumers classify a vote only when they
+// first index it, and a Jetstream replay of a vote whose row exists keeps the
+// row as it is. Votes that were hidden by a ban therefore count permanently.
+// This tool also takes no ban-subject advisory lock.
 package main
 
 import (
@@ -59,7 +67,7 @@ func main() {
 	log.Printf("Found %d accounts on PDS to check for votes", len(dids))
 
 	// Reset vote counts first
-	log.Printf("Resetting all vote counts...")
+	log.Printf("Resetting all vote counts (this also resets community-ban, pending-ban-check and account-ban vote hides; ban-hidden votes count permanently; nothing re-hides them)...")
 	if _, err := db.ExecContext(ctx, "DELETE FROM votes"); err != nil {
 		log.Fatalf("Failed to clear votes table: %v", err)
 	}

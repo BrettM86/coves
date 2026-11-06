@@ -36,6 +36,9 @@ func (s *service) RetractContentLabel(ctx context.Context, actorDID string, requ
 }
 
 func (s *service) GetSubjectState(ctx context.Context, subject string) (*SubjectState, error) {
+	if accountDID, ok := accountSubjectDID(subject); ok {
+		return s.accountSubjectState(ctx, subject, accountDID)
+	}
 	uri, err := syntax.ParseATURI(subject)
 	if err != nil || !uri.Authority().IsDID() || !IsSubjectCollection(uri.Collection().String()) || uri.RecordKey().String() == "" {
 		return nil, fmt.Errorf("%w: expected a record URI with a DID authority and supported collection", ErrInvalidSubject)
@@ -66,6 +69,38 @@ func (s *service) GetSubjectState(ctx context.Context, subject string) (*Subject
 		}
 	}
 	state, err := newSubjectState(subject, stored.Version, recordState, current, stored.ActiveRemoval, stored.ActiveLabels, s.config.InstanceDID)
+	if err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+// accountSubjectState is GetSubjectState for an at://<did> subject. An active
+// decision's recorded subject kind picks an account's or a community's state;
+// with none, an indexed community's state, or else an account's.
+func (s *service) accountSubjectState(ctx context.Context, subject, accountDID string) (*SubjectState, error) {
+	stored, err := s.store.SubjectModeration(ctx, s.config.InstanceDID, subject)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
+	}
+	if stored == nil {
+		return nil, fmt.Errorf("%w: subject store returned no state", ErrModerationUnavailable)
+	}
+	isCommunity := false
+	if stored.ActiveRemoval != nil {
+		isCommunity = stored.ActiveRemoval.SubjectKind == SubjectKindCommunity
+	} else {
+		isCommunity, err = s.isIndexedCommunity(ctx, accountDID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var state SubjectState
+	if isCommunity {
+		state, err = newSubjectState(subject, stored.Version, RecordStateUnavailable, nil, communityRemoval(stored.ActiveRemoval), nil, s.config.InstanceDID)
+	} else {
+		state, err = newAccountSubjectState(subject, stored.Version, stored.ActiveRemoval, s.config.InstanceDID, s.now())
+	}
 	if err != nil {
 		return nil, err
 	}

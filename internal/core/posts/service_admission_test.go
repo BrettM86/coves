@@ -13,10 +13,13 @@ import (
 	"time"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/accountbans"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures/accountbanfixture"
+	"Coves/tests/fixtures/communityremovalfixture"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -45,15 +48,12 @@ import (
 //     behaviour no fake can prove, because it is about what survives in the
 //     database after a write that did not happen.
 //
-// ON SEEDING is_banned DIRECTLY. Nothing in production writes
-// community_memberships at all today — not CreateMembership, not
-// UpdateMembership; both are reachable only from tests. There is no ban
-// endpoint, no moderation consumer, and no firehose path that sets the column.
-// So these tests seed it through the repository, and that is an honest
-// admission of an incomplete feature rather than a shortcut: §4.1 specifies the
-// ban LOOKUP, and the record type that will eventually write it
-// (social.coves.moderation.ban) is not this task's work. When it lands, this
-// seeding becomes the moderation path and these assertions do not change.
+// ON SEEDING THE BAN INDEX DIRECTLY. A ban is a community's
+// social.coves.moderation.ban record, indexed by the post consumer into the
+// community ban index. These tests seed that index through its repository, and
+// deliberately leave the author with NO community_memberships row: a ban does
+// not live on a membership, and posting in a public community never required
+// one.
 
 // admissionFixture is the post service wired with the §8 admission policy over
 // real Postgres, a real PDS, and a clock the test controls.
@@ -61,6 +61,7 @@ type admissionFixture struct {
 	base    *postFixture
 	service posts.Service
 	repo    communities.Repository
+	bans    *postgres.CommunityBanRepository
 	clock   *testClock
 	limits  posts.SubmissionLimits
 }
@@ -97,6 +98,13 @@ func (c *testClock) Advance(d time.Duration) {
 // three hundred would.
 func newAdmissionFixture(t *testing.T) *admissionFixture {
 	t.Helper()
+	return newAdmissionFixtureWithAccountBans(t, func(*sql.DB) accountbans.Reader { return noAccountBans{} })
+}
+
+// newAdmissionFixtureWithAccountBans is newAdmissionFixture with the policy's
+// account-ban read built over the fixture's database.
+func newAdmissionFixtureWithAccountBans(t *testing.T, accountBans func(db *sql.DB) accountbans.Reader) *admissionFixture {
+	t.Helper()
 
 	base := newPostFixture(t)
 	limits := posts.SubmissionLimits{
@@ -111,6 +119,7 @@ func newAdmissionFixture(t *testing.T) *admissionFixture {
 	// "now" is. Advancing forwards is always safe — it ages real rows out of the
 	// window, which is the direction every test here moves.
 	clock := &testClock{now: time.Now().UTC()}
+	bans := postgres.NewCommunityBanRepository(base.db)
 
 	return &admissionFixture{
 		base: base,
@@ -123,12 +132,14 @@ func newAdmissionFixture(t *testing.T) *admissionFixture {
 			// would pass for the wrong reason.
 			append(base.writePathOptions(),
 				posts.WithAdmissionPolicy(posts.AdmissionPolicy{
-					Ledger: postgres.NewSubmissionLedger(base.db),
-					Bans:   base.communityService,
-					Limits: limits,
-					Now:    clock.Now,
+					Ledger:      postgres.NewSubmissionLedger(base.db),
+					Bans:        banIndexReader{bans},
+					AccountBans: accountBans(base.db),
+					Limits:      limits,
+					Now:         clock.Now,
 				}))...),
 		repo:   postgres.NewCommunityRepository(base.db, credentialciphertest.Fixed()),
+		bans:   bans,
 		clock:  clock,
 		limits: limits,
 	}
@@ -151,29 +162,41 @@ func (f *admissionFixture) submit(t *testing.T, communityDID, title string) (*po
 		})
 }
 
-// setBanned seeds (or updates) the author's membership of the fixture's
-// community with the given ban state.
+// noAccountBans is an account-ban read with no active ban for anyone, for
+// fixtures whose subject is not the instance account ban.
+type noAccountBans struct{}
+
+func (noAccountBans) ActiveBan(context.Context, string) (*accountbans.Ban, error) { return nil, nil }
+
+// banIndexReader is the real ban index as the admission policy's ban lookup.
+// It also answers GetMembership with "no membership row", so it satisfies the
+// lookup both before and after the policy reads bans from the ban index.
+type banIndexReader struct {
+	*postgres.CommunityBanRepository
+}
+
+func (banIndexReader) GetMembership(context.Context, string, string) (*communities.Membership, error) {
+	return nil, communities.ErrMembershipNotFound
+}
+
+// setBanned indexes (or removes) a permanent ban of the author in the
+// fixture's community, the way the ban record's ingestion does.
 func (f *admissionFixture) setBanned(t *testing.T, banned bool) {
 	t.Helper()
 
 	ctx := context.Background()
-	membership := &communities.Membership{
-		UserDID:      f.base.author.DID,
-		CommunityDID: f.base.community.DID,
-		JoinedAt:     time.Now().UTC(),
-		LastActiveAt: time.Now().UTC(),
-		IsBanned:     banned,
-	}
-
-	if _, err := f.repo.GetMembership(ctx, f.base.author.DID, f.base.community.DID); err != nil {
-		require.ErrorIs(t, err, communities.ErrMembershipNotFound)
-		_, createErr := f.repo.CreateMembership(ctx, membership)
-		require.NoError(t, createErr)
+	rkey := communities.BanRecordKey(f.base.author.DID)
+	if !banned {
+		require.NoError(t, f.bans.DeleteCommunityBan(ctx, f.base.community.DID, rkey))
 		return
 	}
-
-	_, err := f.repo.UpdateMembership(ctx, membership)
-	require.NoError(t, err)
+	require.NoError(t, f.bans.UpsertCommunityBan(ctx, communities.CommunityBan{
+		CommunityDID: f.base.community.DID,
+		SubjectDID:   f.base.author.DID,
+		RecordKey:    rkey,
+		RecordCID:    "bafyreiadmissionban",
+		Reason:       "spam",
+	}))
 }
 
 // ledgerRows counts what the submission ledger holds for the author in one
@@ -231,10 +254,13 @@ func TestService_ABannedMemberIsRefusedAndAnUnbanRestoresThem(t *testing.T) {
 	f := newAdmissionFixture(t)
 
 	// Before the ban, the author is an ordinary poster in a public community.
-	_, err := f.submit(t, f.base.community.DID, "posted while in good standing")
+	first, err := f.submit(t, f.base.community.DID, "posted while in good standing")
 	require.NoError(t, err)
 
 	f.setBanned(t, true)
+	_, err = f.repo.GetMembership(context.Background(), f.base.author.DID, f.base.community.DID)
+	require.ErrorIs(t, err, communities.ErrMembershipNotFound,
+		"the ban must be enforced from the ban index alone, with no membership row")
 
 	_, err = f.submit(t, f.base.community.DID, "posted after the ban")
 	require.Error(t, err)
@@ -247,11 +273,129 @@ func TestService_ABannedMemberIsRefusedAndAnUnbanRestoresThem(t *testing.T) {
 	// firehose would index it before anything noticed.
 	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID),
 		"the refused submission consumed quota it was never granted")
+	assert.Equal(t, []string{rkeyOf(t, first.URI)},
+		listRecordKeys(t, f.base.author, posts.PostV2Collection),
+		"a refused post must not be written to the author's repo")
 
 	f.setBanned(t, false)
 
 	_, err = f.submit(t, f.base.community.DID, "posted after the unban")
 	assert.NoError(t, err, "lifting a ban must take effect on the next post, not on the next restart")
+}
+
+// An instance account ban, written through the real moderation service and
+// read back through the Postgres account-ban read, stops the author's next
+// post before the ledger or the PDS sees it; lifting it, or a temporary ban
+// running out, lets the author back in. The expiry boundary itself is owned by
+// accountbans.Ban.InForce; this is the wiring.
+func TestService_AnAccountBanRefusesThePostUntilLiftedOrLapsed(t *testing.T) {
+	t.Parallel()
+
+	banUntilTomorrow := func(t *testing.T, moderator *accountbanfixture.Moderator, accountDID string) {
+		expiresAt := time.Now().Add(24 * time.Hour).UTC()
+		moderator.Ban(t, accountDID, &expiresAt)
+	}
+	for _, row := range []struct {
+		name       string
+		setup      func(t *testing.T, moderator *accountbanfixture.Moderator, accountDID string)
+		wantBanned bool
+	}{
+		{"a permanent account ban refuses the post", func(t *testing.T, moderator *accountbanfixture.Moderator, accountDID string) {
+			moderator.Ban(t, accountDID, nil)
+		}, true},
+		{"a temporary account ban in force refuses the post", banUntilTomorrow, true},
+		{"an unbanned account posts", func(t *testing.T, moderator *accountbanfixture.Moderator, accountDID string) {
+			moderator.Ban(t, accountDID, nil)
+			moderator.Unban(t, accountDID)
+		}, false},
+		{"a lapsed temporary ban admits the post with no unban", func(t *testing.T, moderator *accountbanfixture.Moderator, accountDID string) {
+			banUntilTomorrow(t, moderator, accountDID)
+			moderator.Lapse(t, accountDID)
+		}, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+
+			var moderator *accountbanfixture.Moderator
+			f := newAdmissionFixtureWithAccountBans(t, func(db *sql.DB) accountbans.Reader {
+				moderator = accountbanfixture.New(db)
+				return moderator.Reader()
+			})
+			row.setup(t, moderator, f.base.author.DID)
+
+			response, err := f.submit(t, f.base.community.DID, "posted under an account ban decision")
+			if row.wantBanned {
+				require.ErrorIsf(t, err, posts.ErrAccountBanned, "the handler maps this sentinel to a 403 Banned; got: %v", err)
+				assert.Zero(t, f.ledgerRows(t, f.base.community.DID), "a refused post must not reserve a ledger row")
+				assert.Empty(t, listRecordKeys(t, f.base.author, posts.PostV2Collection),
+					"a refused post must not be written to the author's repo")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
+			assert.Equal(t, []string{rkeyOf(t, response.URI)}, listRecordKeys(t, f.base.author, posts.PostV2Collection))
+		})
+	}
+}
+
+// An instance community removal, written through the real moderation service
+// and read through the community repository bound to the instance authority,
+// refuses a user's post and an authorized aggregator's post before anything
+// reaches the author's repo; after restore the same submission is written.
+func TestService_ACommunityRemovalRefusesThePostUntilRestored(t *testing.T) {
+	t.Parallel()
+
+	type submission struct {
+		db           *sql.DB
+		communityDID string
+		submit       func(t *testing.T) error
+		writtenKeys  func(t *testing.T) []string
+	}
+	for _, row := range []struct {
+		name  string
+		build func(t *testing.T) submission
+	}{
+		{"a user's post", func(t *testing.T) submission {
+			f := newAdmissionFixture(t)
+			return submission{
+				db:           f.base.db,
+				communityDID: f.base.community.DID,
+				submit: func(t *testing.T) error {
+					_, err := f.submit(t, f.base.community.DID, "posted to a removed community")
+					return err
+				},
+				writtenKeys: func(t *testing.T) []string { return listRecordKeys(t, f.base.author, posts.PostV2Collection) },
+			}
+		}},
+		{"an authorized aggregator's post", func(t *testing.T) submission {
+			f := newAggregatorFixture(t)
+			return submission{
+				db:           f.base.db,
+				communityDID: f.base.community.DID,
+				submit: func(t *testing.T) error {
+					_, err := f.createPost(t, "syndicated into a removed community")
+					return err
+				},
+				writtenKeys: func(t *testing.T) []string { return listRecordKeys(t, f.aggregator, posts.PostV2Collection) },
+			}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := row.build(t)
+			moderator := communityremovalfixture.New(s.db)
+			moderator.Remove(t, s.communityDID)
+
+			err := s.submit(t)
+			require.ErrorIsf(t, err, posts.ErrCommunityRemoved, "the handler maps this sentinel to a 403 CommunityRemoved; got: %v", err)
+			assert.Empty(t, s.writtenKeys(t), "a post refused for a removed community must not be written to the author's repo")
+
+			moderator.Restore(t, s.communityDID)
+			require.NoError(t, s.submit(t), "a restored community takes the post again")
+			assert.Len(t, s.writtenKeys(t), 1, "the post accepted after restore is written to the author's repo")
+		})
+	}
 }
 
 // The per-author quota: N admitted, N+1 refused, and the limit is per

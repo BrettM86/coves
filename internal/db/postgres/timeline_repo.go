@@ -16,9 +16,9 @@ type postgresTimelineRepo struct {
 // NewTimelineRepository creates a new PostgreSQL timeline repository
 // Sorting (including the log-damped hot rank) is shared across all post feeds —
 // see feedSortClauses and hotRankSQL in feed_repo_base.go
-func NewTimelineRepository(db *sql.DB, cursorSecret string) timeline.Repository {
+func NewTimelineRepository(db *sql.DB, cursorSecret string, options ...AccountRestrictionOption) timeline.Repository {
 	return &postgresTimelineRepo{
-		feedRepoBase: newFeedRepoBase(db, cursorSecret),
+		feedRepoBase: newFeedRepoBase(db, cursorSecret, options),
 	}
 }
 
@@ -51,14 +51,17 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 	// viewer — the same intentional reuse the block filter below makes — so a
 	// pending post reaching the home feed is impossible, while the subscriber
 	// still sees their own non-accepted posts in communities they subscribe to.
-	visJoin, visWhere := visiblePostsJoin(1)
+	// The account-ban authority is bound after the cursor values, and the hot
+	// candidate limit after it.
+	authorityParam := 3 + len(cursorValues)
+	visJoin, visWhere := visiblePostsJoin(1, authorityParam)
 	blockFilter := viewerBlockFilters(1, aggregateSurface)
 
-	hotBoundLimitParam := 3 + len(cursorValues)
+	hotBoundLimitParam := authorityParam + 1
 	hotBoundFilter, hotBoundValues := r.hotCandidateBoundFilter(
 		req.Sort,
 		`p.community_did IN (SELECT community_did FROM community_subscriptions WHERE user_did = $1)`,
-		1, blockFilter, hotBoundLimitParam)
+		1, authorityParam, blockFilter, hotBoundLimitParam)
 
 	// Join with community_subscriptions to get posts from subscribed communities
 	query := fmt.Sprintf(`
@@ -81,6 +84,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 	// Prepare query arguments
 	args := []interface{}{req.UserDID, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
+	args = append(args, r.authorityDID)
 	args = append(args, hotBoundValues...)
 
 	// Execute query

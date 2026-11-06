@@ -34,8 +34,13 @@ var errorMapper = xrpc.NewMapper("vote",
 	// social.coves.feed.vote.delete#NotAuthorized
 	xrpc.Sentinel(votes.ErrNotAuthorized, http.StatusForbidden,
 		"NotAuthorized", "User is not authorized to vote on this content"),
+	// Matches: social.coves.feed.vote.create#Banned
 	xrpc.Sentinel(votes.ErrBanned, http.StatusForbidden,
-		"NotAuthorized", "User is not authorized to vote on this content"),
+		"Banned", "You are banned from this community"),
+	xrpc.Sentinel(votes.ErrAccountBanned, http.StatusForbidden,
+		"Banned", "Your account is banned on this instance"),
+	xrpc.Sentinel(votes.ErrCommunityRemoved, http.StatusForbidden,
+		"CommunityRemoved", "This community has been removed by the instance"),
 )
 
 // writeError writes an XRPC error response.

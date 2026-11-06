@@ -27,7 +27,7 @@ type stubUserService struct {
 	// actorResolutions, when set, answers ResolveActorIdentifierToDID per
 	// identifier. When nil that call answers like ResolveHandleToDID.
 	actorResolutions map[string]stubResolution
-	// profilesByDID, when set, answers GetProfile per DID; a DID missing from
+	// profilesByDID, when set, answers GetProfileForViewer per DID; a DID missing from
 	// it is ErrUserNotFound.
 	profilesByDID map[string]*users.ProfileViewDetailed
 }
@@ -52,7 +52,7 @@ func (s *stubUserService) ResolveActorIdentifierToDID(_ context.Context, identif
 	return resolution.did, resolution.err
 }
 
-func (s *stubUserService) GetProfile(_ context.Context, did string) (*users.ProfileViewDetailed, error) {
+func (s *stubUserService) GetProfileForViewer(_ context.Context, did, _ string) (*users.ProfileViewDetailed, error) {
 	if s.profilesByDID != nil {
 		profile, ok := s.profilesByDID[did]
 		if !ok {

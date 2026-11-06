@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/accountbans"
+	"Coves/internal/core/communities"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -37,22 +39,25 @@ type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData
 
 // voteService implements the Service interface for vote operations
 type voteService struct {
-	repo             Repository
-	oauthClient      *oauthclient.OAuthClient
-	oauthStore       oauth.ClientAuthStore
-	logger           *slog.Logger
-	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
-	now              func() time.Time
-	overlay          *recentWriteOverlay
-	writeLocks       *viewerSubjectLocks
+	repo              Repository
+	oauthClient       *oauthclient.OAuthClient
+	oauthStore        oauth.ClientAuthStore
+	logger            *slog.Logger
+	pdsClientFactory  PDSClientFactory // Optional, for testing. If nil, uses OAuth.
+	now               func() time.Time
+	overlay           *recentWriteOverlay
+	writeLocks        *viewerSubjectLocks
+	communityBans     communities.CommunityBanIndex // Optional; when set, banned voters are refused.
+	communityRemovals communities.RemovalReader     // Optional; when set, votes in removed communities are refused.
+	accountBans       accountbans.Reader            // Optional; when set, banned accounts are refused.
 }
 
 // NewService creates a new vote service instance
-func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger) Service {
+func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger, opts ...ServiceOption) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &voteService{
+	svc := &voteService{
 		repo:        repo,
 		oauthClient: oauthClient,
 		oauthStore:  oauthStore,
@@ -61,15 +66,19 @@ func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStor
 		writeLocks:  newViewerSubjectLocks(),
 		logger:      logger,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // NewServiceWithPDSFactory creates a vote service with a custom PDS client factory.
 // This is primarily for testing with password-based authentication.
-func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSClientFactory) Service {
+func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSClientFactory, opts ...ServiceOption) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &voteService{
+	svc := &voteService{
 		repo:             repo,
 		now:              time.Now,
 		overlay:          newRecentWriteOverlay(),
@@ -77,6 +86,10 @@ func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSC
 		logger:           logger,
 		pdsClientFactory: factory,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // getPDSClient creates a PDS client from an OAuth session.
@@ -123,6 +136,10 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	// Validate subject CID is provided
 	if req.Subject.CID == "" {
 		return nil, ErrInvalidSubject
+	}
+
+	if err := s.refuseBannedVoter(ctx, session.AccountDID.String(), req.Subject.URI); err != nil {
+		return nil, err
 	}
 
 	// Create PDS client for this session

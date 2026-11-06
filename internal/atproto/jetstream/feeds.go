@@ -77,6 +77,7 @@ var consumerWantedCollections = map[string][]string{
 		"social.coves.community.postv2",
 		"social.coves.community.acceptance",
 		"social.coves.community.removal",
+		"social.coves.moderation.ban",
 	},
 	ConsumerAggregators: {
 		"social.coves.aggregator.service",

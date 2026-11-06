@@ -30,7 +30,8 @@ func (h *MeHandler) HandleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile, err := h.userService.GetProfile(r.Context(), userDID)
+	// The account reads its own profile: full, with its ban notice while banned.
+	profile, err := h.userService.GetProfileForViewer(r.Context(), userDID, userDID)
 	if err != nil {
 		handleServiceError(w, err, userDID, "get profile")
 		return

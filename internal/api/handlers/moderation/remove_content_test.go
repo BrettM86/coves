@@ -33,13 +33,17 @@ const (
 
 type mutationServiceFake struct {
 	moderation.Service
-	removeCalls  []moderation.RemoveContentRequest
-	restoreCalls []moderation.RestoreContentRequest
-	labelCalls   []moderation.LabelContentRequest
-	retractCalls []moderation.RetractContentLabelRequest
-	actors       []string
-	result       *moderation.MutationResult
-	err          error
+	removeCalls           []moderation.RemoveContentRequest
+	restoreCalls          []moderation.RestoreContentRequest
+	labelCalls            []moderation.LabelContentRequest
+	retractCalls          []moderation.RetractContentLabelRequest
+	banCalls              []moderation.BanAccountRequest
+	unbanCalls            []moderation.UnbanAccountRequest
+	removeCommunityCalls  []moderation.RemoveCommunityRequest
+	restoreCommunityCalls []moderation.RestoreCommunityRequest
+	actors                []string
+	result                *moderation.MutationResult
+	err                   error
 }
 
 func (fake *mutationServiceFake) RemoveContent(_ context.Context, actorDID string, request moderation.RemoveContentRequest) (*moderation.MutationResult, error) {
@@ -63,6 +67,30 @@ func (fake *mutationServiceFake) LabelContent(_ context.Context, actorDID string
 func (fake *mutationServiceFake) RetractContentLabel(_ context.Context, actorDID string, request moderation.RetractContentLabelRequest) (*moderation.MutationResult, error) {
 	fake.actors = append(fake.actors, actorDID)
 	fake.retractCalls = append(fake.retractCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) BanAccount(_ context.Context, actorDID string, request moderation.BanAccountRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.banCalls = append(fake.banCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) UnbanAccount(_ context.Context, actorDID string, request moderation.UnbanAccountRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.unbanCalls = append(fake.unbanCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) RemoveCommunity(_ context.Context, actorDID string, request moderation.RemoveCommunityRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.removeCommunityCalls = append(fake.removeCommunityCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) RestoreCommunity(_ context.Context, actorDID string, request moderation.RestoreCommunityRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.restoreCommunityCalls = append(fake.restoreCommunityCalls, request)
 	return fake.result, fake.err
 }
 

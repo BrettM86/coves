@@ -59,7 +59,6 @@ func TestGetSubjectStateRejectsInvalidSubjectsBeforeReading(t *testing.T) {
 		"at://alice.test/social.coves.community.post/3kabc",
 		"at://did:plc:x/social.coves.actor.profile/self",
 		"at://did:plc:x/social.coves.community.comment",
-		"at://did:plc:x",
 		"https://example.com/x",
 	} {
 		t.Run(subject, func(t *testing.T) {

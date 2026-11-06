@@ -75,7 +75,7 @@ func newCountingPLC(t *testing.T) *countingPLC {
 func resolveThroughDirectory(t *testing.T, plc *countingPLC, allowPrivateHosts bool) error {
 	t.Helper()
 
-	dir := serviceJWTIdentityDirectory(plc.server.URL, allowPrivateHosts)
+	dir := serviceJWTIdentityDirectory(plc.server.URL, allowPrivateHosts, nil)
 	require.NotNil(t, dir, "the directory must be built")
 
 	did, err := syntax.ParseDID(serviceJWTTestDID)
@@ -147,7 +147,7 @@ func TestServiceJWTIdentityDirectory_PreservesItsOwnTimeout(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			dir := serviceJWTIdentityDirectory("https://plc.example.invalid", allowPrivate)
+			dir := serviceJWTIdentityDirectory("https://plc.example.invalid", allowPrivate, nil)
 			require.NotNil(t, dir)
 
 			assert.Equalf(t, identityHTTPTimeout, dir.HTTPClient.Timeout,
@@ -167,7 +167,7 @@ func TestServiceJWTIdentityDirectory_KeepsThePLCURLItWasGiven(t *testing.T) {
 
 	const plcURL = "https://plc.example.invalid"
 
-	dir := serviceJWTIdentityDirectory(plcURL, false)
+	dir := serviceJWTIdentityDirectory(plcURL, false, nil)
 	require.NotNil(t, dir)
 
 	assert.Equal(t, plcURL, dir.PLCURL,

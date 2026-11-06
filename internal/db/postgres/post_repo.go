@@ -29,6 +29,7 @@ const legacyPostCollection = posts.LegacyPostCollection
 // because it carries more than posts.Repository does — see NewPostRepository.
 type PostRepository struct {
 	db *sql.DB
+	accountRestriction
 }
 
 // postViewSelectColumns is the ordered SELECT list for hydrating a posts.PostView row.
@@ -52,15 +53,33 @@ type PostRepository struct {
 //
 // The author origin columns are COALESCEd to an empty string so a NULL (native author)
 // and a cleared column both scan to "", which omitempty drops.
-const postViewSelectColumns = `
+var postViewSelectColumns = postViewColumns("a.status", "c.avatar_cid")
+
+// authorPostViewSelectColumns is postViewSelectColumns for the queries that
+// filter with authorVisiblePostsJoin: a post in a community under an active
+// instance removal made by the authority authorityExpr names reads with
+// status "removed", the only way its author can see it, and without the
+// removed community's avatar, which the community's own view withholds too.
+func authorPostViewSelectColumns(authorityExpr string) string {
+	communityRemoved := communityRemovedSQL("p.community_did", authorityExpr)
+	return postViewColumns(
+		`CASE WHEN `+communityRemoved+` THEN '`+string(posts.AdmissionStatusRemoved)+`' ELSE a.status END`,
+		`CASE WHEN `+communityRemoved+` THEN NULL ELSE c.avatar_cid END`)
+}
+
+// postViewColumns is the postViewSelectColumns list with admissionStatusExpr
+// as the admission_status column and communityAvatarExpr as the
+// community_avatar column.
+func postViewColumns(admissionStatusExpr, communityAvatarExpr string) string {
+	return `
 		p.uri, p.cid, p.rkey,
 		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
 		COALESCE(u.origin, '') as author_origin, COALESCE(u.origin_username, '') as author_origin_username, COALESCE(u.origin_software, '') as author_origin_software,
-		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url, c.origin as community_origin, COALESCE(c.origin_software, '') as community_origin_software,
+		p.community_did, c.handle as community_handle, c.name as community_name, ` + communityAvatarExpr + ` as community_avatar, c.pds_url as community_pds_url, c.origin as community_origin, COALESCE(c.origin_software, '') as community_origin_software,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
 		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
-		a.status AS admission_status, a.acceptance_uri AS admission_acceptance_uri,
+		` + admissionStatusExpr + ` AS admission_status, a.acceptance_uri AS admission_acceptance_uri,
 		(SELECT jsonb_agg(jsonb_build_object('value', labels.value, 'sources', labels.sources) ORDER BY labels.value)
 		 FROM (
 			SELECT d.value,
@@ -75,6 +94,7 @@ const postViewSelectColumns = `
 			WHERE d.subject_uri = p.uri AND d.kind = 'label' AND d.active
 			GROUP BY d.value
 		 ) labels) AS active_content_labels`
+}
 
 // NewPostRepository creates a new PostgreSQL post repository.
 //
@@ -85,8 +105,12 @@ const postViewSelectColumns = `
 // leave callers that need the gated read unable to reach it. Callers that only
 // want the interface still get it by assignment; the ones that need the gate get
 // a compile error instead of a silent downgrade.
-func NewPostRepository(db *sql.DB) *PostRepository {
-	return &PostRepository{db: db}
+//
+// Its read paths hide the posts of accounts restricted by the
+// WithAccountRestrictionAuthority option's instance from every viewer but
+// their author.
+func NewPostRepository(db *sql.DB, options ...AccountRestrictionOption) *PostRepository {
+	return &PostRepository{db: db, accountRestriction: newAccountRestriction(options)}
 }
 
 // Compile-time proof that the concrete repository still satisfies the interface
@@ -272,7 +296,9 @@ func (r *PostRepository) ActiveRemovalsByURIs(ctx context.Context, uris []string
 // error, it is the answer ("this URI is not indexed here"), and it is what lets
 // the caller tell a genuine lookup FAILURE (a returned error) apart from a URI
 // the AppView has never seen. Rows also carry community handle/name when the
-// community exists; a missing community must not hide an indexed post.
+// community exists; a missing community must not hide an indexed post. Rows
+// carry the community's instance removal and the author's account restriction
+// (accountRestrictedSQL), both under the repository's authority.
 func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
 	result := make(map[string]*posts.Post, len(uris))
 	if len(uris) == 0 {
@@ -282,12 +308,14 @@ func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 	// Bound through a single array parameter (= ANY($1)) rather than an
 	// interpolated IN list, so the SQL stays fully parameterized and the plan is
 	// cached regardless of batch size.
-	query := `SELECT` + rawIndexedRowColumns + `, c.handle, c.name
+	query := `SELECT` + rawIndexedRowColumns + `, c.handle, c.name,
+			` + communityRemovedSQL("p.community_did", "$2") + `,
+			` + accountRestrictedSQL("p.author_did", "$2") + `
 		FROM posts p
 		LEFT JOIN communities c ON c.did = p.community_did
 		WHERE p.uri = ANY($1)`
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), r.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query raw post rows by URIs: %w", err)
 	}
@@ -332,7 +360,7 @@ func scanRawIndexedRow(row rowScanner, withCommunity bool) (*posts.Post, error) 
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
 	}
 	if withCommunity {
-		columns = append(columns, &communityHandle, &communityName)
+		columns = append(columns, &communityHandle, &communityName, &post.CommunityRemoved, &post.AuthorRestricted)
 	}
 	err := row.Scan(columns...)
 	if err != nil {
@@ -388,15 +416,15 @@ func (r *PostRepository) GetViewsByURIs(ctx context.Context, uris []string, view
 	// header about a post the author can see (docs/POSTS.md §6.2). "" is fail-closed, so a
 	// caller that has no viewer to offer degrades to the public answer rather
 	// than to an ungated one.
-	visJoin, visWhere := visiblePostsJoin(2)
+	visJoin, visWhere := authorVisiblePostsJoin(2, 3)
 	query := `
-		SELECT` + postViewSelectColumns + `
+		SELECT` + authorPostViewSelectColumns("$3") + `
 		FROM posts p
 		LEFT JOIN users u ON p.author_did = u.did
 		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
 		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL AND ` + visWhere
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), viewerDID)
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), viewerDID, r.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query posts by URIs: %w", err)
 	}
@@ -440,15 +468,15 @@ func (r *PostRepository) GetViewsByURIs(ctx context.Context, uris []string, view
 // the same deleted_at filter and scanPostView hydration, so the thread header can
 // never diverge from post.get or the feeds on what is visible.
 func (r *PostRepository) VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error) {
-	visJoin, visWhere := visiblePostsJoin(2)
+	visJoin, visWhere := authorVisiblePostsJoin(2, 3)
 	query := `
-		SELECT` + postViewSelectColumns + `
+		SELECT` + authorPostViewSelectColumns("$3") + `
 		FROM posts p
 		LEFT JOIN users u ON p.author_did = u.did
 		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
 		WHERE p.uri = $1 AND p.deleted_at IS NULL AND ` + visWhere
 
-	rows, err := r.db.QueryContext(ctx, query, uri, viewerDID)
+	rows, err := r.db.QueryContext(ctx, query, uri, viewerDID, r.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query visible post header: %w", err)
 	}
@@ -526,10 +554,10 @@ func (r *PostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPos
 	// worthless without: an author feed showing ungated content leaks exactly
 	// what the community feed hides.
 	visibilityParam := paramIndex
-	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+	visJoin, visWhere := authorVisiblePostsJoin(visibilityParam, visibilityParam+1)
 	whereConditions = append(whereConditions, visWhere)
-	args = append(args, req.ViewerDID)
-	paramIndex++
+	args = append(args, req.ViewerDID, r.authorityDID)
+	paramIndex += 2
 
 	// Add limit to args
 	limit := req.Limit
@@ -551,7 +579,7 @@ func (r *PostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPos
 		WHERE %s
 		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $%d
-	`, postViewSelectColumns, visJoin, whereClause, paramIndex)
+	`, authorPostViewSelectColumns(fmt.Sprintf("$%d", visibilityParam+1)), visJoin, whereClause, paramIndex)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

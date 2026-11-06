@@ -16,6 +16,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -312,7 +313,10 @@ func newPostFixture(t *testing.T) *postFixture {
 
 	db := testkit.DB(t)
 	pdsServer := testkit.NewPDS(t)
-	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+	// Bound to the instance authority as cmd/server binds it, so a community
+	// removal by the fixtures' instance reaches the community lookup.
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed(),
+		postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
 
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,

@@ -393,7 +393,7 @@ func newMockCommunityRepo() *mockCommunityRepo {
 	}
 }
 
-func (m *mockCommunityRepo) Create(ctx context.Context, community *communities.Community) (*communities.Community, error) {
+func (m *mockCommunityRepo) Create(ctx context.Context, community *communities.Community, _ ...communities.CreateOption) (*communities.Community, error) {
 	m.communities[community.DID] = community
 	return community, nil
 }

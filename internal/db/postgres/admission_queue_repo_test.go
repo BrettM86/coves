@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -277,4 +278,211 @@ func TestAdmissionsTable_PendingQueueIndex(t *testing.T) {
 		"no partial index on (created_at) restricted to the undecided statuses; ListPendingSubjects runs on a timer over a table that grows "+
 			"with every submission, and the existing (community_did, status, created_at) index cannot serve a cross-community scan. Indexes found: %v",
 		indexDefinitions(t, db, admissionsTable))
+}
+
+// seedAccountBan writes an active instance-scope account ban on accountDID by
+// authorityDID directly, and returns the action id.
+func seedAccountBan(t *testing.T, db *sql.DB, authorityDID, accountDID string) string {
+	t.Helper()
+	return seedInstanceRemoval(t, db, authorityDID, accountDID, "account")
+}
+
+// seedCommunityRemoval writes an active instance-scope community removal on
+// communityDID by authorityDID directly, and returns the action id.
+func seedCommunityRemoval(t *testing.T, db *sql.DB, authorityDID, communityDID string) string {
+	t.Helper()
+	return seedInstanceRemoval(t, db, authorityDID, communityDID, "community")
+}
+
+// seedInstanceRemoval writes an active instance-scope removal decision on
+// at://<did> recorded with subjectKind, and returns the action id.
+func seedInstanceRemoval(t *testing.T, db *sql.DB, authorityDID, did, subjectKind string) string {
+	t.Helper()
+
+	actionID := "queue-account-ban-" + testkit.UniqueID(t)
+	subjectURI := "at://" + did
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO moderation_actions
+		    (id, actor_did, authority_did, scope_kind, subject_uri, subject_collection, subject_kind, action, reason, origin, created_at)
+		VALUES ($1, 'did:plc:queuebanadmin', $2, 'instance', $3, NULL, $4, 'remove', 'spam', 'local', NOW())
+	`, actionID, authorityDID, subjectURI, subjectKind)
+	require.NoError(t, err)
+	_, err = db.ExecContext(context.Background(), `
+		INSERT INTO moderation_decisions
+		    (authority_did, scope_kind, scope_community_did, subject_uri, kind, value, active_action_id, active)
+		VALUES ($1, 'instance', NULL, $2, 'removal', NULL, $3, TRUE)
+	`, authorityDID, subjectURI, actionID)
+	require.NoError(t, err)
+	return actionID
+}
+
+// seedPendingPostsByAuthor inserts count live posts by authorDID, each with a
+// pending admission, created between oldestAge and oldestAge-count seconds ago.
+func seedPendingPostsByAuthor(t *testing.T, db *sql.DB, communityDID, authorDID string, count int, oldestAge time.Duration) {
+	t.Helper()
+
+	ctx := context.Background()
+	prefix := "at://" + authorDID + "/social.coves.community.postv2/" + testkit.TID() + "-"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+		SELECT $1 || n, 'bafyreibanned' || n, 'banned' || n, $2, $3, 'a banned author''s post', NOW()
+		FROM generate_series(1, $4) AS n
+	`, prefix, authorDID, communityDID, count)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO community_post_admissions
+			(community_did, post_uri, status, evaluated_cid, created_at, updated_at)
+		SELECT $1, $2 || n, 'pending', 'bafyreievaluated', NOW() - $3::interval + n * interval '1 second', NOW()
+		FROM generate_series(1, $4) AS n
+	`, communityDID, prefix, oldestAge.String(), count)
+	require.NoError(t, err)
+}
+
+func TestListPendingSubjects_ExcludesAuthorsWithAnAccountBanInForce(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	community := hostedCommunity(t, db, "queueban")
+	instanceDID := "did:web:queue-ban-instance.test"
+
+	// More banned rows than the engine's whole fetch ceiling (batch 100 x
+	// over-fetch 4), all older than the eligible post, so a listing that kept
+	// them would never reach anyone behind them.
+	const bannedCount = 401
+	bannedAuthor := fixtures.DID(testkit.UniqueIDWithPrefix(t, "queuebanned"))
+	seedPendingPostsByAuthor(t, db, community, bannedAuthor, bannedCount, 2*time.Hour)
+	actionID := seedAccountBan(t, db, instanceDID, bannedAuthor)
+	eligible := pendingSubjectIn(t, db, community, "pending", time.Minute)
+
+	bannedPrefix := "at://" + bannedAuthor + "/"
+	countBanned := func(subjects []posts.PendingSubject) int {
+		count := 0
+		for _, subject := range subjects {
+			if strings.HasPrefix(subject.PostURI, bannedPrefix) {
+				count++
+			}
+		}
+		return count
+	}
+
+	repo := NewAdmissionRepository(db, WithAccountBanAuthority(instanceDID))
+
+	subjects, err := repo.ListPendingSubjects(ctx, 400)
+	require.NoError(t, err)
+	assert.Truef(t, slices.Contains(subjectURIs(subjects), eligible),
+		"a banned author's backlog must not starve an eligible post behind it (listed %d rows)", len(subjects))
+	assert.Zero(t, countBanned(subjects), "no row by an author with a ban in force is listed")
+
+	// Another authority's ban is not this instance's ban.
+	foreign, err := NewAdmissionRepository(db, WithAccountBanAuthority("did:web:another-instance.test")).
+		ListPendingSubjects(ctx, 400)
+	require.NoError(t, err)
+	assert.Equal(t, 400, countBanned(foreign), "a ban by a different authority must not exclude the author")
+
+	// A future expiry is still in force.
+	_, err = db.ExecContext(ctx, `UPDATE moderation_actions SET expires_at = NOW() + interval '1 hour' WHERE id = $1`, actionID)
+	require.NoError(t, err)
+	subjects, err = repo.ListPendingSubjects(ctx, 400)
+	require.NoError(t, err)
+	assert.True(t, slices.Contains(subjectURIs(subjects), eligible), "the eligible post is listed while the ban is in force")
+	assert.Zero(t, countBanned(subjects), "a temporary ban that has not lapsed still excludes")
+
+	// A lapsed ban returns the rows, oldest first.
+	_, err = db.ExecContext(ctx, `UPDATE moderation_actions SET expires_at = NOW() - interval '1 minute' WHERE id = $1`, actionID)
+	require.NoError(t, err)
+	subjects, err = repo.ListPendingSubjects(ctx, 400)
+	require.NoError(t, err)
+	require.NotEmpty(t, subjects)
+	assert.True(t, strings.HasPrefix(subjects[0].PostURI, bannedPrefix), "after the ban lapses the author's rows are listed again, oldest first")
+	assert.Equal(t, 400, countBanned(subjects))
+
+	// A lifted ban returns the rows too.
+	_, err = db.ExecContext(ctx, `UPDATE moderation_actions SET expires_at = NULL WHERE id = $1`, actionID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE moderation_decisions SET active = FALSE WHERE active_action_id = $1`, actionID)
+	require.NoError(t, err)
+	subjects, err = repo.ListPendingSubjects(ctx, 400)
+	require.NoError(t, err)
+	require.NotEmpty(t, subjects)
+	assert.True(t, strings.HasPrefix(subjects[0].PostURI, bannedPrefix), "after the ban is lifted the author's rows are listed again, oldest first")
+	assert.Equal(t, 400, countBanned(subjects))
+}
+
+// An account-kind ban keeps excluding its author after a communities row is
+// written for the author's DID: the recorded kind, not the communities table,
+// says the decision is an account ban.
+func TestListPendingSubjects_ExcludesAccountBannedAuthorsIndexedAsCommunities(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	community := hostedCommunity(t, db, "queuekind")
+	instanceDID := "did:web:queue-kind-instance.test"
+
+	bannedAuthor := fixtures.DID(testkit.UniqueIDWithPrefix(t, "queuekindban"))
+	seedPendingPostsByAuthor(t, db, community, bannedAuthor, 1, 2*time.Minute)
+	seedAccountBan(t, db, instanceDID, bannedAuthor)
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO communities (did, name, owner_did, created_by_did, hosted_by_did, handle, pds_url, created_at)
+		VALUES ($1, 'queuekindself', $1, $1, $2, $3, $4, NOW())
+	`, bannedAuthor, instanceDID, testkit.UniqueIDWithPrefix(t, "c-queuekind")+".coves.social", testkit.Endpoints().PDS.BaseURL)
+	require.NoError(t, err)
+	eligible := pendingSubjectIn(t, db, community, "pending", time.Minute)
+
+	subjects, err := NewAdmissionRepository(db, WithAccountBanAuthority(instanceDID)).
+		ListPendingSubjects(ctx, maxPendingSubjectsPerPass)
+	require.NoError(t, err)
+	listed := subjectURIs(subjects)
+	assert.True(t, slices.Contains(listed, eligible), "a clean author's pending post is listed")
+	for _, uri := range listed {
+		assert.Falsef(t, strings.HasPrefix(uri, "at://"+bannedAuthor+"/"),
+			"a post by an account-kind banned author with a communities row must not be listed: %s", uri)
+	}
+}
+
+func TestListPendingSubjects_ExcludesRemovedCommunities(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	instanceDID := "did:web:queue-community-removal-instance.test"
+	removedCommunity := hostedCommunity(t, db, "queueremoved")
+	otherCommunity := hostedCommunity(t, db, "queuekept")
+
+	pending := pendingSubjectIn(t, db, removedCommunity, "pending", 3*time.Minute)
+	pendingReacceptance := pendingSubjectIn(t, db, removedCommunity, "pending_reacceptance", 2*time.Minute)
+	eligible := pendingSubjectIn(t, db, otherCommunity, "pending", time.Minute)
+	// A community removal is the account-ban row shape on the community's DID
+	// (RemoveCommunity: at://<did>, no collection), recorded as community-kind.
+	actionID := seedCommunityRemoval(t, db, instanceDID, removedCommunity)
+
+	repo := NewAdmissionRepository(db, WithAccountBanAuthority(instanceDID))
+	subjects, err := repo.ListPendingSubjects(ctx, maxPendingSubjectsPerPass)
+	require.NoError(t, err)
+	listed := subjectURIs(subjects)
+	assert.True(t, slices.Contains(listed, eligible), "a post in a community that is not removed is listed")
+	assert.False(t, slices.Contains(listed, pending), "a pending post in a removed community is not listed")
+	assert.False(t, slices.Contains(listed, pendingReacceptance), "a pending_reacceptance post in a removed community is not listed")
+
+	// Without an authority nothing is excluded.
+	unbound, err := NewAdmissionRepository(db).ListPendingSubjects(ctx, maxPendingSubjectsPerPass)
+	require.NoError(t, err)
+	assert.Subset(t, subjectURIs(unbound), []string{pending, pendingReacceptance, eligible},
+		"a repository without an authority excludes no community")
+
+	// Another authority's removal is not this instance's removal.
+	foreign, err := NewAdmissionRepository(db, WithAccountBanAuthority("did:web:another-instance.test")).
+		ListPendingSubjects(ctx, maxPendingSubjectsPerPass)
+	require.NoError(t, err)
+	assert.Subset(t, subjectURIs(foreign), []string{pending, pendingReacceptance},
+		"a removal by a different authority must not exclude the community")
+
+	// A restore makes the decision inactive, and the rows are listed again.
+	_, err = db.ExecContext(ctx, `UPDATE moderation_decisions SET active = FALSE WHERE active_action_id = $1`, actionID)
+	require.NoError(t, err)
+	subjects, err = repo.ListPendingSubjects(ctx, maxPendingSubjectsPerPass)
+	require.NoError(t, err)
+	assert.Subset(t, subjectURIs(subjects), []string{pending, pendingReacceptance, eligible},
+		"after the community is restored its pending rows are listed again")
 }

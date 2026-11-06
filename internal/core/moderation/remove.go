@@ -16,7 +16,8 @@ const (
 	doxingReason         = "social.coves.moderation.defs#reasonDoxing"
 )
 
-// removeReasons is every known moderation reason. removeContent and
+// removeReasons is every moderation reason a moderator may choose (the
+// system-only ReasonSubjectMoved is not one). removeContent and
 // restoreContent require one; labelContent and retractContentLabel accept one
 // optionally. Restore, label and retract-label reject the illegal-content and
 // doxing reasons on top of this set.
@@ -75,8 +76,8 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			if stored.Fingerprint != fingerprint {
 				return fail(ErrIdempotencyConflict)
 			}
-			copy := stored.Result
-			result = &copy
+			storedResult := stored.Result
+			result = &storedResult
 			return nil
 		}
 		count, err := tx.CountLiveIdempotencyKeys(ctx, actorDID, now)
@@ -160,6 +161,9 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 				}
 			}
 			if err := tx.SetRemovalDecision(ctx, s.config.InstanceDID, request.Subject.URI, action.ID, true); err != nil {
+				return unavailable(err)
+			}
+			if err := s.publishLabel(ctx, tx, request.Subject.URI, takedownLabelValue, false, action.ID, now); err != nil {
 				return unavailable(err)
 			}
 			if err := tx.SetSubjectVersion(ctx, request.Subject.URI, version+1); err != nil {

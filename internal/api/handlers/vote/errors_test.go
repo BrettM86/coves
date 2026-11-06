@@ -95,7 +95,9 @@ func TestVoteErrorCodes(t *testing.T) {
 		{votes.ErrInvalidSubject, http.StatusBadRequest, "InvalidSubject"},
 		{votes.ErrVoteAlreadyExists, http.StatusConflict, "AlreadyExists"},
 		{votes.ErrNotAuthorized, http.StatusForbidden, "NotAuthorized"},
-		{votes.ErrBanned, http.StatusForbidden, "NotAuthorized"},
+		{votes.ErrBanned, http.StatusForbidden, "Banned"},
+		{votes.ErrAccountBanned, http.StatusForbidden, "Banned"},
+		{votes.ErrCommunityRemoved, http.StatusForbidden, "CommunityRemoved"},
 	}
 
 	for _, tt := range tests {
@@ -113,6 +115,34 @@ func TestVoteErrorCodes(t *testing.T) {
 			}
 			if body.Error != tt.wantCode {
 				t.Errorf("code = %q, want %q", body.Error, tt.wantCode)
+			}
+		})
+	}
+}
+
+// A community ban and an instance account ban share the Banned code, but the
+// message must say which one refused the vote.
+func TestBannedMessagesNameTheBanScope(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantMessage string
+	}{
+		{votes.ErrBanned, "You are banned from this community"},
+		{votes.ErrAccountBanned, "Your account is banned on this instance"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, fmt.Errorf("service: %w", tt.err))
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+			var body XRPCError
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not valid JSON: %v", err)
+			}
+			if body.Error != "Banned" || body.Message != tt.wantMessage {
+				t.Errorf("error = %q message = %q, want Banned / %q", body.Error, body.Message, tt.wantMessage)
 			}
 		})
 	}

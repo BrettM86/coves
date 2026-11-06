@@ -128,6 +128,12 @@ func TestWantedAndConsumedCollections_RetireLegacyPost(t *testing.T) {
 	}
 }
 
+func TestWantedCollections_PostsIncludeCommunityBans(t *testing.T) {
+	wanted, err := WantedCollections(ConsumerPosts)
+	require.NoError(t, err)
+	assert.Contains(t, wanted, "social.coves.moderation.ban")
+}
+
 func TestConsumedCollections_MatchesEveryConsumersFilters(t *testing.T) {
 	consumed := ConsumedCollections()
 

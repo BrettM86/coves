@@ -110,7 +110,6 @@ func TestCommunityRepo_CreateMembership(t *testing.T) {
 			ContributionCount: 4,
 			JoinedAt:          joined,
 			LastActiveAt:      joined.Add(time.Hour),
-			IsBanned:          false,
 			IsModerator:       true,
 		})
 		require.NoError(t, err)
@@ -122,7 +121,6 @@ func TestCommunityRepo_CreateMembership(t *testing.T) {
 		assert.Equal(t, 4, got.ContributionCount)
 		assert.True(t, got.IsModerator, "the moderator flag decides who can act on a community; a "+
 			"column that silently defaults to false is a moderator who cannot moderate")
-		assert.False(t, got.IsBanned)
 		assert.WithinDuration(t, joined, got.JoinedAt, time.Second)
 	})
 
@@ -186,7 +184,7 @@ func TestCommunityRepo_UpdateMembership(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	t.Run("changes reputation, contributions and the two flags", func(t *testing.T) {
+	t.Run("changes reputation, contributions and the moderator flag", func(t *testing.T) {
 		t.Parallel()
 		repo, community := memberOf(t)
 		userDID := "did:plc:promoted00000000000"
@@ -200,7 +198,6 @@ func TestCommunityRepo_UpdateMembership(t *testing.T) {
 			ReputationScore:   99,
 			ContributionCount: 12,
 			LastActiveAt:      active,
-			IsBanned:          true,
 			IsModerator:       true,
 		})
 		require.NoError(t, err)
@@ -209,7 +206,6 @@ func TestCommunityRepo_UpdateMembership(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 99, got.ReputationScore)
 		assert.Equal(t, 12, got.ContributionCount)
-		assert.True(t, got.IsBanned, "a ban that does not persist is a banned user who is not banned")
 		assert.True(t, got.IsModerator)
 		assert.WithinDuration(t, active, got.LastActiveAt, time.Second)
 	})

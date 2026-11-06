@@ -271,8 +271,9 @@ func buildLexiconHarness(t *testing.T, unfurlService unfurl.Service, blobService
 			return h.repo, nil
 		}),
 		WithAdmissionPolicy(AdmissionPolicy{
-			Ledger: h.ledger,
-			Bans:   unenforcedBans{},
+			Ledger:      h.ledger,
+			Bans:        unenforcedBans{},
+			AccountBans: unenforcedAccountBans{},
 			Limits: SubmissionLimits{
 				MaxPerAuthorPerCommunity: 100,
 				Window:                   time.Hour,

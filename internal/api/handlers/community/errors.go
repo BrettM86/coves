@@ -25,6 +25,8 @@ var errorMapper = xrpc.NewMapper("community",
 		"OAuthScopeRequired", "Sign out and back in to authorize community blocking."),
 	xrpc.Sentinel(communities.ErrMemberBanned, http.StatusForbidden,
 		"Blocked", "You are blocked from this community"),
+	xrpc.Sentinel(communities.ErrCommunityRemoved, http.StatusForbidden,
+		"CommunityRemoved", "This community has been removed by the instance"),
 	// communities.ErrAmbiguousCommunity (name@origin matching more than one
 	// row) is mapped by the shared rules: every handler that resolves a
 	// community identifier can surface it, not just this one.

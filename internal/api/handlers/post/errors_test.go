@@ -116,6 +116,8 @@ func TestPostErrorCodes(t *testing.T) {
 		{posts.ErrCommunityNotFound, http.StatusNotFound, "CommunityNotFound"},
 		{posts.ErrNotAuthorized, http.StatusForbidden, "NotAuthorized"},
 		{posts.ErrBanned, http.StatusForbidden, "Banned"},
+		{posts.ErrAccountBanned, http.StatusForbidden, "Banned"},
+		{posts.ErrCommunityRemoved, http.StatusForbidden, "CommunityRemoved"},
 		{posts.ErrNotFound, http.StatusNotFound, "NotFound"},
 		{posts.ErrRateLimitExceeded, http.StatusTooManyRequests, "RateLimitExceeded"},
 	}
@@ -268,6 +270,28 @@ func TestSentinelMessagesAreFixed(t *testing.T) {
 	}
 	if strings.Contains(body.Message, "10.0.0.4") {
 		t.Errorf("internal detail leaked: %q", body.Message)
+	}
+}
+
+// A community ban and an instance account ban share the Banned code, but the
+// message must say which one refused the post.
+func TestBannedMessagesNameTheBanScope(t *testing.T) {
+	tests := []struct {
+		err         error
+		wantMessage string
+	}{
+		{posts.ErrBanned, "You are banned from this community"},
+		{posts.ErrAccountBanned, "Your account is banned on this instance"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, fmt.Errorf("service: %w", tt.err))
+			body := assertXRPCError(t, rec, http.StatusForbidden, "Banned")
+			if body.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", body.Message, tt.wantMessage)
+			}
+		})
 	}
 }
 

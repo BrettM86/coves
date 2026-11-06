@@ -13,14 +13,19 @@ import (
 type GetHandler struct {
 	service communities.Service
 	repo    communities.Repository
+	bans    communities.BanReader
 }
 
 // NewGetHandler creates a new get handler
-func NewGetHandler(service communities.Service, repo communities.Repository) *GetHandler {
-	return &GetHandler{
+func NewGetHandler(service communities.Service, repo communities.Repository, opts ...GetHandlerOption) *GetHandler {
+	h := &GetHandler{
 		service: service,
 		repo:    repo,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // HandleGet retrieves a community by DID or handle
@@ -50,6 +55,10 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	// actions correctly on first paint.
 	common.PopulateCommunityViewerState(r.Context(), r, h.repo, []*communities.Community{community})
 	if err := common.PopulateCommunityBlockState(r.Context(), r, h.repo, community); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if err := h.populateBanState(r, community); err != nil {
 		handleServiceError(w, err)
 		return
 	}

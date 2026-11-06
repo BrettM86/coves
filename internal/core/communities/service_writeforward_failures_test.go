@@ -210,6 +210,24 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		assert.Empty(t, userPDS.created)
 	})
 
+	t.Run("refuses a removed community", func(t *testing.T) {
+		t.Parallel()
+		service, repo, userPDS := writeForwardService(t)
+		repo.seed(&communities.Community{
+			DID:        "did:plc:removedcommunity00000",
+			Handle:     "c-removed." + fakeInstanceDomain,
+			Name:       "removed",
+			Visibility: "public",
+			Status:     "removed",
+		})
+
+		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), "did:plc:removedcommunity00000", 3)
+		require.ErrorIs(t, err, communities.ErrCommunityRemoved,
+			"a removed community takes no new subscriptions, and the refusal has to come before the write to the user's repo")
+		assert.Nil(t, subscription)
+		assert.Empty(t, userPDS.created, "a refused subscribe must not write to the PDS")
+	})
+
 	t.Run("stops at a community that does not exist", func(t *testing.T) {
 		t.Parallel()
 		service, _, userPDS := writeForwardService(t)

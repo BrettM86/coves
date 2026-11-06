@@ -56,12 +56,13 @@ func insertBridgedCommunityOnPDS(t *testing.T, db *sql.DB, did, handle, ownerDID
 	require.NoError(t, err)
 }
 
-func newCommentConsumer(db *sql.DB) *CommentEventConsumer {
-	return NewCommentEventConsumer(postgres.NewCommentRepository(db), db, WithCommentBridgeTrust(bridgeTrustForTests()))
+func newCommentConsumer(db *sql.DB, opts ...CommentEventConsumerOption) *CommentEventConsumer {
+	wired := append([]CommentEventConsumerOption{WithCommentBridgeTrust(bridgeTrustForTests())}, opts...)
+	return NewCommentEventConsumer(postgres.NewCommentRepository(db), db, wired...)
 }
 
-func newVoteConsumer(db *sql.DB) *VoteEventConsumer {
-	return NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+func newVoteConsumer(db *sql.DB, opts ...VoteEventConsumerOption) *VoteEventConsumer {
+	return NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db, opts...)
 }
 
 func commentCommitEvent(op, rkey, cid string, record map[string]interface{}) *JetstreamEvent {

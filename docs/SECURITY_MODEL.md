@@ -67,6 +67,7 @@ A value a record asserts about itself is never trusted where it affects ranking 
 - `createdAt` in the future is clamped to now for posts and comments (`parseRecordCreatedAt`). Hot-rank SQL clamps a negative age to zero. Migration 041 repaired older comment rows; older post rows were not backfilled.
 - `subscriber_count` is derived by a database trigger from `community_subscriptions` (migration 045). The record's `subscriberCount` is ignored.
 - `bridgedStats` are honoured only when the repo's stored PDS URL is a `TRUSTED_BRIDGE_PDS_HOSTS` entry (`BridgeTrust`, default-deny). That URL comes from resolving `event.Did`, never from a record field.
+- A community is a trusted bridge's community, exempt from the account-activity refusal and moderated only with `removeCommunity`, when its DID document's PDS endpoint is a trusted bridge host and its bidirectionally verified handle is under that host's registrable domain (`BridgeTrust.TrustsCommunity`). The endpoint alone is not enough, because the DID controller writes it; the handle proves the bridge vouches for the DID. The handle is the `communities.handle` snapshot, verified when written, served from a cache for up to 24 hours and refreshed on `#identity` events; `CreateCommunity` writes instance-provisioned handles unchecked, so the instance's own PDS must never be in `TRUSTED_BRIDGE_PDS_HOSTS`.
 
 `memberCount` is still seeded from the record at community create. That is a known open gap.
 

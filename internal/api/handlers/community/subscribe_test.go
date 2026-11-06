@@ -316,6 +316,12 @@ func TestSubscribeHandler_Subscribe_ServiceErrors(t *testing.T) {
 			expectedStatus: http.StatusForbidden,
 			expectedError:  "Forbidden",
 		},
+		{
+			name:           "community removed",
+			serviceErr:     communities.ErrCommunityRemoved,
+			expectedStatus: http.StatusForbidden,
+			expectedError:  "CommunityRemoved",
+		},
 	}
 
 	for _, tc := range tests {

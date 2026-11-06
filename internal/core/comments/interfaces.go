@@ -121,4 +121,6 @@ type RepositoryTx interface {
 type RemovalSource struct {
 	AuthorityDID string
 	ScopeKind    string
+	// CommunityDID is the scoped community; empty for instance scope.
+	CommunityDID string
 }

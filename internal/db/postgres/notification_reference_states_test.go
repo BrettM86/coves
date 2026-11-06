@@ -125,27 +125,62 @@ func TestNotificationLookups_ReferenceStates(t *testing.T) {
 		expected = append(expected, expectation{row.name, uri, row.want})
 	}
 	commenter := "did:plc:referencecommenter" + label
+	// A comment hidden at index time by its author's account ban withdraws like
+	// an instance removal, one hidden by a community ban like a moderator
+	// removal. A comment still pending its ban check is not withdrawn.
+	var absentFromStates []string
 	for _, row := range []struct {
-		name    string
-		deleted bool
-		removal string
-		want    notifications.ReferenceState
+		name       string
+		deleted    bool
+		removal    string
+		hideReason string
+		want       notifications.ReferenceState
 	}{
-		{"deleted_comment", true, "", notifications.ReferenceDeleted},
-		{"live_comment", false, "", notifications.ReferenceLive},
-		{"instance_removed_comment", false, "instance", notifications.ReferenceRemovedByServerAdmin},
-		{"community_scope_removed_comment", false, "community", notifications.ReferenceRemovedByModerator},
-		{"inactive_removal_comment", false, "inactive", notifications.ReferenceLive},
-		{"label_only_comment", false, "label", notifications.ReferenceLive},
+		{"deleted_comment", true, "", "", notifications.ReferenceDeleted},
+		{"live_comment", false, "", "", notifications.ReferenceLive},
+		{"instance_removed_comment", false, "instance", "", notifications.ReferenceRemovedByServerAdmin},
+		{"community_scope_removed_comment", false, "community", "", notifications.ReferenceRemovedByModerator},
+		{"inactive_removal_comment", false, "inactive", "", notifications.ReferenceLive},
+		{"label_only_comment", false, "label", "", notifications.ReferenceLive},
+		{"account_ban_hidden_comment", false, "", "account_ban", notifications.ReferenceRemovedByServerAdmin},
+		{"community_ban_hidden_comment", false, "", "community_ban", notifications.ReferenceRemovedByModerator},
+		{"pending_ban_check_comment", false, "", "pending_ban_check", notifications.ReferenceLive},
 	} {
 		uri := seedActorComment(t, db, commenter, uris[0], row.name, createdAt)
 		if row.deleted {
 			_, err := db.ExecContext(ctx, `UPDATE comments SET deleted_at = NOW() WHERE uri = $1`, uri)
 			require.NoError(t, err)
 		}
+		if row.hideReason != "" {
+			_, err := db.ExecContext(ctx, `UPDATE comments SET hide_reason = $2 WHERE uri = $1`, uri, row.hideReason)
+			require.NoError(t, err)
+		}
+		if row.hideReason == "pending_ban_check" {
+			absentFromStates = append(absentFromStates, uri)
+		}
 		moderate(uri, row.removal)
 		uris = append(uris, uri)
 		expected = append(expected, expectation{row.name, uri, row.want})
+	}
+	// A community-ban-hidden comment under an instance-scope removal reads as
+	// the instance removal: one in a community the instance removed, and one
+	// the instance removed directly.
+	removedCommunity := visibilityCommunity(t, db, label+"c")
+	seedCommunityRemoval(t, db, "did:plc:notificationinstance", removedCommunity)
+	removedCommunityPost := seedVisibilityPost(t, db, removedCommunity, author,
+		"removed_community_post", "removed_community_post", createdAt)
+	for _, row := range []struct {
+		name, parent, removal string
+	}{
+		{"community_ban_hidden_comment_in_removed_community", removedCommunityPost, ""},
+		{"community_ban_hidden_instance_removed_comment", uris[0], "instance"},
+	} {
+		uri := seedActorComment(t, db, commenter, row.parent, row.name, createdAt)
+		_, err := db.ExecContext(ctx, `UPDATE comments SET hide_reason = 'community_ban' WHERE uri = $1`, uri)
+		require.NoError(t, err)
+		moderate(uri, row.removal)
+		uris = append(uris, uri)
+		expected = append(expected, expectation{row.name, uri, notifications.ReferenceRemovedByServerAdmin})
 	}
 	missingURI := postV2URI(author, "unindexed")
 	uris = append(uris, missingURI)
@@ -174,11 +209,16 @@ func TestNotificationLookups_ReferenceStates(t *testing.T) {
 	transaction, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer transaction.Rollback()
-	states, err := NewNotificationRepository(db).LookupsTx(transaction).ReferenceStates(ctx, uris)
+	states, err := NewNotificationRepository(db,
+		WithNotificationAccountRestrictionAuthority("did:plc:notificationinstance")).LookupsTx(transaction).ReferenceStates(ctx, uris)
 	require.NoError(t, err)
 	for _, row := range expected {
 		t.Run(row.name, func(t *testing.T) {
 			assert.Equal(t, row.want, states[row.uri], "reference state for %s", row.uri)
 		})
+	}
+	for _, uri := range absentFromStates {
+		_, present := states[uri]
+		assert.False(t, present, "a comment pending its ban check still fans out: %s", uri)
 	}
 }

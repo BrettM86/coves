@@ -110,7 +110,7 @@ func TestSearchPosts_CursorIsBoundToTheSort(t *testing.T) {
 	require.NotEmpty(t, page1, "the sort-binding fixture must return a post to position the foreign cursor")
 	require.NotNil(t, page1[0].Post, "the first search result must carry its hydrated post")
 
-	newSortCursor := newFeedRepoBase(db, "test-secret").buildCursor(page1[0].Post, "new", 0, time.Now())
+	newSortCursor := newFeedRepoBase(db, "test-secret", nil).buildCursor(page1[0].Post, "new", 0, time.Now())
 	_, _, err = repo.SearchPosts(ctx, searchCursorRequest(community, "tungsten", "relevance", &newSortCursor))
 	assert.True(t, errors.Is(err, communityFeeds.ErrInvalidCursor),
 		"a correctly signed cursor for a different ordering is still the wrong position. Accepting a new-sort cursor for relevance corrupts pagination without any error")

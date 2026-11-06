@@ -113,6 +113,23 @@ type Community struct {
 	ID                     int                   `json:"id" db:"id"`
 	AllowExternalDiscovery bool                  `json:"allowExternalDiscovery" db:"allow_external_discovery"`
 	Viewer                 *CommunityViewerState `json:"viewer,omitempty" db:"-"`
+	Status                 string                `json:"status,omitempty" db:"-"`
+}
+
+// CreateOption adjusts a rule Repository.Create applies to a new community.
+type CreateOption int
+
+// AllowAccountActivityForTrustedBridge skips Create's refusal of a community
+// DID with account activity (ErrDIDHasAccountActivity). The community consumer
+// passes it only for a trusted bridge's community.
+const AllowAccountActivityForTrustedBridge CreateOption = 1
+
+// CommunityStatusRemoved is the Status of a community under an active instance removal.
+const CommunityStatusRemoved = "removed"
+
+// RemovalReader reports whether a community is under an active instance removal.
+type RemovalReader interface {
+	CommunityRemoved(ctx context.Context, communityDID string) (bool, error)
 }
 
 // CommunityViewerState contains viewer-specific state for community list views.
@@ -127,6 +144,12 @@ type CommunityViewerState struct {
 	Member     *bool `json:"member,omitempty"`
 	// Blocked reports whether the viewer hides this community from aggregate feeds.
 	Blocked *bool `json:"blocked,omitempty"`
+	// Banned and the ban fields are set only when the viewer has an active
+	// ban in this community; otherwise they are omitted.
+	Banned       *bool  `json:"banned,omitempty"`
+	BanURI       string `json:"banUri,omitempty"`
+	BanReason    string `json:"banReason,omitempty"`
+	BanExpiresAt string `json:"banExpiresAt,omitempty"`
 }
 
 // CommunityView is the API view for community lists
@@ -173,6 +196,7 @@ type CommunityViewDetailed struct {
 	MemberCount            int                   `json:"memberCount"`
 	PostCount              int                   `json:"postCount"`
 	Viewer                 *CommunityViewerState `json:"viewer,omitempty"`
+	Status                 string                `json:"status,omitempty"`
 }
 
 // Subscription represents a lightweight feed follow (user subscribes to see posts)
@@ -206,7 +230,6 @@ type Membership struct {
 	ID                int       `json:"id" db:"id"`
 	ReputationScore   int       `json:"reputationScore" db:"reputation_score"`
 	ContributionCount int       `json:"contributionCount" db:"contribution_count"`
-	IsBanned          bool      `json:"isBanned" db:"is_banned"`
 	IsModerator       bool      `json:"isModerator" db:"is_moderator"`
 }
 
@@ -424,6 +447,15 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		MemberCount:            c.MemberCount,
 		PostCount:              c.PostCount,
 		Viewer:                 c.Viewer,
+		Status:                 c.Status,
+	}
+	// A removed community keeps its identity in the view; its profile is
+	// withheld until a restore.
+	if c.Status == CommunityStatusRemoved {
+		view.DisplayName = ""
+		view.Description = ""
+		view.Avatar = ""
+		view.Banner = ""
 	}
 
 	return view

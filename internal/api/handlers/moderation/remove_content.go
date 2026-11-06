@@ -86,7 +86,7 @@ func writeMutationResult(w http.ResponseWriter, operation string, result *modera
 		view.CurrentSubject = &strongRefView{URI: state.CurrentSubject.URI, CID: state.CurrentSubject.CID}
 	}
 	if state.LocalRemoval != nil {
-		view.LocalRemoval = &actionRefView{ServiceDID: state.LocalRemoval.ServiceDID, ActionID: state.LocalRemoval.ActionID}
+		view.LocalRemoval = newLocalRemovalView(*state.LocalRemoval)
 	}
 	for _, label := range state.LocalLabels {
 		view.LocalLabels = append(view.LocalLabels, localLabelView{

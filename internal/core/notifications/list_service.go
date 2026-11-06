@@ -49,6 +49,20 @@ func NewListService(repo ReadRepository, profiles ProfileLookup, postViews PostV
 	return listService{repo: repo, profiles: profiles, postViews: postViews, commentLookup: commentLookup}
 }
 
+// hiddenFromRecipient reports whether a hydrated comment is gone for the
+// notification recipient. It mirrors the SQL visibility predicate: a deleted
+// comment and any recorded hide reason are gone, except an account_ban hide on
+// a comment the recipient wrote, which the recipient still sees live.
+func hiddenFromRecipient(comment *comments.Comment, recipientDID string) bool {
+	if comment.DeletedAt != nil {
+		return true
+	}
+	if comment.HideReason == nil {
+		return false
+	}
+	return *comment.HideReason != comments.HideReasonAccountBan || comment.CommenterDID != recipientDID
+}
+
 func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor string, limit int) (ListNotificationsOutput, error) {
 	page, err := s.repo.List(ctx, recipientDID, cursor, limit)
 	if err != nil {
@@ -121,7 +135,13 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 	}
 	var postViews map[string]*posts.PostView
 	if len(postURIs) > 0 {
-		postViews, err = s.postViews.GetViewsByURIs(ctx, postURIs, "")
+		// Hydrate as the recipient: their own posts read as they see them
+		// (in a removed community or while restricted), matching the SQL
+		// predicate that counted the row; other authors' posts read as anonymous
+		// because GetViewsByURIs uses the viewer only for author self-view
+		// (authorVisiblePostsJoin). A viewer-dependent filter added there would
+		// make this list disagree with the unread count.
+		postViews, err = s.postViews.GetViewsByURIs(ctx, postURIs, recipientDID)
 		if err != nil {
 			return ListNotificationsOutput{}, fmt.Errorf("load notification posts: %w", err)
 		}
@@ -150,7 +170,9 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 		case row.Reason != ReasonUpvote && row.Record.State == ReferenceLive && !postMention && record == nil:
 			omissions.add(row.Reason, &omissions.missingRecord)
 			continue
-		case row.Reason != ReasonUpvote && row.Record.State == ReferenceLive && !postMention && record.DeletedAt != nil:
+		// A comment re-created hidden after the row was selected is treated like
+		// one deleted before hydration (see hiddenFromRecipient).
+		case row.Reason != ReasonUpvote && row.Record.State == ReferenceLive && !postMention && hiddenFromRecipient(record, recipientDID):
 			omissions.add(row.Reason, &omissions.deletedRecord)
 			continue
 		case row.RootPost.State == ReferenceLive && root == nil:
@@ -184,7 +206,7 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 						omissions.add(row.Reason, &omissions.missingSubject)
 						continue
 					}
-					if comment.DeletedAt != nil {
+					if hiddenFromRecipient(comment, recipientDID) {
 						omissions.add(row.Reason, &omissions.deletedSubject)
 						continue
 					}
@@ -215,7 +237,7 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 					omissions.add(row.Reason, &omissions.missingSubject)
 					continue
 				}
-				if comment.DeletedAt != nil {
+				if hiddenFromRecipient(comment, recipientDID) {
 					omissions.add(row.Reason, &omissions.deletedSubject)
 					continue
 				}

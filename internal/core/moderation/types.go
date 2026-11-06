@@ -2,7 +2,12 @@
 // (Authority) and what the AppView knows about a subject (SubjectState).
 package moderation
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
+)
 
 // RecordState is the repository availability of a subject record as the
 // AppView has indexed it.
@@ -48,6 +53,7 @@ type StrongRef struct {
 type ActionRef struct {
 	ServiceDID string
 	ActionID   string
+	ExpiresAt  *time.Time `json:",omitempty"`
 }
 
 // LocalLabel is a content label established by a local action.
@@ -145,6 +151,67 @@ type RestoreContentRequest struct {
 	PrivateNote     string
 }
 
+// BanAccountRequest is the caller-supplied part of a banAccount call.
+type BanAccountRequest struct {
+	Subject         string
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+	ExpiresAt       *time.Time
+}
+
+// UnbanAccountRequest is the caller-supplied part of an unbanAccount call.
+type UnbanAccountRequest struct {
+	Subject         string
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// RemoveCommunityRequest is the caller-supplied part of a removeCommunity call.
+type RemoveCommunityRequest struct {
+	Subject         string
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// RestoreCommunityRequest is the caller-supplied part of a restoreCommunity call.
+type RestoreCommunityRequest struct {
+	Subject         string
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// CommunityChecker reports whether a DID is an indexed community.
+type CommunityChecker interface {
+	ExistsByDID(ctx context.Context, did string) (bool, error)
+}
+
+// BridgeCommunityTrust reports whether a community belongs to a trusted
+// bridge, whose communities author their bridged content as themselves.
+// jetstream.BridgeTrust implements it with the same rule the community
+// consumer applies when it indexes a community despite account activity.
+type BridgeCommunityTrust interface {
+	// TrustsCommunity reports whether a community with this handle and PDS is
+	// a trusted bridge's community.
+	TrustsCommunity(handle, pdsURL string) bool
+}
+
+// AccountSubjectFacts are the facts about an at://<did> subject that decide
+// whether an indexed community DID can be banned as an account.
+type AccountSubjectFacts struct {
+	HasAccountActivity bool   // an account-sourced users row, or an authored post, comment or vote
+	CommunityPDSURL    string // the indexed community row's pds_url; "" when there is no community row
+	CommunityHandle    string // the indexed community row's stored handle; "" when there is no community row
+	IsCommunity        bool   // an indexed communities row exists for the DID
+}
+
 // Config is the moderation service's configuration.
 type Config struct {
 	InstanceDID            string
@@ -156,4 +223,9 @@ type Config struct {
 	CursorSecret           string
 	CommunityResolver      CommunityResolver
 	HandleResolver         HandleResolver
+	Communities            CommunityChecker
+	// BridgeTrust reports trusted bridge communities; nil trusts nothing.
+	BridgeTrust BridgeCommunityTrust
+	// LabelSigningKey signs the labels decisions publish; nil disables publication.
+	LabelSigningKey atcrypto.PrivateKey
 }

@@ -15,10 +15,12 @@ type postgresFeedRepo struct {
 
 // NewCommunityFeedRepository creates a new PostgreSQL feed repository
 // Sorting (including the log-damped hot rank) is shared across all post feeds —
-// see feedSortClauses and hotRankSQL in feed_repo_base.go
-func NewCommunityFeedRepository(db *sql.DB, cursorSecret string) communityFeeds.Repository {
+// see feedSortClauses and hotRankSQL in feed_repo_base.go. Posts of accounts
+// restricted by the WithAccountRestrictionAuthority option's instance are
+// hidden from every viewer but their author.
+func NewCommunityFeedRepository(db *sql.DB, cursorSecret string, options ...AccountRestrictionOption) communityFeeds.Repository {
 	return &postgresFeedRepo{
-		feedRepoBase: newFeedRepoBase(db, cursorSecret),
+		feedRepoBase: newFeedRepoBase(db, cursorSecret, options),
 	}
 }
 
@@ -52,7 +54,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 	// carries the read's viewer DID — empty for the anonymous public, which sees
 	// accepted content only.
 	visibilityParam := 3 + len(cursorValues)
-	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+	visJoin, visWhere := visiblePostsJoin(visibilityParam, visibilityParam+1)
 
 	// The viewer block filter reuses that same viewer parameter; it is only
 	// meaningful for an authenticated viewer and absent for the public.
@@ -67,7 +69,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 	}
 
 	hotBoundFilter, hotBoundValues := r.hotCandidateBoundFilter(
-		req.Sort, `p.community_did = $1`, visibilityParam, viewerFilter, visibilityParam+1)
+		req.Sort, `p.community_did = $1`, visibilityParam, visibilityParam+1, viewerFilter, visibilityParam+2)
 
 	query := fmt.Sprintf(`
 		%s
@@ -88,7 +90,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 	// and reused by the block filter above.
 	args := []interface{}{req.Community, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
-	args = append(args, req.ViewerDID)
+	args = append(args, req.ViewerDID, r.authorityDID)
 	args = append(args, hotBoundValues...)
 
 	// Execute query
@@ -173,7 +175,7 @@ func (r *postgresFeedRepo) SearchPosts(ctx context.Context, req communityFeeds.S
 	}
 
 	viewerParam := bind(req.ViewerDID)
-	visJoin, visWhere := visiblePostsJoin(viewerParam)
+	visJoin, visWhere := visiblePostsJoin(viewerParam, bind(r.authorityDID))
 
 	var viewerFilter string
 	if req.ViewerDID != "" {

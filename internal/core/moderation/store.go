@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/labels"
 )
 
 // Action kinds, scope kinds and origins recorded on moderation actions.
@@ -13,14 +14,20 @@ const (
 	ActionRestore      = "restore"
 	ActionLabel        = "label"
 	ActionRetractLabel = "retract-label"
+	// ActionApplyRemoval and ActionRetractRemoval record a removal decided
+	// elsewhere (a community's removal record) taking and losing effect here.
+	ActionApplyRemoval   = "apply-removal"
+	ActionRetractRemoval = "retract-removal"
 
 	// LabelNSFW is the only content label value the local classification
 	// procedures accept.
 	LabelNSFW = "nsfw"
 
-	ScopeInstance = "instance"
+	ScopeInstance  = "instance"
+	ScopeCommunity = "community"
 
-	OriginLocal = "local"
+	OriginLocal     = "local"
+	OriginInherited = "inherited"
 
 	// ModerationStateRemoved is the effective state of a subject with an
 	// active removal decision.
@@ -32,7 +39,11 @@ const (
 
 // Action is one immutable row of the moderation action log.
 type Action struct {
-	ID                  string
+	ID string
+	// ActorDID is the DID of the account that acted. It is "" only for system
+	// actions: the subject-moved retract-removal/apply-removal pair the AppView
+	// logs when a comment moves between communities' posts (Reason is
+	// ReasonSubjectMoved). The database enforces this.
 	ActorDID            string
 	AuthorityDID        string
 	ScopeKind           string
@@ -54,6 +65,7 @@ type Action struct {
 	ReversedActionReason string
 	Origin               string
 	CreatedAt            time.Time
+	ExpiresAt            *time.Time `json:",omitempty"`
 	// SubjectAccess is whether the public may know the subject exists, decided
 	// when the log is read. Store.ListActions must set it on every row; the
 	// service refuses a row that leaves it unset. It is read-time state, so it
@@ -68,7 +80,25 @@ type Action struct {
 	// SubjectRootWithheld is read-time state set by Store.ListActions: the public log must not name the
 	// subject's root post, which has a hidden-reason action or is no longer indexed.
 	SubjectRootWithheld bool `json:"-"`
+	// SubjectKind is the kind of an at://<did> subject, empty for a record
+	// subject. Not serialized, so stored idempotency results keep their shape.
+	SubjectKind SubjectKind `json:"-"`
 }
+
+// SubjectKind is the kind of an at://<did> moderation subject, recorded on
+// each action (moderation_actions.subject_kind, migration 075): account bans
+// and unbans are about an account, community removals and restores about a
+// community. A decision's kind is read from it, never inferred from whether
+// the DID has a communities row.
+type SubjectKind string
+
+const (
+	// SubjectKindAccount marks an account ban or unban of the DID.
+	SubjectKindAccount SubjectKind = "account"
+	// SubjectKindCommunity marks a community removal or restore of the DID. A
+	// community removal is always permanent (no expiry; migration 075 checks it).
+	SubjectKindCommunity SubjectKind = "community"
+)
 
 // ContentSnapshot is the text of a removed subject, as indexed when it was
 // removed. CapturedCID is the version it was read from.
@@ -210,6 +240,8 @@ type Transaction interface {
 	SaveIdempotencyRecord(ctx context.Context, record IdempotencyRecord) error
 	// LockSubject locks the subject's version row, creating it at 0.
 	LockSubject(ctx context.Context, subjectURI string) (int64, error)
+	// AccountSubjectFacts reads did's account activity and indexed community row. Call after LockSubject on at://<did>.
+	AccountSubjectFacts(ctx context.Context, did string) (AccountSubjectFacts, error)
 	// ReadIndexedComment returns ErrSubjectNotIndexed for a never-indexed URI.
 	ReadIndexedComment(ctx context.Context, subjectURI string) (*IndexedComment, error)
 	// ReadIndexedPost returns ErrSubjectNotIndexed for a never-indexed URI.
@@ -235,6 +267,10 @@ type Transaction interface {
 	// fails if there is none.
 	SetLabelDecision(ctx context.Context, authorityDID, subjectURI, value, actionID string, active bool) error
 	SetSubjectVersion(ctx context.Context, subjectURI string, version int64) error
+	// InsertLabel signs and stores the label a decision publishes. It takes
+	// the label allocation lock, held to commit so labels commit in seq order,
+	// and assigns cts under it.
+	InsertLabel(ctx context.Context, issue labels.Issue) error
 	InsertMediaBlocks(ctx context.Context, blocks []MediaBlock) error
 	DeactivateMediaBlocks(ctx context.Context, actionID string) error
 	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error

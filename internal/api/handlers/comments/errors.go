@@ -65,6 +65,10 @@ var errorMapper = xrpc.NewMapper("comments",
 		"NotAuthorized", "User is not authorized to perform this action"),
 	xrpc.Sentinel(comments.ErrBanned, http.StatusForbidden,
 		"Banned", "User is banned from this community"),
+	xrpc.Sentinel(comments.ErrAccountBanned, http.StatusForbidden,
+		"Banned", "Your account is banned on this instance"),
+	xrpc.Sentinel(comments.ErrCommunityRemoved, http.StatusForbidden,
+		"CommunityRemoved", "This community has been removed by the instance"),
 
 	// Catch-alls for sentinels added to the domain without a rule here: a new
 	// not-found still answers 404 rather than 500.

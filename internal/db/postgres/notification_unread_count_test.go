@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"Coves/internal/core/posts"
+	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -216,7 +217,7 @@ func TestNotificationUnreadCount_RecipientSortIndex(t *testing.T) {
 		require.NoError(t, err, "analyzing %s", table)
 	}
 	var raw []byte
-	require.NoError(t, f.db.QueryRowContext(context.Background(), "EXPLAIN (FORMAT JSON) "+countUnreadNotificationsSQL, f.recipient).Scan(&raw))
+	require.NoError(t, f.db.QueryRowContext(context.Background(), "EXPLAIN (FORMAT JSON) "+countUnreadNotificationsSQL, f.recipient, fixtures.InstanceDID()).Scan(&raw))
 	var plans []struct {
 		Plan map[string]any `json:"Plan"`
 	}
@@ -259,7 +260,7 @@ func TestNotificationUnreadCount_SeenAtBoundsRecipientIndexScan(t *testing.T) {
 		require.NoError(t, err, "analyzing %s", table)
 	}
 	var raw []byte
-	require.NoError(t, f.db.QueryRowContext(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+countUnreadNotificationsSQL, f.recipient).Scan(&raw))
+	require.NoError(t, f.db.QueryRowContext(context.Background(), "EXPLAIN (ANALYZE, FORMAT JSON) "+countUnreadNotificationsSQL, f.recipient, fixtures.InstanceDID()).Scan(&raw))
 	var plans []struct {
 		Plan map[string]any `json:"Plan"`
 	}

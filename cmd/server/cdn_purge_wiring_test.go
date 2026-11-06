@@ -73,6 +73,8 @@ type cdnWiringTransaction struct {
 	moderation.Transaction
 	comment      moderation.IndexedComment
 	purgeTargets []imageproxy.BlockedBlob
+	// accountSubjectFacts is what AccountSubjectFacts reports for any DID.
+	accountSubjectFacts moderation.AccountSubjectFacts
 }
 
 func (*cdnWiringTransaction) LockActor(context.Context, string) error { return nil }
@@ -94,6 +96,10 @@ func (*cdnWiringTransaction) SaveIdempotencyRecord(context.Context, moderation.I
 	return nil
 }
 func (*cdnWiringTransaction) LockSubject(context.Context, string) (int64, error) { return 0, nil }
+func (transaction *cdnWiringTransaction) AccountSubjectFacts(context.Context, string) (moderation.AccountSubjectFacts, error) {
+	return transaction.accountSubjectFacts, nil
+}
+
 func (transaction *cdnWiringTransaction) ReadIndexedComment(context.Context, string) (*moderation.IndexedComment, error) {
 	comment := transaction.comment
 	return &comment, nil
@@ -299,6 +305,65 @@ func TestBuildModerationRecordsCDNPurgeTargetsAndConfiguresQueue(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, queue == nil)
 	})
+}
+
+// cdnWiringCommunities reports the DIDs it holds as indexed communities.
+type cdnWiringCommunities struct{ dids map[string]bool }
+
+func (communities cdnWiringCommunities) ExistsByDID(_ context.Context, did string) (bool, error) {
+	return communities.dids[did], nil
+}
+
+// buildModeration wires the configured trusted bridge PDS hosts into the
+// service: a ban of an indexed community DID with account activity is refused
+// when its stored community PDS is a trusted bridge and its stored handle is
+// under that bridge's registrable domain, and applied otherwise.
+func TestBuildModerationBanAccountBridgeTrust(t *testing.T) {
+	const (
+		communityDID    = "did:plc:wiringcommunityaccount"
+		trustedHost     = "https://bridge.wiring.test"
+		untrustedPDSURL = "https://pds.wiring-community.test"
+	)
+	for _, test := range []struct {
+		name            string
+		communityPDSURL string
+		wantError       error
+	}{
+		{name: "community on a trusted bridge PDS", communityPDSURL: trustedHost, wantError: moderation.ErrInvalidSubject},
+		{name: "community on an untrusted PDS", communityPDSURL: untrustedPDSURL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Instance: config.InstanceConfig{
+					DID:                   "did:web:ban-wiring.test",
+					TrustedBridgePDSHosts: []string{trustedHost},
+				},
+				Moderation: config.ModerationConfig{IdempotencyRetention: time.Hour, MaxLiveIdempotencyKeys: 10},
+			}
+			store := &cdnWiringStore{transaction: &cdnWiringTransaction{
+				accountSubjectFacts: moderation.AccountSubjectFacts{
+					IsCommunity: true, HasAccountActivity: true,
+					CommunityHandle: "group.wiring.test", CommunityPDSURL: test.communityPDSURL,
+				},
+			}}
+			service, _, err := buildModeration(cfg, moderationDependencies{
+				subjectReader: store, store: store,
+				communities: cdnWiringCommunities{dids: map[string]bool{communityDID: true}},
+			})
+			require.NoError(t, err)
+
+			result, err := service.BanAccount(t.Context(), "did:plc:banwiringadmin", moderation.BanAccountRequest{
+				Subject: communityDID, ExpectedVersion: "v0", IdempotencyKey: "ban-wiring",
+				Reason: "social.coves.moderation.defs#reasonSpam",
+			})
+			if test.wantError != nil {
+				require.ErrorIs(t, err, test.wantError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, moderation.OutcomeApplied, result.Outcome)
+		})
+	}
 }
 
 type cdnWiringSweeper struct{ called chan struct{} }

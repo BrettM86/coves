@@ -102,7 +102,7 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 		return nil, nil, fmt.Errorf("pin Discover Hot snapshot: %w", err)
 	}
 
-	if err := markExcludedDiscoverHotCandidates(ctx, tx, candidates, req.ViewerDID); err != nil {
+	if err := markExcludedDiscoverHotCandidates(ctx, tx, candidates, req.ViewerDID, r.authorityDID); err != nil {
 		return nil, nil, fmt.Errorf("revalidate Discover Hot candidates: %w", err)
 	}
 	var (
@@ -112,7 +112,7 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 	)
 	for {
 		selected, nextState = discover.SelectDiscoverHotCandidates(candidates, req.Limit, state)
-		feedPosts, err = hydrateDiscoverHotCandidates(ctx, tx, selected, req.ViewerDID)
+		feedPosts, err = hydrateDiscoverHotCandidates(ctx, tx, selected, req.ViewerDID, r.authorityDID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("hydrate Discover Hot candidates: %w", err)
 		}
@@ -253,13 +253,13 @@ func (r *postgresDiscoverRepo) createDiscoverHotSnapshot(ctx context.Context, vi
 		return 0, nil, fmt.Errorf("capture Discover Hot ranking time: %w", err)
 	}
 
-	history, err := queryDiscoverHotHistory(ctx, tx, rankingTime)
+	history, err := queryDiscoverHotHistory(ctx, tx, rankingTime, r.authorityDID)
 	if err != nil {
 		return 0, nil, err
 	}
 	reference, referenceAvailable := discover.CommunityReference(history)
 
-	rawCandidates, err := queryDiscoverHotCandidates(ctx, tx, viewerDID, r.effectiveDiscoverHotCandidateLimit())
+	rawCandidates, err := queryDiscoverHotCandidates(ctx, tx, viewerDID, r.effectiveDiscoverHotCandidateLimit(), r.authorityDID)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -370,8 +370,8 @@ type discoverHotRawCandidate struct {
 	Hosted bool
 }
 
-func queryDiscoverHotHistory(ctx context.Context, tx *sql.Tx, rankingTime time.Time) (map[string][]int, error) {
-	visJoin, visWhere := visiblePostsPredicate(anonymousViewerSQL)
+func queryDiscoverHotHistory(ctx context.Context, tx *sql.Tx, rankingTime time.Time, authorityDID string) (map[string][]int, error) {
+	visJoin, visWhere := visiblePostsPredicate(anonymousViewerSQL, "$2")
 	rows, err := tx.QueryContext(ctx, `
 		SELECT p.community_did, p.score
 		FROM posts p`+visJoin+`
@@ -379,7 +379,7 @@ func queryDiscoverHotHistory(ctx context.Context, tx *sql.Tx, rankingTime time.T
 			AND `+visWhere+`
 			AND p.created_at >= $1::timestamptz - INTERVAL '14 days'
 			AND p.created_at < $1::timestamptz - INTERVAL '24 hours'
-	`, rankingTime)
+	`, rankingTime, authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("query Discover Hot history: %w", err)
 	}
@@ -400,8 +400,8 @@ func queryDiscoverHotHistory(ctx context.Context, tx *sql.Tx, rankingTime time.T
 	return history, nil
 }
 
-func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID string, candidateLimit int) ([]discoverHotRawCandidate, error) {
-	visJoin, visWhere := visiblePostsJoin(1)
+func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID string, candidateLimit int, authorityDID string) ([]discoverHotRawCandidate, error) {
+	visJoin, visWhere := visiblePostsJoin(1, 3)
 	viewerFilter := ""
 	if viewerDID != "" {
 		viewerFilter = viewerBlockFilters(1, aggregateSurface)
@@ -416,10 +416,11 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 			LEFT JOIN communities c ON c.did = p.community_did
 		WHERE p.deleted_at IS NULL
 			AND `+visWhere+`
+			AND NOT `+communityRemovedSQL("p.community_did", "$3")+`
 			`+viewerFilter+`
 		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $2
-	`, viewerDID, candidateLimit)
+	`, viewerDID, candidateLimit, authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("query Discover Hot candidates: %w", err)
 	}
@@ -632,7 +633,7 @@ func pinDiscoverHotSnapshot(ctx context.Context, tx *sql.Tx, snapshotID int64) e
 	`, snapshotID).Scan(&pinned)
 }
 
-func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidates []discover.DiscoverHotCandidate, viewerDID string) error {
+func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidates []discover.DiscoverHotCandidate, viewerDID, authorityDID string) error {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -641,7 +642,7 @@ func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidat
 	for i, candidate := range candidates {
 		uris[i] = candidate.URI
 	}
-	visJoin, visWhere := visiblePostsJoin(2)
+	visJoin, visWhere := visiblePostsJoin(2, 3)
 	viewerFilter := ""
 	if viewerDID != "" {
 		viewerFilter = viewerBlockFilters(2, aggregateSurface)
@@ -653,8 +654,9 @@ func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidat
 		WHERE p.uri = ANY($1)
 			AND p.deleted_at IS NULL
 			AND `+visWhere+`
+			AND NOT `+communityRemovedSQL("p.community_did", "$3")+`
 			`+viewerFilter+`
-	`, pq.Array(uris), viewerDID)
+	`, pq.Array(uris), viewerDID, authorityDID)
 	if err != nil {
 		return err
 	}
@@ -678,7 +680,7 @@ func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidat
 	return nil
 }
 
-func hydrateDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, selected []discover.DiscoverHotCandidate, viewerDID string) ([]*discover.FeedViewPost, error) {
+func hydrateDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, selected []discover.DiscoverHotCandidate, viewerDID, authorityDID string) ([]*discover.FeedViewPost, error) {
 	if len(selected) == 0 {
 		return nil, nil
 	}
@@ -687,7 +689,7 @@ func hydrateDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, selected []di
 	for i, candidate := range selected {
 		uris[i] = candidate.URI
 	}
-	visJoin, visWhere := visiblePostsJoin(2)
+	visJoin, visWhere := visiblePostsJoin(2, 3)
 	viewerFilter := ""
 	if viewerDID != "" {
 		viewerFilter = viewerBlockFilters(2, aggregateSurface)
@@ -700,8 +702,9 @@ func hydrateDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, selected []di
 		WHERE p.uri = ANY($1)
 			AND p.deleted_at IS NULL
 			AND `+visWhere+`
+			AND NOT `+communityRemovedSQL("p.community_did", "$3")+`
 			`+viewerFilter+`
-	`, pq.Array(uris), viewerDID)
+	`, pq.Array(uris), viewerDID, authorityDID)
 	if err != nil {
 		return nil, err
 	}

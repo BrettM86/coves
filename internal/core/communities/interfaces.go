@@ -10,7 +10,7 @@ import (
 // This is the AppView's indexed view of communities from the firehose
 type Repository interface {
 	// Community CRUD
-	Create(ctx context.Context, community *Community) (*Community, error)
+	Create(ctx context.Context, community *Community, options ...CreateOption) (*Community, error)
 	GetByDID(ctx context.Context, did string) (*Community, error)
 	GetByHandle(ctx context.Context, handle string) (*Community, error)
 

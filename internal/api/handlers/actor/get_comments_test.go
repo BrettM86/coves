@@ -98,6 +98,10 @@ func (m *mockUserServiceForComments) RequestSignupToken(ctx context.Context, req
 	return nil, nil
 }
 
+func (m *mockUserServiceForComments) IndexHydratedAuthor(ctx context.Context, did, handle, pdsURL string) error {
+	return nil
+}
+
 func (m *mockUserServiceForComments) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
 	return nil
 }
@@ -115,6 +119,10 @@ func (m *mockUserServiceForComments) IsAccountDeleted(ctx context.Context, did s
 }
 
 func (m *mockUserServiceForComments) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
+	return nil, nil
+}
+
+func (m *mockUserServiceForComments) GetProfileForViewer(ctx context.Context, did, viewerDID string) (*users.ProfileViewDetailed, error) {
 	return nil, nil
 }
 

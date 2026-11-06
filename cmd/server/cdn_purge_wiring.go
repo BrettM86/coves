@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/config"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
@@ -25,6 +26,7 @@ type moderationDependencies struct {
 	mediaPurger       moderation.MediaPurger
 	communityResolver moderation.CommunityResolver
 	handleResolver    moderation.HandleResolver
+	communities       moderation.CommunityChecker
 	cdnPurgeQueue     *moderation.CDNPurgeQueue
 }
 
@@ -39,6 +41,9 @@ func buildModeration(cfg *config.Config, dependencies moderationDependencies) (m
 		CursorSecret:           cfg.CursorSecret,
 		CommunityResolver:      dependencies.communityResolver,
 		HandleResolver:         dependencies.handleResolver,
+		Communities:            dependencies.communities,
+		BridgeTrust:            jetstream.NewBridgeTrust(cfg.Instance.TrustedBridgePDSHosts),
+		LabelSigningKey:        cfg.Labels.SigningKey,
 	}
 	var reconcilerOptions []moderation.MediaReconcilerOption
 	if dependencies.cdnPurgeQueue != nil {

@@ -485,8 +485,9 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 			nil, nil, nil, nil, base.pds.URL(),
 			append(base.writePathOptions(),
 				posts.WithAdmissionPolicy(posts.AdmissionPolicy{
-					Ledger: postgres.NewSubmissionLedger(base.db),
-					Bans:   base.communityService,
+					Ledger:      postgres.NewSubmissionLedger(base.db),
+					Bans:        postgres.NewCommunityBanRepository(base.db),
+					AccountBans: noAccountBans{},
 					Limits: posts.SubmissionLimits{
 						MaxPerAuthorPerCommunity: 10,
 						Window:                   time.Hour,

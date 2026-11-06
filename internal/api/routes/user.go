@@ -159,8 +159,9 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		did = resolvedDID
 	}
 
-	// Get full profile with stats
-	profile, err := h.userService.GetProfile(ctx, did)
+	// Get the profile with stats as this viewer sees it
+	viewerDID := middleware.GetUserDID(r)
+	profile, err := h.userService.GetProfileForViewer(ctx, did, viewerDID)
 	if err != nil {
 		if errors.Is(err, users.ErrUserNotFound) {
 			writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
@@ -172,7 +173,6 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hydrate viewer state (blocking) when authenticated
-	viewerDID := middleware.GetUserDID(r)
 	if viewerDID != "" && viewerDID != did && h.userBlockRepo != nil {
 		block, blockErr := h.userBlockRepo.GetBlock(ctx, viewerDID, did)
 		if blockErr == nil && block != nil {

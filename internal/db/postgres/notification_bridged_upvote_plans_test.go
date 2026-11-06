@@ -12,6 +12,7 @@ import (
 
 	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
+	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
 	"github.com/lib/pq"
@@ -45,7 +46,7 @@ func TestNotificationUnreadCount_BridgedSeenAtBoundsRecipientIndexScan(t *testin
 		_, err := f.db.ExecContext(context.Background(), "ANALYZE "+table)
 		require.NoError(t, err)
 	}
-	plan, raw := bridgedCountPlan(t, f.db, buildCountUnreadNotificationsSQL(true), f.recipient)
+	plan, raw := bridgedCountPlan(t, f.db, buildCountUnreadNotificationsSQL(true), f.recipient, fixtures.InstanceDID())
 	node := unreadCountPlanIndexNode(plan, "idx_notifications_recipient_sort")
 	require.NotNil(t, node, "EXPLAIN plan: %s", raw)
 	indexCond, _ := node["Index Cond"].(string)
@@ -197,9 +198,9 @@ func TestNotificationRepository_BridgedStatementsProbeSubjectURIIndexes(t *testi
 	t.Run("count", func(t *testing.T) {
 		retentionSeenAt(t, f.db, f.recipient, base) // before both visible groups
 		var count int
-		require.NoError(t, f.db.QueryRowContext(context.Background(), countSQL, f.recipient).Scan(&count))
+		require.NoError(t, f.db.QueryRowContext(context.Background(), countSQL, f.recipient, fixtures.InstanceDID()).Scan(&count))
 		require.Equal(t, 2, count, "only post and comment bridged groups are unread")
-		plan, raw := bridgedCountPlan(t, f.db, countSQL, f.recipient)
+		plan, raw := bridgedCountPlan(t, f.db, countSQL, f.recipient, fixtures.InstanceDID())
 		node := unreadCountPlanIndexNode(plan, "idx_notifications_recipient_sort")
 		require.NotNil(t, node, "recipient index: %s", raw)
 		condition, _ := node["Index Cond"].(string)
@@ -209,7 +210,7 @@ func TestNotificationRepository_BridgedStatementsProbeSubjectURIIndexes(t *testi
 	t.Run("page with NULL seen_at", func(t *testing.T) {
 		_, err := f.db.ExecContext(context.Background(), `UPDATE notification_state SET seen_at = NULL WHERE did = $1`, f.recipient)
 		require.NoError(t, err)
-		rows, err := f.db.QueryContext(context.Background(), pageSQL, f.recipient, nil, nil, 11)
+		rows, err := f.db.QueryContext(context.Background(), pageSQL, f.recipient, nil, nil, 11, fixtures.InstanceDID())
 		require.NoError(t, err)
 		readStates := map[string]bool{}
 		for rows.Next() {
@@ -225,7 +226,7 @@ func TestNotificationRepository_BridgedStatementsProbeSubjectURIIndexes(t *testi
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
 		require.Equal(t, map[string]bool{post: true, comment: false}, readStates, "newest visible comment is unread")
-		plan, raw := bridgedCountPlan(t, f.db, pageSQL, f.recipient, nil, nil, 11)
+		plan, raw := bridgedCountPlan(t, f.db, pageSQL, f.recipient, nil, nil, 11, fixtures.InstanceDID())
 		requireBridgedPointLookups(t, plan, raw, indexes)
 	})
 	t.Run("aggregate", func(t *testing.T) {

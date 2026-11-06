@@ -57,8 +57,8 @@ func (s *service) labelContent(ctx context.Context, actorDID string, request Lab
 			if stored.Fingerprint != fingerprint {
 				return fail(ErrIdempotencyConflict)
 			}
-			copy := stored.Result
-			result = &copy
+			storedResult := stored.Result
+			result = &storedResult
 			return nil
 		}
 		if request.LabelValue != LabelNSFW {
@@ -132,6 +132,9 @@ func (s *service) labelContent(ctx context.Context, actorDID string, request Lab
 				return unavailable(errors.New("action insert returned no identifier"))
 			}
 			if err := tx.SetLabelDecision(ctx, s.config.InstanceDID, request.Subject.URI, LabelNSFW, action.ID, true); err != nil {
+				return unavailable(err)
+			}
+			if err := s.publishLabel(ctx, tx, request.Subject.URI, LabelNSFW, false, action.ID, now); err != nil {
 				return unavailable(err)
 			}
 			if err := tx.SetSubjectVersion(ctx, request.Subject.URI, version+1); err != nil {

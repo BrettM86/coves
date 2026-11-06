@@ -71,6 +71,22 @@ func (b *BridgeTrust) TrustsPDS(pdsURL string) bool {
 	return ok
 }
 
+// TrustsCommunity reports whether a community with this verified handle and
+// PDS is a trusted bridge's community: the PDS is a trusted bridge host and the
+// handle is under that PDS's registrable domain.
+// A nil gate trusts nothing.
+//
+// Where the handle comes from: communities.handle is written only after a
+// bidirectional check (identity.VerifiedHandle over indigo's LookupDID). The
+// caching resolver may serve a verified identity for up to 24 hours, so the
+// stored handle is a snapshot, refreshed on #identity events, and it is
+// trusted as is at ban time. CreateCommunity writes a handle the instance
+// provisioned itself without that check; that is safe only because the
+// instance's own PDS must never be listed in TRUSTED_BRIDGE_PDS_HOSTS.
+func (b *BridgeTrust) TrustsCommunity(handle, pdsURL string) bool {
+	return b.TrustsPDS(pdsURL) && handleUnderPDSRegistrableDomain(handle, pdsURL)
+}
+
 // normalizePDSHost delegates to bridgedvotes.NormalizeHost, the shared trust and
 // polling comparison rule. It lowercases scheme+host, removes matching default
 // HTTP(S) ports and tolerantly normalizes schemeless stored values.

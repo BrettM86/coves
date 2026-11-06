@@ -1472,6 +1472,15 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 		switch {
 		case views[uri] != nil:
 			results[i] = foundResult(views[uri])
+		case postsByURI[uri] != nil && postsByURI[uri].CommunityRemoved:
+			// A removed community's posts are gone for every viewer but their
+			// author (who got the view above): no tombstone names the post,
+			// its author or its community, whatever else removed it.
+			results[i] = notFoundResult(uri)
+		case postsByURI[uri] != nil && postsByURI[uri].AuthorRestricted && postsByURI[uri].AuthorDID != req.ViewerDID:
+			// A restricted author's posts are gone for every other viewer: no
+			// tombstone names the post or its author while the restriction holds.
+			results[i] = notFoundResult(uri)
 		case postsByURI[uri] != nil && postsByURI[uri].DeletedAt == nil && len(removals[uri]) != 0 && (admitted[uri] || hasRemovedMarker(removed, uri)):
 			// A same-community removal marker already makes the post and its
 			// community public as #removedPost, so the instance tombstone may

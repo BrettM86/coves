@@ -111,7 +111,7 @@ Tests run inside the stack with no Docker socket, so they ask the host to act. T
 
 Rules for all three classes:
 
-1. T2 tests never instantiate consumers and never dial websockets. The AppView container consumes, as deployed; tests observe through serving endpoints and the consumer-health endpoint.
+1. T2 tests never instantiate consumers and never dial websockets. The AppView container consumes, as deployed; tests observe through serving endpoints and the consumer-health endpoint. One narrow exception: a T2 test may dial the AppView's public `com.atproto.label.subscribeLabels` endpoint as a label client through `tests/testkit` (`DialLabelStream`), because that stream is a serving endpoint. T2 tests still never dial Jetstream or instantiate consumers.
 2. T2 runs serially (`-p 1 -parallel 1`, written once, in `run_pipeline_tier` in `scripts/lib/runner-ready.sh`). Contracts share one AppView, one database, one PLC, one cursor stream and both PDSes. If the tier outgrows its budget, shard stacks; do not interleave writers. Identities come from `UniqueID`, and each contract gets a synthetic client IP (`testkit.SyntheticClientIP`) because the AppView's rate limiter keeps one bucket per IP and outlives the run on a kept stack.
 3. Behavioural breadth belongs at T0 and T1. When a contract fails, the answer to "which layer broke?" should be "the pipeline".
 4. Sequential steps inside a contract are legitimate here and only here: eventual consistency is what is under test.

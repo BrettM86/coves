@@ -103,7 +103,7 @@ func (m *listTestService) GetByDID(ctx context.Context, did string) (*communitie
 // listTestRepo implements communities.Repository for list handler tests
 type listTestRepo struct{}
 
-func (r *listTestRepo) Create(ctx context.Context, community *communities.Community) (*communities.Community, error) {
+func (r *listTestRepo) Create(ctx context.Context, community *communities.Community, _ ...communities.CreateOption) (*communities.Community, error) {
 	return nil, nil
 }
 

@@ -164,6 +164,11 @@ type UserService interface {
 	// carry a marker.
 	IndexUser(ctx context.Context, did, handle, pdsURL string) error
 
+	// IndexHydratedAuthor indexes a user discovered only as the author of a
+	// record, with the same erasure gate as IndexUser. The row's IndexSource is
+	// IndexSourceAuthorHydration unless the DID is already indexed as an account.
+	IndexHydratedAuthor(ctx context.Context, did, handle, pdsURL string) error
+
 	// IndexAuthenticatedUser indexes a user who has just proven who they are —
 	// today that means an OAuth login, where the PDS attested the DID and the
 	// handle was verified bidirectionally.
@@ -188,10 +193,18 @@ type UserService interface {
 	// answer makes this an error rather than a "no".
 	IsAccountDeleted(ctx context.Context, did string) (bool, error)
 
-	// GetProfile retrieves a user's full profile with aggregated statistics.
+	// GetProfile retrieves a user's profile with aggregated statistics as a
+	// signed-out viewer sees it: GetProfileForViewer with viewerDID "".
+	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
+
+	// GetProfileForViewer retrieves a user's profile with aggregated
+	// statistics as viewerDID ("" when signed out) sees it.
 	// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
 	// Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
-	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
+	// While the account has an instance account ban in force, every other
+	// viewer gets the suspended profile and the account itself gets its own
+	// profile plus the ban notice.
+	GetProfileForViewer(ctx context.Context, did, viewerDID string) (*ProfileViewDetailed, error)
 
 	// UpdateProfile updates a user's profile fields (display name, description, avatar, banner).
 	// Nil values in the input mean "don't change this field" - only non-nil values are updated.

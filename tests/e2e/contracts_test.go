@@ -18,6 +18,9 @@
 //     that Jetstream delivers, which nobody doubted; the question is whether the
 //     AppView's consumers are wired up, and only the serving endpoint answers it.
 //     tests/testkit/firehose.go exists for T1 and for debugging, not for here.
+//     One exception: a test may dial the AppView's own public
+//     com.atproto.label.subscribeLabels endpoint through tests/testkit's label
+//     client, because that stream is what the AppView serves.
 //   - NEVER instantiate a consumer. cmd/server's wiring is precisely what this
 //     tier exists to exercise. A test-owned consumer passes with the shipped one
 //     dead.

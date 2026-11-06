@@ -78,6 +78,10 @@ func (m *MockUserService) RequestSignupToken(ctx context.Context, req users.Requ
 	return args.Get(0).(*users.RequestSignupTokenResponse), args.Error(1)
 }
 
+func (m *MockUserService) IndexHydratedAuthor(ctx context.Context, did, handle, pdsURL string) error {
+	return nil
+}
+
 func (m *MockUserService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
 	args := m.Called(ctx, did, handle, pdsURL)
 	return args.Error(0)
@@ -99,6 +103,14 @@ func (m *MockUserService) IsAccountDeleted(ctx context.Context, did string) (boo
 
 func (m *MockUserService) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
 	args := m.Called(ctx, did)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*users.ProfileViewDetailed), args.Error(1)
+}
+
+func (m *MockUserService) GetProfileForViewer(ctx context.Context, did, viewerDID string) (*users.ProfileViewDetailed, error) {
+	args := m.Called(ctx, did, viewerDID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

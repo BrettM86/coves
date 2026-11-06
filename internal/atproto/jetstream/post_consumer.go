@@ -65,6 +65,12 @@ type PostEventConsumer struct {
 	// acceptanceCleanup withdraws a hosted community's acceptance when the
 	// author tombstones the post. nil means no sweep runs.
 	acceptanceCleanup AcceptanceDeleter
+	// communityCommentRemovals indexes removal records whose subject is a
+	// comment. nil leaves comment-subject removals unindexed.
+	communityCommentRemovals moderation.CommunityCommentRemovalStore
+	// communityBans indexes social.coves.moderation.ban records. nil leaves
+	// them unindexed.
+	communityBans communities.BanRepository
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.
@@ -156,6 +162,13 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 			return nil
 		}
 		return c.handleCommunityDecisionEvent(ctx, event, commit)
+
+	// A community's ban of an account: event.Did IS the community.
+	case communities.BanCollection:
+		if c.communityBans == nil {
+			return nil
+		}
+		return c.handleCommunityBanEvent(ctx, event, commit)
 	}
 
 	// Silently ignore other operations and other collections
@@ -570,6 +583,12 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 		if err != nil {
 			return false, fmt.Errorf("check post author erasure before indexing: %w", err)
 		}
+	}
+	// The ban subject lock on the author, step (c) of the lock order
+	// (community_ban_hides.go): a community indexed on the author's DID sees
+	// this post or commits first.
+	if err := lockBanSubjectTx(ctx, tx, post.AuthorDID); err != nil {
+		return false, err
 	}
 
 	// 1. Insert the post (idempotent with RETURNING clause)

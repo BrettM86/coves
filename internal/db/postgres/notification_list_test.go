@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"Coves/internal/core/notifications"
+	"Coves/tests/fixtures"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ func (f *unreadVisibilityFixture) insertListedReply(t *testing.T, recipient, rea
 
 func (f *unreadVisibilityFixture) listPage(t *testing.T, recipient, cursor string, limit int) notifications.ListPage {
 	t.Helper()
-	page, err := NewNotificationRepository(f.db).(notifications.ReadRepository).List(context.Background(), recipient, cursor, limit)
+	page, err := NewNotificationRepository(f.db, WithNotificationAccountRestrictionAuthority(fixtures.InstanceDID())).(notifications.ReadRepository).List(context.Background(), recipient, cursor, limit)
 	require.NoError(t, err)
 	return page
 }

@@ -391,3 +391,157 @@ func TestCommunityList_ViewerState(t *testing.T) {
 		}
 	})
 }
+
+// TestCommunityGet_ViewerBanState covers the ban half of community.get's viewer
+// state, read from the real ban index. The response is decoded as a map so an
+// absent key is told apart from a present null or false: a banned flag, URI,
+// reason or expiry the viewer is not subject to must not be served at all.
+func TestCommunityGet_ViewerBanState(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+	bans := postgres.NewCommunityBanRepository(db)
+
+	// Fixed DIDs, so the served ban URI is a literal. The rkey is the unpadded
+	// lowercase base32 SHA-256 of the viewer DID, computed outside the code:
+	// printf '%s' did:plc:banviewera | openssl dgst -sha256 -binary | base32 | tr -d '=' | tr A-Z a-z
+	const (
+		viewerDID       = "did:plc:banviewera"
+		viewerBanRKey   = "pionjobpr3fgp6blueso6t5f4onskrd6zfmfkb7owv64acoexbtq"
+		temporaryDID    = "did:plc:banviewtemporary"
+		permanentDID    = "did:plc:banviewpermanent"
+		lapsedDID       = "did:plc:banviewlapsed"
+		unrelatedDID    = "did:plc:banviewnoban"
+		temporaryExpiry = "2099-01-02T03:04:05Z"
+		lapsedExpiry    = "2001-01-02T03:04:05Z"
+	)
+	for _, did := range []string{temporaryDID, permanentDID, lapsedDID, unrelatedDID} {
+		name := did[len("did:plc:"):]
+		if _, err := repo.Create(ctx, &communities.Community{
+			DID:          did,
+			Handle:       "c-" + name + ".coves.local",
+			Name:         name,
+			DisplayName:  name,
+			OwnerDID:     fixtures.InstanceDID(),
+			CreatedByDID: fixtures.DID("creator" + name),
+			HostedByDID:  fixtures.InstanceDID(),
+			Visibility:   "public",
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}); err != nil {
+			t.Fatalf("creating community %s: %v", did, err)
+		}
+	}
+
+	seedBan := func(communityDID, expiresAt string) {
+		t.Helper()
+		ban := communities.CommunityBan{
+			CommunityDID: communityDID,
+			SubjectDID:   viewerDID,
+			RecordKey:    communities.BanRecordKey(viewerDID),
+			RecordCID:    "bafybanviewrecord",
+			Reason:       "spam",
+		}
+		if expiresAt != "" {
+			expiry, err := time.Parse(time.RFC3339, expiresAt)
+			if err != nil {
+				t.Fatalf("parsing expiry literal %q: %v", expiresAt, err)
+			}
+			ban.ExpiresAt = &expiry
+		}
+		if err := bans.UpsertCommunityBan(ctx, ban); err != nil {
+			t.Fatalf("seeding ban in %s: %v", communityDID, err)
+		}
+	}
+	seedBan(temporaryDID, temporaryExpiry)
+	seedBan(permanentDID, "")
+	seedBan(lapsedDID, lapsedExpiry)
+
+	handler := community.NewGetHandler(&repositoryBackedService{repo: repo}, repo, community.WithCommunityBans(bans))
+
+	// get returns the served viewer object, or nil when the response has none.
+	get := func(t *testing.T, callerDID, communityDID string) map[string]any {
+		t.Helper()
+
+		router := authenticatedAs(callerDID, "/xrpc/social.coves.community.get", handler.HandleGet)
+		req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.get?community="+communityDID, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET community %s: expected 200, got %d: %s", communityDID, rec.Code, rec.Body.String())
+		}
+		var response map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("decoding get response: %v", err)
+		}
+		raw, present := response["viewer"]
+		if !present {
+			return nil
+		}
+		viewer, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("viewer must be an object, got %#v", raw)
+		}
+		return viewer
+	}
+
+	banKeys := []string{"banned", "banUri", "banReason", "banExpiresAt"}
+
+	t.Run("active temporary ban serves banned, uri, reason and expiry", func(t *testing.T) {
+		viewer := get(t, viewerDID, temporaryDID)
+		if viewer == nil {
+			t.Fatalf("expected a viewer object for an authenticated caller")
+		}
+		want := map[string]any{
+			"banned":       true,
+			"banUri":       "at://did:plc:banviewtemporary/social.coves.moderation.ban/" + viewerBanRKey,
+			"banReason":    "spam",
+			"banExpiresAt": temporaryExpiry,
+		}
+		for key, value := range want {
+			if got, present := viewer[key]; !present || got != value {
+				t.Errorf("viewer.%s: expected %#v, got %#v (present=%v)", key, value, got, present)
+			}
+		}
+	})
+
+	t.Run("permanent ban serves banned, uri and reason with no expiry key", func(t *testing.T) {
+		viewer := get(t, viewerDID, permanentDID)
+		if viewer == nil {
+			t.Fatalf("expected a viewer object for an authenticated caller")
+		}
+		want := map[string]any{
+			"banned":    true,
+			"banUri":    "at://did:plc:banviewpermanent/social.coves.moderation.ban/" + viewerBanRKey,
+			"banReason": "spam",
+		}
+		for key, value := range want {
+			if got, present := viewer[key]; !present || got != value {
+				t.Errorf("viewer.%s: expected %#v, got %#v (present=%v)", key, value, got, present)
+			}
+		}
+		if got, present := viewer["banExpiresAt"]; present {
+			t.Errorf("viewer.banExpiresAt must be absent for a permanent ban, got %#v", got)
+		}
+	})
+
+	for _, row := range []struct {
+		name, callerDID, communityDID string
+	}{
+		{"lapsed ban serves no ban keys", viewerDID, lapsedDID},
+		{"viewer with no ban in this community serves no ban keys", viewerDID, unrelatedDID},
+		{"anonymous caller serves no ban keys", "", temporaryDID},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			viewer := get(t, row.callerDID, row.communityDID)
+			for _, key := range banKeys {
+				if got, present := viewer[key]; present {
+					t.Errorf("viewer.%s must be absent, got %#v", key, got)
+				}
+			}
+		})
+	}
+}

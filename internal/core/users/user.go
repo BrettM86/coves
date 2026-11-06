@@ -22,7 +22,21 @@ type User struct {
 	OriginUsername string `json:"originUsername,omitempty" db:"origin_username"`
 	OriginURL      string `json:"originUrl,omitempty" db:"origin_url"`
 	OriginSoftware string `json:"originSoftware,omitempty" db:"origin_software"`
+	// IndexSource records why the users row exists.
+	IndexSource IndexSource `json:"-" db:"index_source"`
 }
+
+// IndexSource is why a users row exists.
+type IndexSource string
+
+const (
+	// IndexSourceAccount: the DID was indexed as an account (firehose identity
+	// or profile, signup, login).
+	IndexSourceAccount IndexSource = "account"
+	// IndexSourceAuthorHydration: the DID was indexed only as the author of a
+	// record.
+	IndexSourceAuthorHydration IndexSource = "author_hydration"
+)
 
 // CreateUserRequest represents the input for creating a new user
 type CreateUserRequest struct {
@@ -93,6 +107,17 @@ type ProfileViewDetailed struct {
 	OriginUsername string `json:"originUsername,omitempty"`
 	OriginURL      string `json:"originUrl,omitempty"`
 	OriginSoftware string `json:"originSoftware,omitempty"`
+	// AccountStatus is "suspended" when another viewer reads a banned account.
+	AccountStatus string `json:"accountStatus,omitempty"`
+	// BanNotice is set only on a banned account's own profile.
+	BanNotice *AccountBanNotice `json:"banNotice,omitempty"`
+}
+
+// AccountBanNotice tells a banned account why it is banned and, for a
+// temporary ban, when the ban ends.
+type AccountBanNotice struct {
+	Reason    string     `json:"reason"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // ProfileViewerState contains the authenticated viewer's relationship to this profile.

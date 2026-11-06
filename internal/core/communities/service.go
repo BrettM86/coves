@@ -922,6 +922,12 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 		return nil, ErrUnauthorized
 	}
 
+	// A community under an instance removal takes no new subscriptions;
+	// existing subscription rows are left in place.
+	if community.Status == CommunityStatusRemoved {
+		return nil, ErrCommunityRemoved
+	}
+
 	// Create PDS client for this session (DPoP authentication)
 	pdsClient, err := s.getPDSClient(ctx, session)
 	if err != nil {

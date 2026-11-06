@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/accountbans"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 
@@ -71,29 +72,52 @@ func (s *stubCommunities) GetByDID(_ context.Context, _ string) (*communities.Co
 	return s.community, nil
 }
 
-// stubBans is the community_memberships lookup. Its default — the zero value —
-// is the ordinary case: no membership row, because posting in a public
-// community has never required joining it.
+// stubBans is the community ban index. Its default — the zero value — is the
+// ordinary case: no ban record. It holds at most one ban, answered only for
+// the community and subject that ban names.
+//
+// It also answers GetMembership with "no membership row": membership is not
+// where a ban lives, so that lookup never reports one.
 type stubBans struct {
-	membership *communities.Membership
-	err        error
+	ban *communities.CommunityBan
+	err error
 
 	calls          int
 	lastIdentifier string
 	lastAuthorDID  string
 }
 
-func (s *stubBans) GetMembership(_ context.Context, userDID, communityIdentifier string) (*communities.Membership, error) {
+func (s *stubBans) GetMembership(context.Context, string, string) (*communities.Membership, error) {
+	return nil, communities.ErrMembershipNotFound
+}
+
+func (s *stubBans) GetCommunityBan(_ context.Context, communityDID, subjectDID string) (*communities.CommunityBan, error) {
 	s.calls++
-	s.lastAuthorDID = userDID
-	s.lastIdentifier = communityIdentifier
+	s.lastAuthorDID = subjectDID
+	s.lastIdentifier = communityDID
 	if s.err != nil {
 		return nil, s.err
 	}
-	if s.membership == nil {
-		return nil, communities.ErrMembershipNotFound
+	if s.ban == nil || s.ban.CommunityDID != communityDID || s.ban.SubjectDID != subjectDID {
+		return nil, communities.ErrCommunityBanNotFound
 	}
-	return s.membership, nil
+	ban := *s.ban
+	return &ban, nil
+}
+
+// stubAccountBans is the instance account-ban read. Its zero value is the
+// ordinary case: no account has an active ban decision.
+type stubAccountBans struct {
+	bans map[string]*accountbans.Ban
+}
+
+func (s *stubAccountBans) ActiveBan(_ context.Context, accountDID string) (*accountbans.Ban, error) {
+	ban, ok := s.bans[accountDID]
+	if !ok {
+		return nil, nil
+	}
+	copied := *ban
+	return &copied, nil
 }
 
 // stubAggregatorAuthorizer stands in for aggregators.Service, whose own
@@ -187,6 +211,7 @@ func (l *stubLedger) liveRows() int { return len(l.rows) }
 type admitHarness struct {
 	communities *stubCommunities
 	bans        *stubBans
+	accountBans *stubAccountBans
 	aggregators *stubAggregatorAuthorizer
 	ledger      *stubLedger
 	limits      SubmissionLimits
@@ -201,6 +226,7 @@ func newAdmitHarness() *admitHarness {
 			Visibility: "public",
 		}},
 		bans:        &stubBans{},
+		accountBans: &stubAccountBans{},
 		aggregators: &stubAggregatorAuthorizer{},
 		limits: SubmissionLimits{
 			MaxPerAuthorPerCommunity: 3,
@@ -225,6 +251,7 @@ func (h *admitHarness) deps() admissionDeps {
 	return admissionDeps{
 		communities: h.communities,
 		bans:        h.bans,
+		accountBans: h.accountBans,
 		aggregators: h.aggregators,
 		ledger:      h.ledger,
 		limits:      h.limits,
@@ -247,13 +274,22 @@ func (h *admitHarness) admit(t *testing.T, actor ActorClass, fingerprint string)
 	})
 }
 
-// banned is a membership row with the ban flag set.
-func banned() *communities.Membership {
-	return &communities.Membership{
-		UserDID:      admitAuthorDID,
+// banned is a permanent ban of the author in the admitted community.
+func banned() *communities.CommunityBan {
+	return &communities.CommunityBan{
 		CommunityDID: admitCommunityDID,
-		IsBanned:     true,
+		SubjectDID:   admitAuthorDID,
+		RecordKey:    "banrecordkey",
+		RecordCID:    "bafyreibanrecord",
+		Reason:       "spam",
 	}
+}
+
+// bannedUntil is a ban of the author in the admitted community that lapses at expiresAt.
+func bannedUntil(expiresAt time.Time) *communities.CommunityBan {
+	ban := banned()
+	ban.ExpiresAt = &expiresAt
+	return ban
 }
 
 // ---------------------------------------------------------------------------
@@ -311,39 +347,57 @@ func TestAdmitPost_DecisionMatrix(t *testing.T) {
 			actor: ActorUser,
 			setup: func(h *admitHarness) {
 				h.communities.community.Visibility = "private"
-				h.bans.membership = banned()
+				h.bans.ban = banned()
 			},
 			wantCode: DecisionCommunityPrivate,
 			why: "a ban must not be disclosed through a privacy wall: answering author-banned would " +
 				"confirm to an outsider both that the community exists and that a moderator has acted on them",
 		},
 		{
-			name:  "a banned member of a public community",
+			name:  "an author with an active ban in a public community and no membership",
 			actor: ActorUser,
 			setup: func(h *admitHarness) {
-				h.bans.membership = banned()
+				h.bans.ban = banned()
 			},
 			wantCode: DecisionAuthorBanned,
-			why:      "the check §4.1 admits does not exist yet, and this is it",
+			why:      "the ban record is the ban; no membership row is needed for it to apply",
 		},
 		{
-			name:  "a member in good standing",
+			name:  "an author whose ban has not yet lapsed on the admission clock",
 			actor: ActorUser,
 			setup: func(h *admitHarness) {
-				h.bans.membership = &communities.Membership{
-					UserDID: admitAuthorDID, CommunityDID: admitCommunityDID, IsBanned: false,
-				}
+				h.bans.ban = bannedUntil(time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC))
 			},
-			wantCode: "",
-			why:      "a membership row is not itself a refusal",
+			wantCode: DecisionAuthorBanned,
+			why:      "a temporary ban applies until its expiresAt",
 		},
 		{
-			name:     "a non-member of a public community",
-			actor:    ActorUser,
-			setup:    func(h *admitHarness) { h.bans.membership = nil },
+			name:  "an author whose ban lapsed before the admission clock",
+			actor: ActorUser,
+			setup: func(h *admitHarness) {
+				h.bans.ban = bannedUntil(time.Date(2026, 8, 1, 11, 0, 0, 0, time.UTC))
+			},
 			wantCode: "",
-			why: "ErrMembershipNotFound is a VALUE meaning 'not banned' — posting in a public " +
-				"community has never required joining it, so the absent row is the common case",
+			why:      "a ban past its expiresAt no longer refuses anything",
+		},
+		{
+			name:  "an author banned only in another community",
+			actor: ActorUser,
+			setup: func(h *admitHarness) {
+				ban := banned()
+				ban.CommunityDID = "did:plc:someothercommunity"
+				h.bans.ban = ban
+			},
+			wantCode: "",
+			why:      "a ban applies to the community whose repo holds it, and nowhere else",
+		},
+		{
+			name:     "an author with no ban in a public community",
+			actor:    ActorUser,
+			setup:    func(h *admitHarness) { h.bans.ban = nil },
+			wantCode: "",
+			why: "ErrCommunityBanNotFound is a VALUE meaning 'not banned' — the absent ban record " +
+				"is the common case",
 		},
 		{
 			name:  "a registered aggregator the community never authorized",
@@ -378,7 +432,7 @@ func TestAdmitPost_DecisionMatrix(t *testing.T) {
 			actor: ActorTrustedAggregator,
 			setup: func(h *admitHarness) {
 				h.communities.community.Visibility = "private"
-				h.bans.membership = banned()
+				h.bans.ban = banned()
 				h.aggregators.err = aggregators.ErrNotAuthorized
 			},
 			wantCode: "",
@@ -415,6 +469,95 @@ func TestAdmitPost_DecisionMatrix(t *testing.T) {
 	}
 }
 
+// An instance account ban refuses every author class, aggregators included,
+// on the admission clock, before any quota is spent.
+func TestAdmitPost_AccountBan(t *testing.T) {
+	t.Parallel()
+
+	permanent := &accountbans.Ban{ActionID: "action-ban", Reason: "social.coves.moderation.defs#reasonSpam"}
+	lapsedAtNow := &accountbans.Ban{
+		ActionID: "action-ban", Reason: "social.coves.moderation.defs#reasonSpam",
+		ExpiresAt: func() *time.Time { at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC); return &at }(),
+	}
+
+	for _, tc := range []struct {
+		name     string
+		actor    ActorClass
+		ban      *accountbans.Ban
+		wantCode DecisionCode
+	}{
+		{name: "a user author with an account ban in force", actor: ActorUser, ban: permanent, wantCode: DecisionAccountBanned},
+		{name: "a registered aggregator with an account ban in force", actor: ActorRegisteredAggregator, ban: permanent, wantCode: DecisionAccountBanned},
+		{name: "a trusted aggregator with an account ban in force", actor: ActorTrustedAggregator, ban: permanent, wantCode: DecisionAccountBanned},
+		{name: "a temporary ban whose expiresAt is the admission clock", actor: ActorUser, ban: lapsedAtNow, wantCode: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAdmitHarness()
+			authorDID := admitAuthorDID
+			if tc.actor != ActorUser {
+				authorDID = admitAggregatorDID
+			}
+			h.accountBans.bans = map[string]*accountbans.Ban{authorDID: tc.ban}
+
+			decision, err := h.admit(t, tc.actor, "fingerprint-1")
+			require.NoError(t, err, "an account ban is a refusal, not an error")
+			assert.Equal(t, tc.wantCode, decision.Code)
+			if tc.wantCode == "" {
+				assert.True(t, decision.Admitted(), "a lapsed ban admits with no unban: %+v", decision)
+				assert.Equal(t, 1, h.ledger.liveRows())
+				return
+			}
+			assert.False(t, decision.Admitted())
+			assert.ErrorIs(t, refusalError(decision), ErrAccountBanned, "an account ban answers as the instance account-ban sentinel")
+			assert.Nil(t, decision.Reservation)
+			assert.Zero(t, h.ledger.liveRows(), "a refused submission must not hold a ledger reservation")
+		})
+	}
+}
+
+// An instance community removal refuses every author class, aggregators
+// included, before any quota is spent; the same community without the removed
+// status admits.
+func TestAdmitPost_CommunityRemoved(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		actor    ActorClass
+		status   string
+		wantCode DecisionCode
+	}{
+		{name: "a user submitting to a removed community", actor: ActorUser, status: "removed", wantCode: "community-removed"},
+		{name: "a registered aggregator submitting to a removed community", actor: ActorRegisteredAggregator, status: "removed", wantCode: "community-removed"},
+		{name: "a trusted aggregator submitting to a removed community", actor: ActorTrustedAggregator, status: "removed", wantCode: "community-removed"},
+		{name: "a user submitting to the community without the removed status", actor: ActorUser, status: "", wantCode: ""},
+		{name: "a registered aggregator submitting to the community without the removed status", actor: ActorRegisteredAggregator, status: "", wantCode: ""},
+		{name: "a trusted aggregator submitting to the community without the removed status", actor: ActorTrustedAggregator, status: "", wantCode: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAdmitHarness()
+			h.communities.community.Status = tc.status
+
+			decision, err := h.admit(t, tc.actor, "fingerprint-1")
+			require.NoError(t, err, "a community removal is a refusal, not an error")
+			assert.Equal(t, tc.wantCode, decision.Code)
+			if tc.wantCode == "" {
+				assert.True(t, decision.Admitted(), "a community without the removed status admits: %+v", decision)
+				assert.Equal(t, 1, h.ledger.liveRows())
+				return
+			}
+			assert.False(t, decision.Admitted())
+			assert.ErrorIs(t, refusalError(decision), ErrCommunityRemoved, "a community removal answers as the community-removed sentinel")
+			assert.Nil(t, decision.Reservation)
+			assert.Zero(t, h.ledger.liveRows(), "a refused submission must not hold a ledger reservation")
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Check order
 // ---------------------------------------------------------------------------
@@ -428,7 +571,7 @@ func TestAdmitPost_PrivateCommunityNeverConsultsModerationState(t *testing.T) {
 
 	h := newAdmitHarness()
 	h.communities.community.Visibility = "private"
-	h.bans.membership = banned()
+	h.bans.ban = banned()
 
 	decision, err := h.admit(t, ActorUser, "probe")
 	require.NoError(t, err)
@@ -485,7 +628,7 @@ func TestAdmitPost_AggregatorsAreNotBanChecked(t *testing.T) {
 			t.Parallel()
 
 			h := newAdmitHarness()
-			h.bans.membership = banned()
+			h.bans.ban = banned()
 
 			decision, err := h.admit(t, actor, "syndicated")
 			require.NoError(t, err)
@@ -612,7 +755,7 @@ func TestAdmitPost_AnAggregatorLookupFailureIsAnErrorNotARefusal(t *testing.T) {
 		"a submission we could not evaluate must not reserve quota")
 }
 
-// A ban lookup that fails for any reason OTHER than "no such membership" must
+// A ban lookup that fails for any reason OTHER than "no such ban" must
 // fail the request.
 //
 // This is the single most consequential line in the whole decision. Treating an
@@ -991,10 +1134,11 @@ func TestNewPostService_RefusesConstructionWithoutACompleteAdmissionPolicy(t *te
 	}
 	complete := func() AdmissionPolicy {
 		return AdmissionPolicy{
-			Ledger: &stubLedger{now: time.Now},
-			Bans:   &stubBans{},
-			Limits: validLimits,
-			Now:    time.Now,
+			Ledger:      &stubLedger{now: time.Now},
+			Bans:        &stubBans{},
+			AccountBans: &stubAccountBans{},
+			Limits:      validLimits,
+			Now:         time.Now,
 		}
 	}
 
@@ -1019,6 +1163,14 @@ func TestNewPostService_RefusesConstructionWithoutACompleteAdmissionPolicy(t *te
 			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
 				p := complete()
 				p.Bans = nil
+				return p
+			}())},
+		},
+		{
+			name: "a policy with no account ban lookup",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.AccountBans = nil
 				return p
 			}())},
 		},

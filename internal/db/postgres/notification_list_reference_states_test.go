@@ -31,6 +31,15 @@ func setListedCommentCID(t *testing.T, f *unreadVisibilityFixture, uri, cid stri
 	require.NoError(t, err)
 }
 
+// setListedCommentHideReason records the index-time hide reason the comment
+// consumer would have recorded (migration 069), with its index order and time.
+func setListedCommentHideReason(t *testing.T, f *unreadVisibilityFixture, uri, reason string) {
+	t.Helper()
+	_, err := f.db.ExecContext(context.Background(), `UPDATE comments SET hide_reason = $2,
+		coves_index_order = nextval('coves_index_order'), coves_index_time = NOW() WHERE uri = $1`, uri, reason)
+	require.NoError(t, err)
+}
+
 // Each case lists one notification and counts it against a seen_at just before
 // it, so a row that is listed is counted exactly once and a hidden row is neither
 // listed nor counted. Admin moderation decisions are seeded in main's moderation
@@ -174,6 +183,30 @@ func TestNotificationList_ReferenceStatesAndCurrentCIDs(t *testing.T) {
 			wantRecord: serverAdminRemoved("bafyadminremovedreply"),
 		},
 		{
+			name: "community-ban-hidden reply comment record", reason: "postReply", recordState: "communityBanHidden",
+			rootCID: "bafybanhiddenrecordroot", subjectCID: "bafybanhiddenrecordroot", recordCID: "bafybanhiddenreply",
+			wantRoot: live("bafybanhiddenrecordroot"), wantSubject: live("bafybanhiddenrecordroot"),
+			wantRecord: notifications.ListedReference{State: notifications.ReferenceRemovedByModerator, CID: "bafybanhiddenreply"},
+		},
+		{
+			name: "community-ban-hidden commentReply subject", reason: "commentReply", subjectState: "communityBanHidden",
+			rootCID: "bafybanhiddensubjectroot", subjectCID: "bafybanhiddensubject", recordCID: "bafybanhiddensubjectreply",
+			wantRoot:    live("bafybanhiddensubjectroot"),
+			wantSubject: notifications.ListedReference{State: notifications.ReferenceRemovedByModerator, CID: "bafybanhiddensubject"},
+			wantRecord:  live("bafybanhiddensubjectreply"),
+		},
+		{
+			name: "community-ban-hidden reply comment record with server-admin removal", reason: "postReply", recordState: "communityBanHiddenAndInstanceRemoved",
+			rootCID: "bafybanhiddenadminroot", subjectCID: "bafybanhiddenadminroot", recordCID: "bafybanhiddenadminreply",
+			wantRoot: live("bafybanhiddenadminroot"), wantSubject: live("bafybanhiddenadminroot"),
+			wantRecord: serverAdminRemoved("bafybanhiddenadminreply"),
+		},
+		{
+			name: "reply comment record with a pending ban check", reason: "postReply", recordState: "pendingBanCheck",
+			rootCID: "bafypendingbanroot", subjectCID: "bafypendingbanroot", recordCID: "bafypendingbanreply",
+			hidden: true,
+		},
+		{
 			name: "server-admin-removed post mention record", reason: "mention", recordState: "instanceRemoved",
 			rootCID: "bafyadminmentionroot", recordCID: "bafyadminremovedmention",
 			wantRoot: live("bafyadminmentionroot"), wantRecord: serverAdminRemoved("bafyadminremovedmention"),
@@ -235,6 +268,8 @@ func TestNotificationList_ReferenceStatesAndCurrentCIDs(t *testing.T) {
 				case "deletedAndInstanceRemoved":
 					f.deleteComment(t, subject)
 					seedModerationDecision(t, f.db, subject, "removal", "", true)
+				case "communityBanHidden":
+					setListedCommentHideReason(t, f, subject, "community_ban")
 				}
 			case "mention":
 				subject = ""
@@ -250,8 +285,16 @@ func TestNotificationList_ReferenceStatesAndCurrentCIDs(t *testing.T) {
 				record = f.comment(t, root)
 				setListedCommentCID(t, f, record, tc.recordCID)
 			}
-			if tc.recordState == "instanceRemoved" {
+			switch tc.recordState {
+			case "instanceRemoved":
 				seedModerationDecision(t, f.db, record, "removal", "", true)
+			case "communityBanHidden":
+				setListedCommentHideReason(t, f, record, "community_ban")
+			case "communityBanHiddenAndInstanceRemoved":
+				setListedCommentHideReason(t, f, record, "community_ban")
+				seedModerationDecision(t, f.db, record, "removal", "", true)
+			case "pendingBanCheck":
+				setListedCommentHideReason(t, f, record, "pending_ban_check")
 			}
 			// listNotificationAt stores bafyunreadrecord, never the current record CID.
 			f.listNotificationAt(t, f.recipient, f.actor, tc.reason, record, subject, root, f.sortAt)

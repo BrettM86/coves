@@ -18,6 +18,8 @@ import (
 
 	"Coves/internal/atproto/identity"
 	covesoauth "Coves/internal/atproto/oauth"
+	"Coves/internal/core/accountbans"
+	"Coves/internal/core/accountstatus"
 	"Coves/internal/core/blobs"
 	"Coves/internal/validation"
 )
@@ -60,6 +62,8 @@ const profileBackfillTimeout = 10 * time.Second
 
 type userService struct {
 	userRepo         UserRepository
+	accountBans      accountbans.Reader   // Optional; when set, banned accounts' profiles read as suspended to others.
+	accountStatuses  accountstatus.Reader // Optional; when set, PDS-restricted accounts' profiles read as suspended to others.
 	identityResolver identity.Resolver
 	defaultPDS       string // Default PDS URL for this Coves instance (used when creating new local users via registration API)
 
@@ -277,6 +281,13 @@ func NewUserService(
 // CreateUser creates a new user in the AppView database
 // This method is idempotent: if a user with the same DID already exists, it returns the existing user
 func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
+	return s.createUser(ctx, req, IndexSourceAccount)
+}
+
+// createUser is CreateUser with the row's IndexSource. An account source
+// upgrades an existing author-hydration row to an account row; nothing
+// downgrades one.
+func (s *userService) createUser(ctx context.Context, req CreateUserRequest, source IndexSource) (*User, error) {
 	if err := s.validateCreateRequest(req); err != nil {
 		return nil, err
 	}
@@ -287,9 +298,10 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*U
 	req.PDSURL = strings.TrimSpace(req.PDSURL)
 
 	user := &User{
-		DID:    req.DID,
-		Handle: req.Handle,
-		PDSURL: req.PDSURL,
+		DID:         req.DID,
+		Handle:      req.Handle,
+		PDSURL:      req.PDSURL,
+		IndexSource: source,
 	}
 
 	// Try to create the user
@@ -689,7 +701,15 @@ func (s *userService) IndexAuthenticatedUser(ctx context.Context, did, handle, p
 			slog.String("did", did))
 	}
 
-	return s.indexUserRecord(ctx, did, handle, pdsURL)
+	return s.indexUserRecord(ctx, did, handle, pdsURL, IndexSourceAccount)
+}
+
+// IndexHydratedAuthor indexes a DID seen only as the author of a record, under
+// IndexUser's erasure gate. The row it writes is an author-hydration row, which
+// is not account activity: the authored record counts on its own. A DID already
+// indexed as an account keeps its account row.
+func (s *userService) IndexHydratedAuthor(ctx context.Context, did, handle, pdsURL string) error {
+	return s.indexGatedUser(ctx, did, handle, pdsURL, IndexSourceAuthorHydration)
 }
 
 // IndexUser creates or updates a user in the local database.
@@ -700,6 +720,12 @@ func (s *userService) IndexAuthenticatedUser(ctx context.Context, did, handle, p
 // best-effort — this heals users whose profile firehose event was never delivered
 // without ever blocking or failing the IndexUser call itself.
 func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
+	return s.indexGatedUser(ctx, did, handle, pdsURL, IndexSourceAccount)
+}
+
+// indexGatedUser is IndexUser and IndexHydratedAuthor: the erasure gate, then
+// the users row with the given IndexSource.
+func (s *userService) indexGatedUser(ctx context.Context, did, handle, pdsURL string, source IndexSource) error {
 	// THE ERASURE GATE, and IndexUser is where it belongs because this is the
 	// FIREHOSE's door into the users table. A DID appearing in a profile or
 	// identity event means only that some repo somewhere emitted a record — a
@@ -733,24 +759,25 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 		}
 	}
 
-	return s.indexUserRecord(ctx, did, handle, pdsURL)
+	return s.indexUserRecord(ctx, did, handle, pdsURL, source)
 }
 
-// indexUserRecord writes the users row, and is everything the two indexing
-// methods do once each has finished deciding whether it may.
+// indexUserRecord writes the users row with the given IndexSource, and is
+// everything the indexing methods do once each has finished deciding whether
+// it may.
 //
 // It is shared rather than copied because the decision is the only difference
 // between them: IndexUser refuses an erased DID, IndexAuthenticatedUser
 // un-erases it, and from here on the two must stay identical. A second copy of
 // this would be a second chance for one door into the users table to acquire a
 // behaviour the other lacks.
-func (s *userService) indexUserRecord(ctx context.Context, did, handle, pdsURL string) error {
-	// Try to create the user (idempotent - CreateUser returns existing user if DID exists)
-	user, err := s.CreateUser(ctx, CreateUserRequest{
+func (s *userService) indexUserRecord(ctx context.Context, did, handle, pdsURL string, source IndexSource) error {
+	// Try to create the user (idempotent - createUser returns existing user if DID exists)
+	user, err := s.createUser(ctx, CreateUserRequest{
 		DID:    did,
 		Handle: handle,
 		PDSURL: pdsURL,
-	})
+	}, source)
 	if err != nil {
 		// Check if it's a handle conflict (user exists with different handle)
 		// In this case, update the handle instead
@@ -840,10 +867,23 @@ func (s *userService) backfillProfile(ctx context.Context, did, pdsURL string) {
 		slog.String("pds_url", pdsURL))
 }
 
-// GetProfile retrieves a user's full profile with aggregated statistics.
+// GetProfile retrieves a user's profile with aggregated statistics as a
+// signed-out viewer sees it: a restricted account reads as suspended. See
+// GetProfileForViewer.
+func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error) {
+	return s.GetProfileForViewer(ctx, did, "")
+}
+
+// GetProfileForViewer retrieves a user's full profile with aggregated
+// statistics as viewerDID ("" when signed out) sees it.
 // Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
 // Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
-func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error) {
+//
+// While the account has an instance account ban in force, every other viewer
+// gets the suspended profile (suspendedProfile) and the account itself gets
+// its full profile plus the ban notice. A PDS-confirmed takendown or suspended
+// account status reads the same way to others, with no notice to the account.
+func (s *userService) GetProfileForViewer(ctx context.Context, did, viewerDID string) (*ProfileViewDetailed, error) {
 	did = strings.TrimSpace(did)
 	if did == "" {
 		return nil, fmt.Errorf("DID is required")
@@ -883,7 +923,26 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 	profile.Avatar = blobs.HydrateImageURL(config, user.PDSURL, user.DID, user.AvatarCID, "avatar")
 	profile.Banner = blobs.HydrateImageURL(config, user.PDSURL, user.DID, user.BannerCID, "banner")
 
-	return profile, nil
+	ban, err := s.accountBanInForce(ctx, user.DID)
+	if err != nil {
+		return nil, err
+	}
+	statusRestricted, err := s.accountStatusRestricted(ctx, user.DID)
+	if err != nil {
+		return nil, err
+	}
+	if ban == nil && !statusRestricted {
+		return profile, nil
+	}
+	if viewerDID == user.DID {
+		// Only an admin ban carries a notice; a PDS takedown or suspension
+		// has no reason to show and refuses no Coves write.
+		if ban != nil {
+			profile.BanNotice = &AccountBanNotice{Reason: ban.Reason, ExpiresAt: ban.ExpiresAt}
+		}
+		return profile, nil
+	}
+	return suspendedProfile(profile), nil
 }
 
 // UpdateProfile updates a user's profile fields (display name, description, avatar, banner).

@@ -34,10 +34,7 @@ func (p cannedProfiles) GetByDIDs(context.Context, []string) (map[string]*users.
 
 type anonymousPosts map[string]*posts.PostView
 
-func (p anonymousPosts) GetViewsByURIs(_ context.Context, _ []string, viewerDID string) (map[string]*posts.PostView, error) {
-	if viewerDID != "" {
-		return map[string]*posts.PostView{}, nil
-	}
+func (p anonymousPosts) GetViewsByURIs(context.Context, []string, string) (map[string]*posts.PostView, error) {
 	return p, nil
 }
 

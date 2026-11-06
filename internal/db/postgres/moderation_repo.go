@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/labels"
 	"Coves/internal/core/moderation"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -59,7 +61,7 @@ func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityD
 		       a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
 		       a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 		       a.action, a.label_value, a.reason, a.private_classification, a.private_note,
-		       a.reverses_action_id, a.origin, a.created_at
+		       a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind
 		FROM (SELECT $2::text AS uri) AS target
 		LEFT JOIN moderation_subjects s ON s.subject_uri = target.uri
 		LEFT JOIN moderation_decisions d ON d.subject_uri = target.uri
@@ -104,6 +106,12 @@ func (t *moderationTransaction) LockActor(ctx context.Context, actorDID string) 
 	key := int64(binary.BigEndian.Uint64(digest[:8]))
 	_, err := t.tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, key)
 	return err
+}
+
+// InsertLabel signs and stores the label a decision publishes, under the label
+// allocation lock held to commit.
+func (t *moderationTransaction) InsertLabel(ctx context.Context, issue labels.Issue) error {
+	return insertLabel(ctx, t.tx, issue)
 }
 
 func (t *moderationTransaction) LiveIdempotencyRecord(ctx context.Context, actorDID, authorityDID, key string, now time.Time) (*moderation.IdempotencyRecord, error) {
@@ -152,7 +160,37 @@ func (t *moderationTransaction) SaveIdempotencyRecord(ctx context.Context, recor
 	return err
 }
 
+// AccountSubjectFacts reads did's account activity and indexed community row.
+// The activity test is accountActivitySQL, the one communityRepo.Create checks
+// before indexing a DID as a community.
+func (t *moderationTransaction) AccountSubjectFacts(ctx context.Context, did string) (moderation.AccountSubjectFacts, error) {
+	var facts moderation.AccountSubjectFacts
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT `+accountActivitySQL("$1")+`,
+		       COALESCE((SELECT pds_url FROM communities WHERE did = $1), ''),
+		       COALESCE((SELECT handle FROM communities WHERE did = $1), ''),
+		       EXISTS (SELECT 1 FROM communities WHERE did = $1)
+	`, did).Scan(&facts.HasAccountActivity, &facts.CommunityPDSURL, &facts.CommunityHandle, &facts.IsCommunity)
+	if err != nil {
+		return moderation.AccountSubjectFacts{}, fmt.Errorf("read account subject facts: %w", err)
+	}
+	return facts, nil
+}
+
 func (t *moderationTransaction) LockSubject(ctx context.Context, subjectURI string) (int64, error) {
+	// Every at://<did> subject (account bans and unbans, community removals and
+	// restores) first takes the ban-subject lock on the DID. Ban indexing,
+	// comment, vote and post indexing, userRepo.Create and communityRepo.Create
+	// hold the same lock while they classify against or write the DID's account
+	// and community state, so a decision's commit and those writes serialize,
+	// and the facts read under the lock stay true until commit. Indexing never
+	// waits on a moderation subject row, so taking the ban-subject lock before
+	// the row lock cannot deadlock with indexing.
+	if accountDID, isAccount := accountSubjectDID(subjectURI); isAccount {
+		if err := lockBanSubject(ctx, t.tx, accountDID); err != nil {
+			return 0, err
+		}
+	}
 	if _, err := t.tx.ExecContext(ctx, `
 		INSERT INTO moderation_subjects (subject_uri, version) VALUES ($1, 0)
 		ON CONFLICT (subject_uri) DO NOTHING
@@ -266,7 +304,7 @@ const moderationActionColumns = `
 	a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
 	a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 	a.action, a.label_value, a.reason, a.private_classification, a.private_note,
-	a.reverses_action_id, a.origin, a.created_at`
+	a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind`
 
 type moderationRow interface {
 	Scan(dest ...any) error
@@ -276,13 +314,13 @@ func scanModerationAction(row moderationRow, version *int64, reversedReason *sql
 	var id, actorDID, authorityDID, scopeKind, scopeCommunityDID sql.NullString
 	var subjectURI, subjectCollection, subjectCommunityDID, subjectRootURI, observedCID sql.NullString
 	var actionKind, labelValue, reason, privateClassification, privateNote sql.NullString
-	var reversesActionID, origin sql.NullString
-	var createdAt sql.NullTime
+	var reversesActionID, origin, subjectKind sql.NullString
+	var createdAt, expiresAt sql.NullTime
 	dest := []any{
 		&id, &actorDID, &authorityDID, &scopeKind, &scopeCommunityDID,
 		&subjectURI, &subjectCollection, &subjectCommunityDID, &subjectRootURI, &observedCID,
 		&actionKind, &labelValue, &reason, &privateClassification, &privateNote,
-		&reversesActionID, &origin, &createdAt,
+		&reversesActionID, &origin, &createdAt, &expiresAt, &subjectKind,
 	}
 	if version != nil {
 		dest = append([]any{version}, dest...)
@@ -304,7 +342,11 @@ func scanModerationAction(row moderationRow, version *int64, reversedReason *sql
 		ObservedCID: observedCID.String, Action: actionKind.String,
 		LabelValue: labelValue.String, Reason: reason.String,
 		PrivateNote: privateNote.String, ReversesActionID: reversesActionID.String,
-		Origin: origin.String, CreatedAt: createdAt.Time,
+		Origin: origin.String, CreatedAt: createdAt.Time, SubjectKind: moderation.SubjectKind(subjectKind.String),
+	}
+	if expiresAt.Valid {
+		expiry := expiresAt.Time.UTC()
+		action.ExpiresAt = &expiry
 	}
 	if reversedReason != nil {
 		action.ReversedActionReason = reversedReason.String
@@ -395,14 +437,14 @@ func (t *moderationTransaction) InsertAction(ctx context.Context, action moderat
 		    (id, actor_did, authority_did, scope_kind, scope_community_did,
 		     subject_uri, subject_collection, subject_community_did, observed_cid,
 		     action, label_value, reason, private_note, reverses_action_id, origin, created_at,
-		     subject_root_uri)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), NULLIF($9, ''),
+		     subject_root_uri, expires_at, subject_kind)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''),
 		        $10, NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), $15, $16,
-		        NULLIF($17, ''))
+		        NULLIF($17, ''), $18, NULLIF($19, ''))
 	`, action.ID, action.ActorDID, action.AuthorityDID, action.ScopeKind, action.ScopeCommunityDID,
 		action.SubjectURI, action.SubjectCollection, action.SubjectCommunityDID, action.ObservedCID,
 		action.Action, action.LabelValue, action.Reason, action.PrivateNote, action.ReversesActionID,
-		action.Origin, action.CreatedAt, action.SubjectRootURI)
+		action.Origin, action.CreatedAt, action.SubjectRootURI, action.ExpiresAt, string(action.SubjectKind))
 	if err != nil {
 		return nil, err
 	}
@@ -765,7 +807,8 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 // Each row's SubjectAccess is decided now, not when the action was recorded: a
 // subject whose own post or comment row is still indexed is public, whatever
 // its community admission status and even when the author soft-deleted it, and
-// one whose row is gone (account erasure hard-deletes it) is restricted.
+// one whose row is gone (account erasure hard-deletes it) is restricted. An
+// account subject (at://<did>, no collection) is public.
 // SubjectAuthorDeleted is decided now too: the author has soft-deleted the
 // subject's post, or its comment row was deleted for reason 'author', or the
 // author once deleted the removed comment (snapshot.author_deleted_at), which a
@@ -801,7 +844,9 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		) current_post ON TRUE
 		CROSS JOIN LATERAL (
 		    SELECT CASE WHEN
-		        EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
+		        -- An account subject (no collection) is public.
+		        a.subject_collection IS NULL
+		        OR EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
 		        OR EXISTS (SELECT 1 FROM posts p WHERE a.subject_collection <> $18 AND p.uri = a.subject_uri)
 		    THEN $20::text ELSE $21::text END AS access,
 		    EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri
@@ -950,6 +995,16 @@ func (r *ModerationRepository) RecordCDNPurgeTargets(ctx context.Context, blobs 
 		return nil, fmt.Errorf("commit CDN purge target recording: %w", err)
 	}
 	return pended, nil
+}
+
+// accountSubjectDID returns the DID of an at://<did> account subject, and
+// false for a record subject or anything else.
+func accountSubjectDID(subjectURI string) (string, bool) {
+	did, found := strings.CutPrefix(subjectURI, "at://")
+	if !found || strings.Contains(did, "/") || !strings.HasPrefix(did, "did:") {
+		return "", false
+	}
+	return did, true
 }
 
 // RecordMissingCDNPurgeTargets commits, in its own transaction, only the

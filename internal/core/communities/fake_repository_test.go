@@ -113,7 +113,7 @@ func (f *fakeCommunityRepo) onlyCallTo(method string) (repoCall, error) {
 	return matching[0], nil
 }
 
-func (f *fakeCommunityRepo) Create(_ context.Context, community *communities.Community) (*communities.Community, error) {
+func (f *fakeCommunityRepo) Create(_ context.Context, community *communities.Community, _ ...communities.CreateOption) (*communities.Community, error) {
 	f.record("Create", community.DID)
 	if f.err != nil {
 		return nil, f.err

@@ -23,6 +23,26 @@ import (
 
 func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
+		"076 (account status rechecks) must be rolled back first")
+	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
+		"075 (moderation subject kind) must be rolled back first")
+	require.EqualValues(t, 74, testkit.MigrateDownOne(t, db, 74),
+		"074 (account status restrictions) must be rolled back first")
+	require.EqualValues(t, 73, testkit.MigrateDownOne(t, db, 73),
+		"073 (account ban hide reason) must be rolled back first")
+	require.EqualValues(t, 72, testkit.MigrateDownOne(t, db, 72),
+		"072 (account moderation subjects) must be rolled back first")
+	require.EqualValues(t, 71, testkit.MigrateDownOne(t, db, 71),
+		"071 (labels) must be rolled back first")
+	require.EqualValues(t, 70, testkit.MigrateDownOne(t, db, 70),
+		"070 (pending ban-check indexes) must be rolled back first")
+	require.EqualValues(t, 69, testkit.MigrateDownOne(t, db, 69),
+		"069 (ban hide markers) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 68, testkit.MigrateDownOne(t, db, 68),
+		"068 (community ban index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 67, testkit.MigrateDownOne(t, db, 67),
+		"067 (community comment removals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
 	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
 	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))
@@ -61,7 +81,8 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 	usersSnapshot := func() string {
 		t.Helper()
 		var snapshot string
-		require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(to_jsonb(u) ORDER BY u.did), '[]'::jsonb)::text
+		// index_source is a column migration 075 adds after this snapshot's schema.
+		require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(to_jsonb(u) - 'index_source' ORDER BY u.did), '[]'::jsonb)::text
 			FROM users u WHERE did = ANY($1)`, pq.Array(dids)).Scan(&snapshot))
 		return snapshot
 	}
@@ -119,6 +140,26 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
 
+	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
+		"076 (account status rechecks) must be rolled back first")
+	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
+		"075 (moderation subject kind) must be rolled back first")
+	require.EqualValues(t, 74, testkit.MigrateDownOne(t, db, 74),
+		"074 (account status restrictions) must be rolled back first")
+	require.EqualValues(t, 73, testkit.MigrateDownOne(t, db, 73),
+		"073 (account ban hide reason) must be rolled back first")
+	require.EqualValues(t, 72, testkit.MigrateDownOne(t, db, 72),
+		"072 (account moderation subjects) must be rolled back first")
+	require.EqualValues(t, 71, testkit.MigrateDownOne(t, db, 71),
+		"071 (labels) must be rolled back first")
+	require.EqualValues(t, 70, testkit.MigrateDownOne(t, db, 70),
+		"070 (pending ban-check indexes) must be rolled back first")
+	require.EqualValues(t, 69, testkit.MigrateDownOne(t, db, 69),
+		"069 (ban hide markers) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 68, testkit.MigrateDownOne(t, db, 68),
+		"068 (community ban index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 67, testkit.MigrateDownOne(t, db, 67),
+		"067 (community comment removals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
 	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
 	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))
@@ -132,6 +173,26 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 
 func TestUserBlobReferencesBackfill063_PagesPastUsersWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
+		"076 (account status rechecks) must be rolled back first")
+	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
+		"075 (moderation subject kind) must be rolled back first")
+	require.EqualValues(t, 74, testkit.MigrateDownOne(t, db, 74),
+		"074 (account status restrictions) must be rolled back first")
+	require.EqualValues(t, 73, testkit.MigrateDownOne(t, db, 73),
+		"073 (account ban hide reason) must be rolled back first")
+	require.EqualValues(t, 72, testkit.MigrateDownOne(t, db, 72),
+		"072 (account moderation subjects) must be rolled back first")
+	require.EqualValues(t, 71, testkit.MigrateDownOne(t, db, 71),
+		"071 (labels) must be rolled back first")
+	require.EqualValues(t, 70, testkit.MigrateDownOne(t, db, 70),
+		"070 (pending ban-check indexes) must be rolled back first")
+	require.EqualValues(t, 69, testkit.MigrateDownOne(t, db, 69),
+		"069 (ban hide markers) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 68, testkit.MigrateDownOne(t, db, 68),
+		"068 (community ban index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 67, testkit.MigrateDownOne(t, db, 67),
+		"067 (community comment removals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 66, testkit.MigrateDownOne(t, db, 66))
 	require.EqualValues(t, 65, testkit.MigrateDownOne(t, db, 65))
 	require.EqualValues(t, 64, testkit.MigrateDownOne(t, db, 64))

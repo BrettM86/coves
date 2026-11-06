@@ -56,8 +56,8 @@ func (s *service) retractContentLabel(ctx context.Context, actorDID string, requ
 			if stored.Fingerprint != fingerprint {
 				return fail(ErrIdempotencyConflict)
 			}
-			copy := stored.Result
-			result = &copy
+			storedResult := stored.Result
+			result = &storedResult
 			return nil
 		}
 		count, err := tx.CountLiveIdempotencyKeys(ctx, actorDID, now)
@@ -108,6 +108,7 @@ func (s *service) retractContentLabel(ctx context.Context, actorDID string, requ
 		if err != nil && !errors.Is(err, ErrSubjectNotIndexed) {
 			return unavailable(err)
 		}
+		subjectIndexed := err == nil
 		recordState := RecordStateUnavailable
 		var current *StrongRef
 		var observedCID string
@@ -146,6 +147,13 @@ func (s *service) retractContentLabel(ctx context.Context, actorDID string, requ
 		}
 		if err := tx.SetLabelDecision(ctx, s.config.InstanceDID, label.SubjectURI, label.LabelValue, label.ID, false); err != nil {
 			return unavailable(err)
+		}
+		// A subject whose indexed row is gone is restricted: its retraction is
+		// not published.
+		if subjectIndexed {
+			if err := s.publishLabel(ctx, tx, label.SubjectURI, label.LabelValue, true, action.ID, now); err != nil {
+				return unavailable(err)
+			}
 		}
 		if err := tx.SetSubjectVersion(ctx, label.SubjectURI, version+1); err != nil {
 			return unavailable(err)

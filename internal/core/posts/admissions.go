@@ -383,8 +383,14 @@ type AdmissionRepository interface {
 	//     deleted post writes an acceptance for content that no longer exists,
 	//     and the tombstone sweep would then delete it again — a resurrection
 	//     loop between two components each behaving correctly on its own.
+	//   - NO AUTHOR UNDER AN INSTANCE ACCOUNT BAN IN FORCE (when the repository
+	//     is given the instance as ban authority). The decider defers such posts,
+	//     and a banned author can write unbounded pending rows to their own PDS;
+	//     left in the listing they would fill every page at the head of the queue
+	//     and starve everyone behind them. The rows return when the ban is lifted
+	//     or lapses.
 	//
-	// Both exclusions are also enforced by the decider (a driver is a queue, not
+	// All three exclusions are also enforced by the decider (a driver is a queue, not
 	// a security boundary), but doing it here is what keeps the queue's DEPTH an
 	// honest signal: a backlog full of subjects nothing can ever settle looks
 	// identical, from the outside, to an engine that has stopped working.
@@ -473,4 +479,10 @@ const (
 	// DecisionAggregatorNotAuthorized: a registered aggregator the community
 	// has not authorized (or whose authorization it has revoked).
 	DecisionAggregatorNotAuthorized DecisionCode = "aggregator-not-authorized"
+
+	// DecisionAccountBanned: the author's account is under an instance ban in force.
+	DecisionAccountBanned DecisionCode = "account-banned"
+
+	// DecisionCommunityRemoved: the community is under an active instance removal.
+	DecisionCommunityRemoved DecisionCode = "community-removed"
 )

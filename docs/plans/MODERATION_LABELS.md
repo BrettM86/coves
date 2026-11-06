@@ -2,9 +2,23 @@
 
 Plan for federated moderation: another AppView can choose to follow Coves.social's removals and NSFW labels, and Coves can follow theirs. Delete this file once the federated milestone ships.
 
+The first milestone is the publisher with Tidepool as its first consumer, so Coves admin removals reach Tidepool and Lemmy. The Coves side of it is built (§ Built today); the community-record work is described in [MODERATION.md](../MODERATION.md). Ingesting labels from outside sources comes after it.
+
 ## Built today
 
-Local moderation is built and described in [MODERATION.md](../MODERATION.md): instance admins remove and restore posts and comments and label posts NSFW, with a public modlog and an admin log. Nothing is published or consumed as a label. There is no `queryLabels` or `subscribeLabels` endpoint and no label key in the instance DID document. The schema already reserves what this plan needs: `moderation_actions.origin` accepts `inherited`, the action vocabulary includes `apply-removal` and `retract-removal`, and every decision carries an authority DID and a scope.
+Local moderation is built and described in [MODERATION.md](../MODERATION.md): instance admins remove and restore posts and comments and label posts NSFW, with a public modlog and an admin log.
+
+The publisher is built:
+
+- Config: `LABEL_SIGNING_KEY` (private multibase, K-256 or P-256) enables publication; unset, nothing is published, and boot fails with `ErrSigningKeyRequired` once a label is stored or the one-time export has completed, so a decision is never made while publication is off. `LABEL_SIGNING_KEY_RETIRING` acknowledges a rotation. `INSTANCE_ATPROTO_PUBLIC_KEY` is the `#atproto` key the DID document lists; it is required with `LABEL_SIGNING_KEY` and must differ from the label key. `DID_WEB_HOSTS` (dev and CI only) maps a did:web host to a local `host:port` so the hermetic stack resolves `INSTANCE_DID`. Malformed values fail boot.
+- DID document: the AppView serves `GET /.well-known/did.json` built from that config, with `#atproto_label` and an `#atproto_labeler` service pointing at `APPVIEW_PUBLIC_URL`. That document lists no `#atproto_pds` service, so it does not replace production's. Production keeps serving the static `did.json` built from `static/.well-known/did.json.template`, which also lists the instance DID's `#atproto_pds`, and the operator updates it by hand in the deploy: add `#atproto_label` with the label key's public multibase when publication is enabled, and change it in the same deploy as any key rotation. Until then, external verifiers cannot verify the labels.
+- Issuance: removal, restore, NSFW label and NSFW retraction each write one signed, URI-scoped label row (`!takedown`, `!takedown` neg, `nsfw`, `nsfw` neg) in the decision's transaction (migration 071, table `labels`). Each insert takes a transaction-scoped advisory lock held to commit, so commit order equals `seq` order and a reader never later finds a committed row below a `seq` it has seen; `cts` strictly increases. Replays write nothing; restricted subjects (indexed row gone) are not published; doxing and illegal-content removals are published.
+- One-time export: the first boot with a key publishes one current label for each active instance removal and NSFW label whose subject is still indexed, with a new `cts`, under the same lock. `label_publication_state` records completion in the same transaction, so later boots export nothing.
+- `com.atproto.label.queryLabels` is served publicly (`uriPatterns` with trailing `*` prefix, `sources`, `limit` 1 to 250, `cursor` = last `seq`).
+- `com.atproto.label.subscribeLabels` is served publicly when publication is enabled. Each `#labels` frame carries one stored row, its `seq` the row's `seq`, with the stored signature as `queryLabels` serves it. No cursor starts at the live tail: rows committed after the connection opens. A cursor replays every row after it in `seq` order, then tails live with no gap or duplicate. A cursor ahead of the latest `seq` gets a `FutureCursor` error frame and the connection closes. Live delivery is one shared poller with a bounded in-memory window; a subscriber that falls behind reads from the table again, so it stalls only itself and never a decision. Every frame write has a 10-second deadline, the peer is pinged every 30 seconds and dropped 60 seconds after its last pong, and at most 256 subscriptions are open at once; past that a new one gets 503 `Unavailable`. That cap is global across all clients; a per-IP limit belongs in Caddy. Shutdown closes every open subscription, so a subscriber reconnecting after a rotation restart receives later rows once, verifying under the new key.
+- Key-change policy and rotation: see § Wire contract. A rotation deploy also updates `#atproto_label` in the production `did.json` to the new key.
+
+Nothing consumes labels yet. The schema already reserves what this plan needs: `moderation_actions.origin` accepts `inherited`, the action vocabulary includes `apply-removal` and `retract-removal`, and every decision carries an authority DID and a scope.
 
 ## Model
 
@@ -23,10 +37,12 @@ A standard label cannot carry the full action or a community scope. Do not add u
 - The labeler is the instance DID (`INSTANCE_DID`, a `did:web`) with a separate `#atproto_label` verification key, distinct from its `#atproto` key, and an `#atproto_labeler` service endpoint. No dedicated labeler account. The hermetic stack must serve a resolvable DID document for it through the configured local resolver.
 - Removal is a URI-scoped label: `cid` omitted, so editing the record cannot evade it. The reviewed CID stays in the action history.
 - The removal value is `!takedown`, for compatibility with the hard-redaction signal in the labeler-header spec. Enforcement comes from the receiver's mandatory trust policy on every read, not from a client header. The label does not claim the author's PDS deleted anything. `!hide` and custom hide definitions are not equivalent.
+- Account takedown is `!takedown` on the account DID (the bare `did:…`, not `at://<did>`), with `neg: true` on unban. A temporary ban's label carries `exp` equal to the ban's `expiresAt` (signed, millisecond precision); the negation has no `exp`. No label is written when a temporary ban lapses: `exp` already ends it. A replacing ban writes a new `!takedown` whose later `cts` supersedes the earlier one.
 - NSFW is `val: nsfw`, also URI-scoped, published with a definition as a revealable content warning. The `!takedown` and `nsfw` lifecycles are independent.
 - Restore emits the same `src`, `uri` and `val` with `neg: true`. A negation retracts that source's assertion; it is not a global "safe" verdict.
 - Services exchange full signed objects (`ver` and `sig` required), verify against the source DID's label key, and keep provenance. Keys resolve through the configured local or production identity infrastructure, never a hardcoded public host.
 - The endpoints are `com.atproto.label.queryLabels` and `com.atproto.label.subscribeLabels`, reused unchanged, with defined cursor retention, recovery and key-rotation behavior. Do not fork the label schemas into `social.coves.*`. A Bluesky labeler declaration record does not make Bluesky's AppView understand Coves collections.
+- Key rotation: every stored label records the public multibase that signed it, and `label_signing_keys` records each key's start and retirement. At boot, before the HTTP listener and the export, the AppView compares the configured key with the signers of the stored labels. To rotate, the operator sets `LABEL_SIGNING_KEY` to the new key and `LABEL_SIGNING_KEY_RETIRING` to the old key's public multibase, then restarts. In the same deploy the operator updates `#atproto_label` in the production static `did.json` to the new key's public multibase; Caddy serves that file, not the AppView's document, so until it is updated every label is signed by a key the published document does not list, external verification fails, and Coves logs nothing. Boot re-signs every label not signed by the new key in one transaction holding the label allocation lock, and records the old key as retired. `seq` and `cts` never change, and no label is re-emitted or given a new `seq`. A failure rolls the whole rotation back and fails boot; the next boot retries. Without the acknowledgement, or with one naming a key that did not sign the stored labels, boot refuses with `ErrSigningKeyMismatch` and changes nothing. A subscriber mid-replay is disconnected by the restart and resumes from its cursor, receiving later labels once, signed by the new key. Labels it received earlier carry the old signature; to re-verify them it resubscribes from cursor 0 or calls `queryLabels`.
 - Labels are protocol objects, not repo records, so the Jetstream wanted-collection subscription does not deliver them. Ingestion needs its own consumer.
 
 ## Publishing
@@ -51,6 +67,8 @@ When federation is first enabled, export the currently active, sharing-eligible 
 
 ## Ingestion and ordering
 
+This section applies when Coves starts trusting outside label sources, which is deferred (2026-10-19). Tidepool, as a consumer of Coves' labels, follows the same verification and deduplication rules. For the first milestone (one source, one consumer), ordering and retention are settled: the publisher keeps every label row, so a cursor never expires; a consumer whose cursor is ahead of the latest `seq` (`FutureCursor`, meaning the publisher was reset) resubscribes from the start; `queryLabels` carries no sequence and is not used for recovery; labels apply in `seq` order, so `cts` never orders them; and a label for a subject the consumer has not seen yet is kept and applies when the subject appears.
+
 Labels for subjects not yet indexed go into a pending store with per-source record and byte limits; a label may arrive before its subject. Persisted decisions apply before the content's first eligible read once its scope is known. When pending capacity runs out, pause that source without advancing its cursor past unpersisted events and raise a health failure. Do not evict decisions or report the source as caught up. For a stalled source trusted to remove content, reconcile newly indexed subjects' labels or hold them unavailable before serving. A classification-only source cannot withhold posts through an outage: keep known NSFW state, report staleness, reconcile.
 
 Deduplicate incoming events and keep negation state, so a replayed older positive label cannot resurrect a removal. Within one source, subject and value, the label's `cts` decides currency, consistently across query and stream. Stream sequence controls delivery and checkpoints, not currency: a later sequence carrying an older `cts` does not replace newer state. Sources need no ordering relative to each other.
@@ -69,7 +87,7 @@ Community X is hosted on instance Y. Comment C in X is indexed by both Y and Cov
 
 ## Community scope
 
-A single instance-wide labeler cannot express community-only scope. If community moderators publish labels, prefer a community-specific labeler identity, possibly on shared infrastructure. Before building community moderation, decide whether labels project community repo decisions or are authoritative for some actions; never keep two editable sources of truth for one decision.
+Decided 2026-10-19: community decisions are records in the community's repo, not labels, and there are no per-community labelers. Every community already has a repo whose keys the Coves PDS or Tidepool holds, its records are signed by the community's identity, and the firehose Coves consumes already carries them. Records are authoritative and the `moderation_*` tables index them; labels never project community decisions. Lemmy moderators' removals and bans arrive this way through Tidepool, and Coves community moderators will write the same records. The indexed records are described in [MODERATION.md](../MODERATION.md) § Community comment removals and [POSTS.md](../POSTS.md) § 4.1 (community bans).
 
 ## Decisions made
 
@@ -77,11 +95,15 @@ A single instance-wide labeler cannot express community-only scope. If community
 - Public-subject labels are published by default; restricted subjects are excluded (2026-09-20).
 - Trust is operator-managed, attributed, with no per-user opt-out of removals (2026-09-20).
 - Removal and NSFW are separate label values with independent lifecycles; reasons are not labels.
+- Coves admin moderation is the one instance moderation service for Coves and Tidepool. Tidepool consumes Coves' labels and publishes none (2026-10-19).
+- Community decisions are records in the community repo, never labels (2026-10-19).
+- Tidepool pushes Coves removals of native content to Lemmy as `Delete` of the `Page` or `Note` from the author's persona, and restores as `Undo{Delete}` (2026-10-19).
+- Ingesting outside label sources is deferred until another AppView exists (2026-10-19).
 - Build the publisher in Go on indigo's `atproto/labeling` package, which the pinned indigo module already ships (`Label.Sign`, `VerifySignature`, lexicon conversion) rather than deploy Ozone. Ozone would add a Node service with its own database and a second action store, and it does not consume labels for a third-party AppView, so ingestion must be built either way. What remains for publication is a sequenced label table, `queryLabels` and the `subscribeLabels` stream. Confirm this before starting.
 
 ## Acceptance
 
-The federation requirement is met only when two separately configured AppViews in the hermetic stack demonstrate it. No mocked federation E2E and no infrastructure skips.
+The first milestone is met when Tidepool, consuming the Coves publisher, deletes and restores native content on a real Lemmy. The full federation requirement is met only when two separately configured AppViews in the hermetic stack demonstrate it. No mocked federation E2E and no infrastructure skips.
 
 - Y redacts Coves' removal of a real comment only after explicitly trusting the source. An untrusted labeler, wrong key, unsupported collection or value, forged community relationship or out-of-scope subscription cannot impose removal.
 - Restore and negation propagate and old replays cannot undo them. Two trusted sources remove one subject independently; retracting one leaves the other.
@@ -94,6 +116,8 @@ The federation requirement is met only when two separately configured AppViews i
 Enable publication only once retraction, identity keys, durable history and delivery monitoring work. A rollback must keep existing enforcement and audit data.
 
 ## Open questions
+
+For the first milestone, § Ingestion and ordering settles ordering, cursor retention and labels that arrive before their subjects. The items below remain open for outside sources.
 
 - Whether `!takedown` works end to end in the chosen publisher and consumer; older tooling and the core lexicon's known values may lag the spec.
 - Deterministic handling of equal-`cts` conflicts and implausibly future-dated labels. Quarantine ambiguous input rather than let arrival order decide.
