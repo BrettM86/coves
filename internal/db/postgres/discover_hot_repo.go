@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	discoverHotAlgorithmVersion                    = 2
+	discoverHotAlgorithmVersion                    = 3
 	discoverHotCursorVersion                       = "discover-hot-v1"
 	discoverHotCursorMaxLength                     = 500
 	discoverHotSnapshotReuse                       = 30 * time.Second

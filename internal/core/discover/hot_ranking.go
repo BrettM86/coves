@@ -16,6 +16,8 @@ const (
 	recentCommunityWindow       = 20
 	repetitionPenaltyStep       = 0.5
 	maximumHostedCommunityBonus = 3.0
+	// discoverHotGravity is the age-decay exponent: rank divides by (age_hours + 2)^discoverHotGravity.
+	discoverHotGravity = 0.8
 
 	hostedCommunityBonusDomainLabel = "discover-hot-hosted-bonus\x00"
 )
@@ -91,7 +93,7 @@ func discoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjus
 		numerator += min(hostedBonus, maximumHostedCommunityBonus)
 	}
 
-	return numerator / math.Pow(ageHours+2, 1.5)
+	return numerator / math.Pow(ageHours+2, discoverHotGravity)
 }
 
 // DiscoverHotRank returns the normalized, freshness-decayed base rank, including

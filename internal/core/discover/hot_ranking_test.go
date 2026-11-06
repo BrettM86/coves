@@ -77,7 +77,7 @@ func TestDiscoverHotNormalization(t *testing.T) {
 	t.Run("base rank preserves score and freshness behavior", func(t *testing.T) {
 		rankingTime := time.Date(2026, time.September, 12, 12, 0, 0, 0, time.UTC)
 		twoHoursOld := rankingTime.Add(-2 * time.Hour)
-		denominator := math.Pow(4, 1.5)
+		denominator := math.Pow(4, 0.8)
 
 		positive := discoverHotRank(15, twoHoursOld, rankingTime, 0.5, 0)
 		zero := discoverHotRank(0, twoHoursOld, rankingTime, 0.5, 0)
@@ -97,7 +97,7 @@ func TestDiscoverHotNormalization(t *testing.T) {
 
 		fresh := discoverHotRank(0, rankingTime, rankingTime, 1, 0)
 		future := discoverHotRank(0, rankingTime.Add(48*time.Hour), rankingTime, 1, 0)
-		assert.InDelta(t, 1/math.Pow(2, 1.5), fresh, 1e-12)
+		assert.InDelta(t, 1/math.Pow(2, 0.8), fresh, 1e-12)
 		assert.Equal(t, fresh, future, "future dates should clamp to zero age without gaining a boost")
 	})
 }

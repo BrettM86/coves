@@ -127,7 +127,8 @@ func TestHostedCommunityBonusIsStableAcrossCalls(t *testing.T) {
 
 // preBonusDiscoverHotRank is the ranking function as it stood before the bonus
 // parameter existed, copied from 0b1c178^:internal/core/discover/hot_ranking.go
-// with its minimumAdjustment constant written as the literal 0.5. A bonus of
+// with its minimumAdjustment constant written as the literal 0.5 and its decay
+// exponent updated from 1.5 to 0.8 (approved 2026-11-06). A bonus of
 // zero, and any bonus on a negative score, must reproduce it bit for bit: a
 // rank that drifted even in the last digit would reshuffle the ties that
 // decide feed order.
@@ -155,7 +156,7 @@ func preBonusDiscoverHotRank(score int, createdAt, rankingTime time.Time, commun
 		numerator -= math.Log1p(math.Abs(float64(score)))
 	}
 
-	return numerator / math.Pow(ageHours+2, 1.5)
+	return numerator / math.Pow(ageHours+2, 0.8)
 }
 
 var frozenRankingTime = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -192,7 +193,7 @@ func TestDiscoverHotRankWithoutBonusIsUnchanged(t *testing.T) {
 
 // expectedRankWithBonus restates the contract rather than calling the code
 // under test: numerator, then bonus for non-negative scores only, over the
-// (age + 2)^1.5 decay.
+// (age + 2)^0.8 decay.
 func expectedRankWithBonus(score int, ageHours, adjustment, bonus float64) float64 {
 	numerator := 1.0
 	switch {
@@ -204,7 +205,7 @@ func expectedRankWithBonus(score int, ageHours, adjustment, bonus float64) float
 	if score >= 0 {
 		numerator += bonus
 	}
-	return numerator / math.Pow(ageHours+2, 1.5)
+	return numerator / math.Pow(ageHours+2, 0.8)
 }
 
 func TestDiscoverHotRankAddsBonusToNumerator(t *testing.T) {
@@ -264,7 +265,7 @@ func TestDiscoverHotRankFirstDownvoteRemovesTheEntireBonus(t *testing.T) {
 
 	const ageHours = 15.0
 	createdAt := frozenRankingTime.Add(-ageHours * time.Hour)
-	decay := math.Pow(ageHours+2, 1.5)
+	decay := math.Pow(ageHours+2, 0.8)
 
 	atZeroScore := discoverHotRank(0, createdAt, frozenRankingTime, 1, 3.0)
 	assert.InDelta(t, 4.0/decay, atZeroScore, 1e-15,
@@ -316,7 +317,7 @@ func TestDiscoverHotRankStaysStrictlyIncreasingInScore(t *testing.T) {
 }
 
 // The scenario the bonus exists for, and the one it must not exceed: a fresh
-// post with no votes in a community hosted here beats a day-old popular post
+// post with no votes in a community hosted here beats a two-day-old popular post
 // elsewhere, and does not beat it without the bonus.
 func TestDiscoverHotRankHostedFreshPostOutranksOlderPopularPost(t *testing.T) {
 	t.Parallel()
@@ -325,8 +326,8 @@ func TestDiscoverHotRankHostedFreshPostOutranksOlderPopularPost(t *testing.T) {
 	popularCreatedAt := frozenRankingTime.Add(-48 * time.Hour)
 	popular := discoverHotRank(400, popularCreatedAt, frozenRankingTime, 0.8, 0)
 
-	assert.Greater(t, discoverHotRank(0, freshCreatedAt, frozenRankingTime, 1, 1.0), popular,
-		"a 15h-old hosted post with a 1.0 bonus should outrank a 48h-old post with 400 votes")
+	assert.Greater(t, discoverHotRank(0, freshCreatedAt, frozenRankingTime, 1, 2.0), popular,
+		"a 15h-old hosted post with a 2.0 bonus should outrank a 48h-old post with 400 votes")
 	assert.Less(t, discoverHotRank(0, freshCreatedAt, frozenRankingTime, 1, 0), popular,
 		"without the bonus the same post must lose: the bonus is doing the work, not the decay")
 }

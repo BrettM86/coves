@@ -30,6 +30,10 @@ const (
 	// Timeline, community and Discover Hot rank. Older posts are out of reach on Hot; Top
 	// and New still reach them.
 	defaultHotCandidateLimit = 5_000
+
+	// hotRankGravity is the age-decay exponent of hotRankSQL. See docs/FEEDS.md
+	// for its history.
+	hotRankGravity = 0.8
 )
 
 // feedSortClauses whitelists ORDER BY clauses for all post feeds
@@ -126,7 +130,7 @@ func (r *feedRepoBase) hotCandidateBoundFilter(sort, scopeSQL string, viewerPara
 // "now" expression (NOW() for live sorting, a $n::timestamptz parameter for
 // stable cursor comparison across pages).
 //
-// Formula: (SIGN(score) * LN(ABS(score) + 1) + 1) / (age_hours + 2)^1.5
+// Formula: (SIGN(score) * LN(ABS(score) + 1) + 1) / (age_hours + 2)^hotRankGravity
 //
 // The numerator is log-dampened so vote counts from different-sized populations
 // (e.g. bridged Lemmy communities with thousands of voters) can't dominate the
@@ -149,8 +153,8 @@ func (r *feedRepoBase) hotCandidateBoundFilter(sort, scopeSQL string, viewerPara
 // compute with this same builder.
 func hotRankSQL(alias, nowExpr string) string {
 	return fmt.Sprintf(
-		`((SIGN(%[1]s.score) * LN(ABS(%[1]s.score) + 1) + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))::float8/3600, 0) + 2, 1.5))`,
-		alias, nowExpr)
+		`((SIGN(%[1]s.score) * LN(ABS(%[1]s.score) + 1) + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))::float8/3600, 0) + 2, %[3]v))`,
+		alias, nowExpr, hotRankGravity)
 }
 
 // newFeedRepoBase creates a new base repository with shared feed logic

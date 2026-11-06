@@ -19,7 +19,8 @@ import (
 // The algorithm version as a compatibility boundary.
 //
 // A snapshot is a frozen page order, and the cursor a reader holds is a pointer
-// into one. The hosted-community bonus changes what base_rank MEANS, so a
+// into one. A change to the rank formula (the hosted-community bonus at version 2,
+// the 0.8 decay exponent at version 3) changes what base_rank MEANS, so a
 // snapshot built before it and one built after it are two different orderings
 // wearing the same name: a reader paging through the old one would see the old
 // ranking silently, and a reader whose next page lands on a rebuilt snapshot
@@ -27,17 +28,17 @@ import (
 // those two apart, and bumping it is the whole mechanism — it makes stale
 // snapshots unreusable and stale cursors invalid in one move.
 //
-// Every assertion below is written against the LITERAL 1 and 2 rather than the
+// Every assertion below is written against the LITERAL 2 and 3 rather than the
 // discoverHotAlgorithmVersion constant. A test that asserts a row carries the
 // constant the writer used is a tautology: it passes at version 1, at version 2
 // and at any version anyone ever sets, so it cannot notice the bump failing to
 // happen. The literal is the point.
 const (
-	supersededDiscoverHotAlgorithmVersion = 1
-	currentDiscoverHotAlgorithmVersion    = 2
+	supersededDiscoverHotAlgorithmVersion = 2
+	currentDiscoverHotAlgorithmVersion    = 3
 )
 
-func TestDiscoverRepo_HotNewSnapshotsRecordAlgorithmVersionTwo(t *testing.T) {
+func TestDiscoverRepo_HotNewSnapshotsRecordAlgorithmVersionThree(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
@@ -49,7 +50,7 @@ func TestDiscoverRepo_HotNewSnapshotsRecordAlgorithmVersionTwo(t *testing.T) {
 	versions := discoverHotSnapshotVersions(t, db, "")
 	require.Len(t, versions, 1, "the read must have built exactly one anonymous snapshot")
 	assert.Equal(t, currentDiscoverHotAlgorithmVersion, versions[0],
-		"a snapshot built under the hosted-bonus ranking must be stamped version 2")
+		"a snapshot built under the gravity-0.8 ranking must be stamped version 3")
 }
 
 func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T) {
@@ -74,17 +75,17 @@ func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T)
 	currentID, currentCursor := seedDiscoverHotVersionedSnapshot(t, db, repository,
 		currentDiscoverHotAlgorithmVersion, controlViewerDID, expected)
 
-	t.Run("a version one snapshot is not reused", func(t *testing.T) {
+	t.Run("a version two snapshot is not reused", func(t *testing.T) {
 		feed, _ := readDiscoverHotRoot(t, repository, "", 10)
 		assert.Equal(t, expected, feed,
 			"a superseded snapshot must be rebuilt, and the rebuild ranks the real candidates")
 
 		rebuilt := discoverHotSnapshotVersionsExcluding(t, db, "", supersededID)
 		require.Len(t, rebuilt, 1, "the read must have built exactly one replacement snapshot")
-		assert.Equal(t, currentDiscoverHotAlgorithmVersion, rebuilt[0], "the replacement must be stamped version 2")
+		assert.Equal(t, currentDiscoverHotAlgorithmVersion, rebuilt[0], "the replacement must be stamped version 3")
 	})
 
-	t.Run("a version one cursor is invalid", func(t *testing.T) {
+	t.Run("a version two cursor is invalid", func(t *testing.T) {
 		feed, next, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
 			Sort:   "hot",
 			Limit:  2,
@@ -97,10 +98,10 @@ func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T)
 	})
 
 	// The control. Everything about these two fixtures is identical but the
-	// version, so if the version-2 snapshot is not reused and its cursor is not
+	// version, so if the version-3 snapshot is not reused and its cursor is not
 	// accepted, the fixtures are malformed and the assertions above prove
 	// nothing about the version.
-	t.Run("a version two snapshot is reused", func(t *testing.T) {
+	t.Run("a version three snapshot is reused", func(t *testing.T) {
 		feed, _ := readDiscoverHotRoot(t, repository, controlViewerDID, 10)
 		assert.Equal(t, stale, feed, "a current, fresh, in-scope snapshot must be served from its stored order")
 		assert.Equal(t, []int{currentDiscoverHotAlgorithmVersion},
@@ -108,7 +109,7 @@ func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T)
 			"reuse must not have built a second snapshot in this scope")
 	})
 
-	t.Run("a version two cursor is accepted", func(t *testing.T) {
+	t.Run("a version three cursor is accepted", func(t *testing.T) {
 		feed, _, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
 			ViewerDID: controlViewerDID,
 			Sort:      "hot",

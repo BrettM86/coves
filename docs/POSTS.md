@@ -240,6 +240,6 @@ Comments can arrive before their parents; there is no foreign key on the parent.
 
 A comment re-created on the same parent skips the increment; a changed parent increments. The parent table comes from the parent URI's collection, and both post collections route to `posts` through `posts.IsPostCollection`. Recognizing only one fails silently with `comment_count` stuck at 0.
 
-Comment hot rank is `LOG(GREATEST(2, score + 2)) / POWER(GREATEST(age_hours, 0) + 2, 1.8)`; the posts formula differs (signed log, exponent 1.5). Age is clamped so future-dated comments get no boost. The rank clock is pinned in the hot cursor (`rankedAt`) so later pages do not skip or repeat replies.
+Comment hot rank is `LOG(GREATEST(2, score + 2)) / POWER(GREATEST(age_hours, 0) + 2, 1.8)`; the posts formula differs (signed log, exponent 0.8). Age is clamped so future-dated comments get no boost. The rank clock is pinned in the hot cursor (`rankedAt`) so later pages do not skip or repeat replies.
 
 Comment author hydration uses `LEFT JOIN users` with a DID fallback, so comments from users not yet indexed are not dropped. `getComments` is mounted in cmd/server/routes.go behind its own `commentQuery` limiter (20/min) plus the global 100/min.

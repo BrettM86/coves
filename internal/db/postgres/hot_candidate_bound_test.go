@@ -22,20 +22,20 @@ import (
 // uri DESC. Running past the bound is not an error: the feed simply ends.
 //
 // Every expected sequence below is written by hand. The live hot rank is
-// (ln(score+1)+1) / (ageHours+2)^1.5, so the fixtures use these rough ranks,
+// (ln(score+1)+1) / (ageHours+2)^0.8, so the fixtures use these rough ranks,
 // far enough apart that database time cannot reorder them during a test:
 //
 //	age      score          rank
-//	10m      0              0.31
-//	30m      0              0.25
-//	1h       0              0.19
-//	1h       10             0.65
-//	2h       100            0.70
-//	2h       1,000          0.99
-//	2h       100,000        1.56
-//	3h       10,000         0.91
-//	3h10m    1,000,000,000  1.85
-//	5h       0              0.05
+//	10m      0              0.54
+//	30m      0              0.48
+//	1h       0              0.42
+//	1h       10             1.41
+//	2h       100            1.85
+//	2h       1,000          2.61
+//	2h       100,000        4.13
+//	3h       10,000         2.82
+//	3h10m    1,000,000,000  5.84
+//	5h       0              0.21
 //
 // Rank order is deliberately the reverse of recency, and the post just past the
 // cutoff outranks everything, so a bound taken over rank instead of recency

@@ -241,13 +241,14 @@ func TestGetDiscover_HotSort(t *testing.T) {
 }
 
 // TestGetDiscover_HotSort_LogDampedRanking pins the tuning of the log-damped
-// hot rank: (SIGN(score)*LN(ABS(score)+1) + 1) / (age_hours + 2)^1.5
+// hot rank: (SIGN(score)*LN(ABS(score)+1) + 1) / (age_hours + 2)^0.8
 //
 // The scenario mirrors the federation problem that motivated the formula: a
 // bridged Lemmy post with a huge vote count from a much larger population must
 // not bury fresh organic posts for days. At the same time, votes still matter —
-// a day-old genuinely popular post should outrank a six-hour-old post nobody
-// voted on.
+// a two-day-old genuinely popular post should outrank a six-hour-old post
+// nobody voted on. (Under the 0.8 decay a 782-vote post a single day old
+// narrowly outranks a fresh 0-vote post, so the blowout is two days old.)
 func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
@@ -262,13 +263,13 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("ranking-%s", testID), fmt.Sprintf("alice-%s.test", testID))
 	require.NoError(t, err)
 
-	// A bridged Lemmy-style blowout: 782 votes, a day old (rank ≈ 0.058)
-	blowoutURI := fixtures.Post(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-24*time.Hour))
-	// A brand-new organic post with no votes yet (rank ≈ 0.33)
+	// A bridged Lemmy-style blowout: 782 votes, two days old (rank ≈ 0.34)
+	blowoutURI := fixtures.Post(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-48*time.Hour))
+	// A brand-new organic post with no votes yet (rank ≈ 0.56)
 	freshURI := fixtures.Post(t, db, communityDID, "did:plc:alice", "Fresh organic post", 0, time.Now().Add(-5*time.Minute))
-	// A six-hour-old post with no votes (rank ≈ 0.044)
+	// A six-hour-old post with no votes (rank ≈ 0.19)
 	sixHourURI := fixtures.Post(t, db, communityDID, "did:plc:bob", "Six hour old post", 0, time.Now().Add(-6*time.Hour))
-	// A brand-new but downvoted post (rank ≈ -0.26)
+	// A brand-new but downvoted post (rank ≈ -0.44)
 	downvotedURI := fixtures.Post(t, db, communityDID, "did:plc:carol", "Downvoted post", -5, time.Now().Add(-5*time.Minute))
 
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
@@ -290,9 +291,9 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 	}
 
 	assert.Less(t, position[freshURI], position[blowoutURI],
-		"Fresh 0-vote post should outrank a day-old vote blowout")
+		"Fresh 0-vote post should outrank a two-day-old vote blowout")
 	assert.Less(t, position[blowoutURI], position[sixHourURI],
-		"Day-old high-vote post should still outrank a 6h-old 0-vote post")
+		"Two-day-old high-vote post should still outrank a 6h-old 0-vote post")
 	assert.Less(t, position[sixHourURI], position[downvotedURI],
 		"Post at score -5 (negative rank) should rank below these positive-rank posts")
 }
@@ -317,7 +318,7 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("hotpage-%s", testID), fmt.Sprintf("alice-%s.test", testID))
 	require.NoError(t, err)
 
-	blowoutURI := fixtures.Post(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-24*time.Hour))
+	blowoutURI := fixtures.Post(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-48*time.Hour))
 	freshURI := fixtures.Post(t, db, communityDID, "did:plc:alice", "Fresh organic post", 0, time.Now().Add(-5*time.Minute))
 	sixHourURI := fixtures.Post(t, db, communityDID, "did:plc:bob", "Six hour old post", 0, time.Now().Add(-6*time.Hour))
 	downvotedURI := fixtures.Post(t, db, communityDID, "did:plc:carol", "Downvoted post", -5, time.Now().Add(-5*time.Minute))
@@ -459,7 +460,7 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 
 	// A 0-vote post claiming to be from 10 days in the future
 	futureURI := fixtures.Post(t, db, communityDID, "did:plc:mallory", "Future dated post", 0, time.Now().Add(240*time.Hour))
-	// A recent post with modest genuine engagement (rank ≈ 0.95 vs the clamped ≈ 0.35)
+	// A recent post with modest genuine engagement (rank ≈ 2.05 vs the clamped ≈ 0.57)
 	votedURI := fixtures.Post(t, db, communityDID, "did:plc:alice", "Recent voted post", 50, time.Now().Add(-1*time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
