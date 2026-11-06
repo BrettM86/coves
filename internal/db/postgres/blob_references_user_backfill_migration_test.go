@@ -23,6 +23,8 @@ import (
 
 func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
@@ -81,8 +83,9 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 	usersSnapshot := func() string {
 		t.Helper()
 		var snapshot string
-		// index_source is a column migration 075 adds after this snapshot's schema.
-		require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(to_jsonb(u) - 'index_source' ORDER BY u.did), '[]'::jsonb)::text
+		// Columns added after this snapshot's schema are left out: index_source
+		// (migration 075) and bluesky_profile_import_dismissed_at (migration 077).
+		require.NoError(t, db.QueryRow(`SELECT COALESCE(jsonb_agg(to_jsonb(u) - 'index_source' - 'bluesky_profile_import_dismissed_at' ORDER BY u.did), '[]'::jsonb)::text
 			FROM users u WHERE did = ANY($1)`, pq.Array(dids)).Scan(&snapshot))
 		return snapshot
 	}
@@ -140,6 +143,8 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
 
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
@@ -173,6 +178,8 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 
 func TestUserBlobReferencesBackfill063_PagesPastUsersWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),

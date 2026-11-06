@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/users"
@@ -401,4 +402,12 @@ func TestDeleteAccountHandler_ConcurrentRequests(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w2.Code)
 
 	mockService.AssertExpectations(t)
+}
+
+func (m *MockUserService) DismissBlueskyProfileImport(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *MockUserService) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
 }

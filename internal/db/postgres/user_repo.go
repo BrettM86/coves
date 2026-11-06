@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/core/communities"
@@ -869,4 +870,49 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 	}
 
 	return user, nil
+}
+
+// SetBlueskyProfileImportDismissed sets bluesky_profile_import_dismissed_at to
+// now() when it is null.
+// It returns ErrUserNotFound when no row has the DID.
+func (r *postgresUserRepo) SetBlueskyProfileImportDismissed(ctx context.Context, did string) error {
+	if !strings.HasPrefix(did, "did:") {
+		return &users.InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+
+	// COALESCE keeps an existing dismissal, and still matches the row so a
+	// missing user is distinguishable from an already-dismissed one.
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE users
+		SET bluesky_profile_import_dismissed_at = COALESCE(bluesky_profile_import_dismissed_at, NOW())
+		WHERE did = $1`, did)
+	if err != nil {
+		return fmt.Errorf("failed to set Bluesky profile import dismissal for did=%s: %w", did, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check Bluesky profile import dismissal for did=%s: %w", did, err)
+	}
+	if rowsAffected == 0 {
+		return users.ErrUserNotFound
+	}
+	return nil
+}
+
+// GetBlueskyProfileImportDismissedAt reads bluesky_profile_import_dismissed_at
+// for one DID: nil when unset, ErrUserNotFound when no row has the DID.
+func (r *postgresUserRepo) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	var dismissedAt sql.NullTime
+	err := r.db.QueryRowContext(ctx,
+		`SELECT bluesky_profile_import_dismissed_at FROM users WHERE did = $1`, did).Scan(&dismissedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, users.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Bluesky profile import dismissal for did=%s: %w", did, err)
+	}
+	if !dismissedAt.Valid {
+		return nil, nil
+	}
+	return &dismissedAt.Time, nil
 }

@@ -229,6 +229,8 @@ func TestNestedBlobReferencesBackfill065_InsertOnlyDownAndRerun(t *testing.T) {
 			assert.Equal(t, before, nestedBackfillSnapshot(t, db, table, ""), "%s changed on Down or rerun", table)
 		}
 	}
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),

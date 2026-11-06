@@ -179,6 +179,8 @@ var sharedRules = []Rule{
 	// the PDS's own text may carry internal detail we must not forward.
 	Sentinel(pds.ErrServerError, http.StatusBadGateway, "UpstreamFailure",
 		"PDS failed to process the request"),
+	Sentinel(pds.ErrMalformedResponse, http.StatusBadGateway, "UpstreamFailure",
+		"PDS returned an unusable response"),
 
 	// Request lifecycle. A cancellation is the client's own doing, so it is a
 	// 4xx; a deadline we blew is ours to report as a gateway timeout.

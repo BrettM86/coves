@@ -18,6 +18,7 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -370,8 +371,8 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 		// having a bad time and is transient by definition.
 		//
 		// users.FetchProfileRecord draws exactly this line for exactly this
-		// reason; the predicates are shared with it rather than re-derived.
-		if users.IsRecordNotFoundResponse(resp.StatusCode, body) {
+		// reason; pds.GetRecordBounded too. The predicate is shared, not re-derived.
+		if pds.IsRecordNotFoundResponse(resp.StatusCode, body) {
 			return nil, fmt.Errorf("%w: the PDS serving %s answered getRecord with status %d: %s",
 				ErrPermanentEvent, postURI, resp.StatusCode, strconv.Quote(detail))
 		}

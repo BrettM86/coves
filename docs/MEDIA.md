@@ -6,7 +6,7 @@ Cloudflare's CSAM Scanning Tool can only match images that cross its edge. Coves
 
 ## Choke point
 
-While the proxy is enabled, the AppView never builds `com.atproto.sync.getBlob` URLs for images. All image URLs come from `internal/core/embeds` (`HydrateView`) and the `blobs` URL helpers, which use `IMAGE_PROXY_CDN_URL` when set and `IMAGE_PROXY_BASE_URL` otherwise. The proxy route is `/img/{preset}/plain/{did}/{cid}` (GET and HEAD), and the DID is the repo that holds the blob.
+While the proxy is enabled, the AppView never builds `com.atproto.sync.getBlob` URLs for images, except Bluesky profile import previews in `pds` mode. All other image URLs come from `internal/core/embeds` (`HydrateView`) and the `blobs` URL helpers, which use `IMAGE_PROXY_CDN_URL` when set and `IMAGE_PROXY_BASE_URL` otherwise. The proxy route is `/img/{preset}/plain/{did}/{cid}` (GET and HEAD), and the DID is the repo that holds the blob.
 
 A non-dev config with `IMAGE_PROXY_ENABLED=false` refuses to start unless `ALLOW_UNPROXIED_MEDIA=true`. That flag is the deliberate opt-out for a self-hoster with no scanning CDN, and it also means widening the Caddyfile `img-src`. With the proxy on, a missing or localhost base URL is rejected: the mobile app cannot resolve a relative URL.
 
@@ -21,7 +21,8 @@ The apex, `pds.coves.me`, `coves.me` and `tdpl.io` stay DNS-only. DPoP `htu` mat
 - Video. The proxy decodes stills and cannot stream, so `embed.video#view` gives a direct PDS `getBlob` URL for the video blob (its thumbnail is proxied). The CSP `media-src` lists `pds.coves.me`, `coves.me` and `tdpl.io` for this. Video is unscanned.
 - `record.embed`. Post and comment responses carry the author's record verbatim, blob refs included. The invariant is that the AppView does not construct unproxied URLs, not that no blob ref reaches a client. Neither client reads `record.embed`.
 - Bluesky media (approved 2026-09-19). Resolved Bluesky posts keep validated HTTPS `cdn.bsky.app` URLs (`internal/core/blueskypost/cdn_url.go`). They bypass the Coves proxy and scanning; URL validation is not content scanning.
-- Direct PDS `getBlob` stays publicly fetchable, because atproto sync needs it. The API hands such a URL out only for video.
+- Bluesky profile import previews. `getBlueskyProfileImport` points avatar and banner previews at `cdn.bsky.app` (`BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE=bluesky_cdn`, the default and the production setting) or at the user's PDS `getBlob` URL (`pds`). These bypass the Coves proxy and scanning. The proxy cannot serve them: the Bluesky profile is not indexed, so its blobs have no `blob_references` row. `pds` is accepted in any environment and is meant for dev and CI stacks whose accounts the Bluesky CDN cannot see. Any other value refuses to start. The web client's CSP `img-src` must allow the chosen host, and federated PDS hosts can't be listed in a fixed CSP.
+- Direct PDS `getBlob` stays publicly fetchable, because atproto sync needs it. The API hands such a URL out only for video and for Bluesky profile import previews in `pds` mode.
 
 Scanning is on serve, not on ingest, and matches only known hashes. Nothing hash-matches at upload, unfurl rehost or bridge ingest; user reports and admin review are the backstop.
 

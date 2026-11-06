@@ -144,7 +144,11 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 }
 
 func (a *application) userRouteOptions() *routes.UserRouteOptions {
-	return &routes.UserRouteOptions{UserBlockRepo: a.userBlockRepo, MediaPipeline: a.mediaPipeline}
+	return &routes.UserRouteOptions{
+		UserBlockRepo:                    a.userBlockRepo,
+		MediaPipeline:                    a.mediaPipeline,
+		BlueskyProfileImagePreviewSource: a.cfg.Media.BlueskyProfileImagePreviewSource,
+	}
 }
 
 // registerCommentQueryRoute mounts the comment tree query separately because

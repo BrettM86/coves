@@ -2678,3 +2678,11 @@ func TestCommentService_buildThreadViews_UnevenRepliesPerParent(t *testing.T) {
 		assert.False(t, view.HasMore)
 	}
 }
+
+func (m *mockUserRepo) SetBlueskyProfileImportDismissed(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *mockUserRepo) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
+}

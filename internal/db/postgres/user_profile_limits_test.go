@@ -89,6 +89,8 @@ func TestMigration060_PreservesProfileTextAcrossDownAndUp(t *testing.T) {
 		strings.Repeat("🇺🇸", 256), strings.Repeat("🇺🇸", 64), longDID)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),

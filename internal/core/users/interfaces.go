@@ -1,6 +1,9 @@
 package users
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UpdateProfileInput contains the fields that can be updated on a user's profile.
 // Nil values mean "don't change this field" - only non-nil values are updated.
@@ -130,6 +133,16 @@ type UserRepository interface {
 	// Returns ErrUserNotFound if the user does not exist.
 	// Returns InvalidDIDError if the DID format is invalid.
 	Delete(ctx context.Context, did string) error
+
+	// SetBlueskyProfileImportDismissed sets bluesky_profile_import_dismissed_at
+	// to now() when it is null, leaving an existing value unchanged.
+	// Returns ErrUserNotFound if the user does not exist.
+	// Returns InvalidDIDError if the DID format is invalid.
+	SetBlueskyProfileImportDismissed(ctx context.Context, did string) error
+
+	// GetBlueskyProfileImportDismissedAt returns bluesky_profile_import_dismissed_at
+	// for the DID: nil when unset, ErrUserNotFound when no row has the DID.
+	GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error)
 }
 
 // UserService defines the interface for user business logic
@@ -229,4 +242,14 @@ type UserService interface {
 	// Returns ErrUserNotFound if the user does not exist.
 	// Returns InvalidDIDError if the DID format is invalid.
 	DeleteAccount(ctx context.Context, did string) error
+
+	// DismissBlueskyProfileImport records that the user no longer wants the
+	// Bluesky profile import offered. Idempotent: an existing dismissal is kept.
+	// Returns ErrUserNotFound if the user does not exist.
+	// Returns InvalidDIDError if the DID format is invalid.
+	DismissBlueskyProfileImport(ctx context.Context, did string) error
+
+	// GetBlueskyProfileImportDismissedAt returns when the user dismissed the
+	// Bluesky profile import: nil when never, ErrUserNotFound for an unknown DID.
+	GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error)
 }

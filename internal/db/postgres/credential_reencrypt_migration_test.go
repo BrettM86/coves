@@ -27,6 +27,8 @@ func TestMigration046DownRestoresUsableEncryptionKey(t *testing.T) {
 	db := testkit.DB(t)
 	assert.False(t, credentialReencryptKeyTable(t, db).Valid,
 		"migration 046 Up must drop encryption_keys before its Down behavior can be tested")
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),
@@ -443,6 +445,8 @@ func TestCredentialReencryptRejectsLegacyRowsAfterEncryptionKeysDropped(t *testi
 func credentialReencryptVersion45Database(t *testing.T) *sql.DB {
 	t.Helper()
 	db := testkit.DB(t)
+	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
+		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
 		"076 (account status rechecks) must be rolled back first")
 	require.EqualValues(t, 75, testkit.MigrateDownOne(t, db, 75),

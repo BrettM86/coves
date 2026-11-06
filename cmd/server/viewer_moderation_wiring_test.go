@@ -17,6 +17,7 @@ import (
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/userblocks"
+	"Coves/internal/core/users"
 
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -100,6 +101,10 @@ func TestRegisterCommentQueryRouteHydratesViewerModeration(t *testing.T) {
 // request in this file reaches it.
 type unreachableUserBlockService struct{ userblocks.Service }
 
+// unreachableUserService satisfies the Bluesky import handlers' non-nil guards;
+// no request in this package's route wiring tests reaches it.
+type unreachableUserService struct{ users.UserService }
+
 // TestRegisterXRPCRoutesServesGetViewerAuthority proves the production XRPC
 // router mounts social.coves.actor.getViewerAuthority with the application's
 // authority. Services the route does not use stay nil.
@@ -117,6 +122,7 @@ func TestRegisterXRPCRoutesServesGetViewerAuthority(t *testing.T) {
 		moderationAuthority: authority,
 		mediaPipeline:       pipeline,
 		userBlockService:    unreachableUserBlockService{},
+		userService:         unreachableUserService{},
 	}
 	router := chi.NewRouter()
 	registerXRPCRoutes(router, app)
@@ -163,6 +169,7 @@ func TestRegisterXRPCRoutesPanicsWithoutViewerModerationWiring(t *testing.T) {
 				moderationAuthority: test.authority,
 				mediaPipeline:       pipeline,
 				userBlockService:    unreachableUserBlockService{},
+				userService:         unreachableUserService{},
 			}
 			assert.Panics(t, func() { registerXRPCRoutes(chi.NewRouter(), app) })
 		})

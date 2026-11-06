@@ -67,6 +67,13 @@ var (
 	// cannot decide whether to re-read and re-shape its batch.
 	ErrServerError = errors.New("server error")
 
+	// ErrMalformedResponse indicates the PDS (or whatever answered for it)
+	// returned a response that cannot be used: a body over the caller's cap,
+	// a body that does not decode, a success without the expected value, or a
+	// bare 404 with no XRPC envelope. Like ErrServerError it is an upstream
+	// fault, not ours.
+	ErrMalformedResponse = errors.New("malformed PDS response")
+
 	// ErrSessionExpired indicates a stored OAuth session could not be resumed:
 	// the refresh token expired, the session was revoked on the PDS, or the
 	// DPoP key no longer matches. Unlike ErrUnauthorized this is detected

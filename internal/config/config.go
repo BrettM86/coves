@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/media"
@@ -461,6 +462,13 @@ type MediaConfig struct {
 	// Validate says so in the startup error rather than leaving it to be
 	// discovered in a browser console.
 	AllowUnproxiedMedia bool
+
+	// BlueskyProfileImagePreviewSource selects where getBlueskyProfileImport
+	// points the preview URLs of Bluesky avatar and banner images: Bluesky's
+	// public CDN (the default) or the user's PDS getBlob endpoint, for local
+	// and CI stacks whose accounts the CDN cannot see. Read from
+	// BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE; an unknown value refuses startup.
+	BlueskyProfileImagePreviewSource blobs.BlueskyProfileImagePreviewSource
 }
 
 // SubmissionsConfig bounds what one author may submit to one community
@@ -675,6 +683,12 @@ func Load() (*Config, error) {
 			uploadReadTimeout, cfg.Server.ReadTimeout)
 	}
 
+	blueskyProfileImagePreviewSource, err := blobs.ParseBlueskyProfileImagePreviewSource(
+		lookup("BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE"))
+	if err != nil {
+		return nil, fmt.Errorf("BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE: %w", err)
+	}
+
 	cfg.Media = MediaConfig{
 		ImageProxy: imageProxy,
 		Upload:     media.Config{MaxConcurrent: uploadMaxConcurrent, MaxLongEdge: uploadMaxLongEdge},
@@ -687,7 +701,8 @@ func Load() (*Config, error) {
 			ZoneID:   lookup("CLOUDFLARE_CACHE_PURGE_ZONE_ID"),
 			APIToken: lookup("CLOUDFLARE_CACHE_PURGE_API_TOKEN"),
 		},
-		AllowUnproxiedMedia: allowUnproxiedMedia,
+		AllowUnproxiedMedia:              allowUnproxiedMedia,
+		BlueskyProfileImagePreviewSource: blueskyProfileImagePreviewSource,
 	}
 	if cfg.Media.CDNPurge.Enabled() {
 		cfg.Media.CDNPurge.BaseURLs = []string{imageProxy.BaseURL}

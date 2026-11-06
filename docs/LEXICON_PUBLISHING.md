@@ -226,9 +226,12 @@ goat lex publish --update \
   internal/atproto/lexicon/social/coves/embed/imagesWithAttachment.json \
   internal/atproto/lexicon/social/coves/embed/video.json \
   internal/atproto/lexicon/social/coves/actor/block.json \
+  internal/atproto/lexicon/social/coves/actor/dismissBlueskyProfileImport.json \
+  internal/atproto/lexicon/social/coves/actor/getBlueskyProfileImport.json \
   internal/atproto/lexicon/social/coves/actor/getComments.json \
   internal/atproto/lexicon/social/coves/actor/getPosts.json \
   internal/atproto/lexicon/social/coves/actor/getProfile.json \
+  internal/atproto/lexicon/social/coves/actor/importBlueskyProfile.json \
   internal/atproto/lexicon/social/coves/actor/profile.json \
   internal/atproto/lexicon/social/coves/actor/signup.json \
   internal/atproto/lexicon/social/coves/actor/updateProfile.json \

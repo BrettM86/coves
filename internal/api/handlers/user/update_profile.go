@@ -119,17 +119,7 @@ func (h *UpdateProfileHandler) WithProfileIndexer(indexer ProfileIndexer) *Updat
 // If a custom factory was provided (for testing), uses that.
 // Otherwise, uses DPoP authentication via indigo's ClientApp for proper OAuth token handling.
 func (h *UpdateProfileHandler) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error) {
-	// Use custom factory if provided (e.g., for E2E testing with password auth)
-	if h.pdsClientFactory != nil {
-		return h.pdsClientFactory(ctx, session)
-	}
-
-	// Production path: use OAuth with DPoP
-	if h.oauthClient == nil {
-		return nil, fmt.Errorf("OAuth client not configured")
-	}
-
-	return pds.NewFromOAuthSession(ctx, h.oauthClient, session)
+	return newPDSClient(ctx, h.pdsClientFactory, h.oauthClient, session)
 }
 
 // ServeHTTP handles the update profile request
@@ -252,9 +242,8 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// 5. Read the standing record so omitted fields keep their current values.
 	// Guard the subsequent write with its CID so concurrent editors cannot
 	// silently overwrite each other.
-	existing, err := pdsClient.GetRecord(ctx, CovesProfileCollection, "self")
-	missingRecord := errors.Is(err, pds.ErrNotFound) || (err == nil && existing == nil)
-	if err != nil && !missingRecord {
+	existing, err := standingProfileRecord(pdsClient.GetRecord(ctx, CovesProfileCollection, "self"))
+	if err != nil {
 		slog.Error("failed to read existing profile record",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
@@ -264,31 +253,10 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 6. Build profile record
-	profile := map[string]interface{}{
-		"$type": CovesProfileCollection,
-	}
-	swapRecord := ""
-	if existing != nil {
-		for key, value := range existing.Value {
-			profile[key] = value
-		}
-		profile["$type"] = CovesProfileCollection
-		swapRecord = existing.CID
-	}
-
-	// Add displayName if provided
-	if req.DisplayName != nil {
-		profile["displayName"] = *req.DisplayName
-	}
-
-	// Add description if provided
-	if req.Description != nil {
-		existingDescription, hadDescription := profile["description"].(string)
-		if !hadDescription || existingDescription != *req.Description {
-			delete(profile, "descriptionFacets")
-		}
-		profile["description"] = *req.Description
-	}
+	profile, swapRecord := mergeProfileRecord(existing, profileChanges{
+		DisplayName: req.DisplayName,
+		Description: req.Description,
+	})
 
 	// 7. Upload avatar blob if provided
 	if len(req.AvatarBlob) > 0 {
@@ -338,33 +306,11 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 9. Put profile record to PDS using com.atproto.repo.putRecord
-	commit, err := pdsClient.PutRecordWithCommit(ctx, CovesProfileCollection, "self", profile, swapRecord)
-	if err != nil {
-		if !errors.Is(err, pds.ErrNoCommit) || commit == nil || commit.URI == "" || commit.CID == "" {
-			slog.Error("failed to put profile record to PDS",
-				slog.String("did", userDID),
-				slog.String("pds_url", session.HostURL),
-				slog.String("error", err.Error()),
-			)
-			putProfileMapper.Write(w, err)
-			return
-		}
-	}
-
-	// 10. Write the committed record through to the users table so the user's
-	// next read sees it. Jetstream may re-apply the record or skip it as already
-	// applied (its recency guard compares against users.updated_at), so the
-	// write-through mirrors the whole record the way the consumer does. A
-	// failure is logged and not returned: the record is already on the PDS, and
-	// Jetstream will index it.
-	if h.profileIndexer != nil {
-		if _, indexErr := h.profileIndexer.UpdateProfile(ctx, userDID, profileIndexInput(profile)); indexErr != nil {
-			slog.Warn("failed to write profile update through to the users table; Jetstream will index it",
-				slog.String("did", userDID),
-				slog.String("error", indexErr.Error()),
-			)
-		}
+	// 9. Put profile record to PDS using com.atproto.repo.putRecord, and
+	// 10. write it through to the users table.
+	commit, ok := commitProfileRecord(ctx, w, pdsClient, h.profileIndexer, userDID, session.HostURL, profile, swapRecord)
+	if !ok {
+		return
 	}
 
 	// 11. Return success response

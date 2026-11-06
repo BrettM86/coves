@@ -1110,3 +1110,36 @@ func (s *userService) DeleteAccount(ctx context.Context, did string) error {
 
 	return nil
 }
+
+// DismissBlueskyProfileImport records that the user no longer wants the
+// Bluesky profile import offered.
+func (s *userService) DismissBlueskyProfileImport(ctx context.Context, did string) error {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return &InvalidDIDError{DID: did, Reason: "DID is required"}
+	}
+	if !strings.HasPrefix(did, "did:") {
+		return &InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+	if err := s.userRepo.SetBlueskyProfileImportDismissed(ctx, did); err != nil {
+		return fmt.Errorf("dismissing Bluesky profile import: %w", err)
+	}
+	return nil
+}
+
+// GetBlueskyProfileImportDismissedAt returns when the user dismissed the
+// Bluesky profile import.
+func (s *userService) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return nil, &InvalidDIDError{DID: did, Reason: "DID is required"}
+	}
+	if !strings.HasPrefix(did, "did:") {
+		return nil, &InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+	dismissedAt, err := s.userRepo.GetBlueskyProfileImportDismissedAt(ctx, did)
+	if err != nil {
+		return nil, fmt.Errorf("reading Bluesky profile import dismissal: %w", err)
+	}
+	return dismissedAt, nil
+}

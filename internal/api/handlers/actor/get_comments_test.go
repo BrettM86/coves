@@ -877,3 +877,11 @@ func TestGetCommentsHandler_ViewerVotesReachResponse(t *testing.T) {
 		t.Errorf("Expected no viewer state on the unvoted comment, got %+v", response.Comments[1].Viewer)
 	}
 }
+
+func (m *mockUserServiceForComments) DismissBlueskyProfileImport(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *mockUserServiceForComments) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
+}

@@ -6,8 +6,11 @@ package pds
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
 	"Coves/internal/core/blobs"
@@ -298,6 +301,105 @@ func (c *client) GetRecord(ctx context.Context, collection, rkey string) (*Recor
 		CID:   result.CID,
 		Value: result.Value,
 	}, nil
+}
+
+// maxPDSErrorDetailBytes caps each text a PDS error body contributes to a
+// returned error, so a hostile PDS cannot flood our logs through the wrapped
+// message.
+const maxPDSErrorDetailBytes = 256
+
+// BoundedRecordGetter reads a single record while refusing a response body
+// larger than maxBytes.
+type BoundedRecordGetter interface {
+	GetRecordBounded(ctx context.Context, collection, rkey string, maxBytes int64) (*RecordResponse, error)
+}
+
+// Ensure the concrete client provides the bounded read.
+var _ BoundedRecordGetter = (*client)(nil)
+
+// GetRecordBounded retrieves a single record by collection and rkey, reading
+// at most maxBytes of the response body.
+//
+// The body is read through a limit of maxBytes+1: the extra probe byte tells a
+// body of exactly maxBytes from a larger one, so an over-cap or endless body
+// fails without being consumed further and never yields a partial record.
+// Error responses are read under the same cap and mapped like GetRecord's, with
+// two differences: the PDS's error texts are capped at maxPDSErrorDetailBytes,
+// and ErrNotFound follows IsRecordNotFoundResponse, so a 404 without an XRPC
+// error name is not ErrNotFound. With no envelope the request most likely never
+// reached a PDS (a stale pds_url pointing at a generic web server answers 404
+// for everything), so it says nothing about the record. A 2xx without a record
+// value is an error, never an empty record a caller could merge over the real
+// one. A response that cannot be used (over the cap, undecodable, no value, a
+// bare 404) wraps ErrMalformedResponse.
+func (c *client) GetRecordBounded(ctx context.Context, collection, rkey string, maxBytes int64) (*RecordResponse, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("getRecord: maxBytes must be positive, got %d", maxBytes)
+	}
+
+	request := atclient.NewAPIRequest(http.MethodGet, syntax.NSID("com.atproto.repo.getRecord"), nil)
+	request.Headers.Set("Accept", "application/json")
+	request.QueryParams.Set("repo", c.did)
+	request.QueryParams.Set("collection", collection)
+	request.QueryParams.Set("rkey", rkey)
+
+	response, err := c.apiClient.Do(ctx, request)
+	if err != nil {
+		return nil, wrapAPIError(err, "getRecord")
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("getRecord: reading response body: %w", err)
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("getRecord: %w: response body exceeds %d bytes (collection %s)", ErrMalformedResponse, maxBytes, collection)
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var errorBody atclient.ErrorBody
+		if json.Unmarshal(body, &errorBody) != nil {
+			errorBody = atclient.ErrorBody{}
+		}
+		if IsRecordNotFoundResponse(response.StatusCode, body) {
+			return nil, fmt.Errorf("getRecord: %w: %s (collection %s)", ErrNotFound, capPDSErrorDetail(errorBody.Name), collection)
+		}
+		if response.StatusCode == http.StatusNotFound && errorBody.Name == "" {
+			return nil, fmt.Errorf("getRecord: %w: bare 404 without an XRPC error from %s (collection %s)", ErrMalformedResponse, c.host, collection)
+		}
+		errorBody.Name = capPDSErrorDetail(errorBody.Name)
+		errorBody.Message = capPDSErrorDetail(errorBody.Message)
+		return nil, wrapAPIError(errorBody.APIError(response.StatusCode), "getRecord")
+	}
+
+	var result struct {
+		URI   string         `json:"uri"`
+		CID   string         `json:"cid"`
+		Value map[string]any `json:"value"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		// Not wrapped: decoder errors can quote PDS-controlled text uncapped.
+		return nil, fmt.Errorf("getRecord: %w: decoding response body: %s", ErrMalformedResponse, capPDSErrorDetail(err.Error()))
+	}
+	if result.Value == nil {
+		return nil, fmt.Errorf("getRecord: %w: PDS returned success without a record value (collection %s)", ErrMalformedResponse, collection)
+	}
+
+	return &RecordResponse{
+		URI:   result.URI,
+		CID:   result.CID,
+		Value: result.Value,
+	}, nil
+}
+
+// capPDSErrorDetail truncates a text from a PDS error body to
+// maxPDSErrorDetailBytes.
+func capPDSErrorDetail(detail string) string {
+	if len(detail) > maxPDSErrorDetailBytes {
+		return detail[:maxPDSErrorDetailBytes]
+	}
+	return detail
 }
 
 // PutRecord creates or updates a record with optional optimistic locking.

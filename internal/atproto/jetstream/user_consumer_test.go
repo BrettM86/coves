@@ -1135,3 +1135,11 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
 	})
 }
+
+func (m *mockUserService) DismissBlueskyProfileImport(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *mockUserService) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
+}

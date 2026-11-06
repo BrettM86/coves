@@ -194,6 +194,9 @@ services:
       # consulted when IMAGE_PROXY_ENABLED=false, where it is required for the
       # server to start.
       ALLOW_UNPROXIED_MEDIA: ${ALLOW_UNPROXIED_MEDIA:-false}
+      # Where Bluesky profile import previews point: bluesky_cdn or pds
+      # (docs/MEDIA.md). Passed through explicitly; the container sees no env_file.
+      BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE: ${BLUESKY_PROFILE_IMAGE_PREVIEW_SOURCE:-bluesky_cdn}
 
       # OpenTelemetry Observability (optional - disabled by default)
       OTEL_ENABLED: ${OTEL_ENABLED:-false}

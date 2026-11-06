@@ -12,6 +12,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/media"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
@@ -53,6 +54,10 @@ type UserRouteOptions struct {
 
 	// MediaPipeline is required for profile image uploads.
 	MediaPipeline *media.Pipeline
+
+	// BlueskyProfileImagePreviewSource selects where getBlueskyProfileImport
+	// points image preview URLs. The zero value is the Bluesky CDN.
+	BlueskyProfileImagePreviewSource blobs.BlueskyProfileImagePreviewSource
 }
 
 // RegisterUserRoutesWithOptions registers user-related XRPC endpoints with optional configuration.
@@ -117,6 +122,36 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	}
 	updateProfileHandler.WithProfileIndexer(service)
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
+
+	// social.coves.actor.importBlueskyProfile - procedure endpoint (authenticated)
+	// Copies requested fields of the user's app.bsky.actor.profile record onto
+	// their Coves profile through the same PDS client and write-through as
+	// updateProfile, then records the import offer as dismissed.
+	var importBlueskyProfileHandler *user.ImportBlueskyProfileHandler
+	if opts != nil && opts.PDSClientFactory != nil {
+		importBlueskyProfileHandler = user.NewImportBlueskyProfileHandlerWithFactory(opts.PDSClientFactory, service)
+	} else {
+		importBlueskyProfileHandler = user.NewImportBlueskyProfileHandler(oauthClient, service)
+	}
+	importBlueskyProfileHandler.WithProfileIndexer(service)
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.importBlueskyProfile", importBlueskyProfileHandler.ServeHTTP)
+
+	// social.coves.actor.dismissBlueskyProfileImport - procedure endpoint (authenticated)
+	dismissBlueskyProfileImportHandler := user.NewDismissBlueskyProfileImportHandler(service)
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.dismissBlueskyProfileImport", dismissBlueskyProfileImportHandler.ServeHTTP)
+
+	// social.coves.actor.getBlueskyProfileImport - query endpoint (authenticated)
+	// Reports which Bluesky profile fields could be imported and the offer status.
+	var getBlueskyProfileImportHandler *user.GetBlueskyProfileImportHandler
+	if opts != nil && opts.PDSClientFactory != nil {
+		getBlueskyProfileImportHandler = user.NewGetBlueskyProfileImportHandlerWithFactory(opts.PDSClientFactory, service)
+	} else {
+		getBlueskyProfileImportHandler = user.NewGetBlueskyProfileImportHandler(oauthClient, service)
+	}
+	if opts != nil {
+		getBlueskyProfileImportHandler.WithImagePreviewSource(opts.BlueskyProfileImagePreviewSource)
+	}
+	r.With(authMiddleware.RequireAuth).Get("/xrpc/social.coves.actor.getBlueskyProfileImport", getBlueskyProfileImportHandler.ServeHTTP)
 }
 
 // GetProfile handles social.coves.actor.getProfile

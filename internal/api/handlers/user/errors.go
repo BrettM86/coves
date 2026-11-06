@@ -30,8 +30,9 @@ var accountErrorMapper = xrpc.NewMapper("user",
 		func(e *users.InvalidDIDError) string { return e.Error() }),
 )
 
-// updateProfileMapper is the base for the updateProfile endpoint, the only
-// handler that drives a pds.Client directly.
+// updateProfileMapper is the base for the handlers that drive a pds.Client
+// directly: updateProfile and the Bluesky profile import pair
+// (getBlueskyProfileImport, importBlueskyProfile).
 //
 // It answers 401 with AuthExpired rather than the default AuthRequired because
 // clients already key on that code here. 403 is left to the inherited rule: it

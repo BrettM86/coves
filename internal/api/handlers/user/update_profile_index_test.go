@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
@@ -19,16 +20,20 @@ import (
 )
 
 type recordingProfileIndexer struct {
-	err   error
-	did   string
-	input users.UpdateProfileInput
-	calls int
+	err      error
+	did      string
+	input    users.UpdateProfileInput
+	calls    int
+	ctxErr   error
+	deadline time.Time
 }
 
-func (r *recordingProfileIndexer) UpdateProfile(_ context.Context, did string, input users.UpdateProfileInput) (*users.User, error) {
+func (r *recordingProfileIndexer) UpdateProfile(ctx context.Context, did string, input users.UpdateProfileInput) (*users.User, error) {
 	r.calls++
 	r.did = did
 	r.input = input
+	r.ctxErr = ctx.Err()
+	r.deadline, _ = ctx.Deadline()
 	return &users.User{DID: did}, r.err
 }
 
@@ -159,4 +164,25 @@ func TestUpdateProfileHandler_PDSFailureIsNotIndexed(t *testing.T) {
 
 	assert.NotEqual(t, http.StatusOK, w.Code)
 	assert.Equal(t, 0, indexer.calls)
+}
+
+// A client that disconnects after the write has committed must not cancel the
+// write-through: the record is on the PDS, so the user's next read must see it.
+func TestUpdateProfileHandler_WriteThroughSurvivesRequestCancelAfterWrite(t *testing.T) {
+	displayName := "New name"
+	req := indexTestRequest(t, UpdateProfileRequest{DisplayName: &displayName})
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+	client := &cancelAfterCommitClient{boundedPDSClient: newImportClient(nil, nil), cancel: cancel}
+
+	indexer := &recordingProfileIndexer{}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(client, nil), testMediaPipeline(t)).
+		WithProfileIndexer(indexer)
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.Equal(t, 1, indexer.calls)
+	assert.NoError(t, indexer.ctxErr, "the write-through runs on a context the disconnect does not cancel")
+	assertBoundedDeadline(t, indexer.deadline)
 }

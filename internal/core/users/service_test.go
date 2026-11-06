@@ -1203,3 +1203,11 @@ func TestUpdateProfile_TruncatesOnlyBeyondLexiconCaps(t *testing.T) {
 		})
 	}
 }
+
+func (m *MockUserRepository) SetBlueskyProfileImportDismissed(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *MockUserRepository) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
+}

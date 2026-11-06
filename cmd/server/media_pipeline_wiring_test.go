@@ -40,12 +40,22 @@ func TestUserRouteOptionsCarryMediaPipeline(t *testing.T) {
 	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
 	require.NoError(t, err)
 	userBlockRepo := &mediaWiringUserBlockRepo{}
-	a := &application{mediaPipeline: pipeline, userBlockRepo: userBlockRepo}
+	a := &application{cfg: &config.Config{}, mediaPipeline: pipeline, userBlockRepo: userBlockRepo}
 
 	options := a.userRouteOptions()
 	require.NotNil(t, options)
 	assert.Same(t, pipeline, options.MediaPipeline)
 	assert.Same(t, userBlockRepo, options.UserBlockRepo)
+}
+
+func TestUserRouteOptionsCarryBlueskyProfileImagePreviewSource(t *testing.T) {
+	a := &application{cfg: &config.Config{
+		Media: config.MediaConfig{BlueskyProfileImagePreviewSource: blobs.BlueskyProfileImagePreviewSourcePDS},
+	}}
+
+	options := a.userRouteOptions()
+	require.NotNil(t, options)
+	assert.Equal(t, blobs.BlueskyProfileImagePreviewSourcePDS, options.BlueskyProfileImagePreviewSource)
 }
 
 // unreachableDatabaseConnector refuses every connection and counts the

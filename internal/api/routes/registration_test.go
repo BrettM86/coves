@@ -176,6 +176,9 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.actor.requestSignupToken", authNone, 5, false},
 	{http.MethodPost, "/xrpc/social.coves.actor.deleteAccount", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.actor.updateProfile", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.actor.importBlueskyProfile", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.actor.dismissBlueskyProfileImport", authRequired, 0, false},
+	{http.MethodGet, "/xrpc/social.coves.actor.getBlueskyProfileImport", authRequired, 0, false},
 
 	// RegisterMediaRoutes — social.coves.media.*
 	{http.MethodPost, "/xrpc/social.coves.media.uploadImage", authRequired, 0, false},
@@ -445,6 +448,10 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	// assertion ever did reach one, it would panic rather than quietly assert
 	// something about a stub.
 	//
+	// The user service is an empty stub rather than nil because the Bluesky
+	// import handlers refuse a nil dependency at construction; every stub method
+	// it does not model still panics if reached.
+	//
 	// The OAuth client app is the exception, because RegisterUserRoutesWithOptions
 	// takes the production OAuth path and NewUpdateProfileHandler refuses a nil one at
 	// construction (update_profile.go:72) rather than at the first request —
@@ -457,7 +464,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	if err != nil {
 		panic(err)
 	}
-	RegisterUserRoutesWithOptions(mux, nil, auth, indigooauth.NewClientApp(&clientConfig, nil), &UserRouteOptions{MediaPipeline: pipeline})
+	RegisterUserRoutesWithOptions(mux, &stubUserService{}, auth, indigooauth.NewClientApp(&clientConfig, nil), &UserRouteOptions{MediaPipeline: pipeline})
 	RegisterCommunityRoutes(mux, nil, nil, auth, nil)
 	RegisterPostRoutes(mux, nil, nil, nil, auth, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterVoteRoutes(mux, nil, auth)

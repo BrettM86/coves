@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
@@ -459,4 +460,12 @@ func TestGetPostsHandler_DirectDIDPassthrough(t *testing.T) {
 	if receivedDID != "did:plc:directuser" {
 		t.Errorf("Expected DID 'did:plc:directuser', got '%s'", receivedDID)
 	}
+}
+
+func (m *mockUserService) DismissBlueskyProfileImport(ctx context.Context, did string) error {
+	return nil
+}
+
+func (m *mockUserService) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
+	return nil, nil
 }
