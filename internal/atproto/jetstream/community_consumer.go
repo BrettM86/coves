@@ -1853,27 +1853,35 @@ func extractDomainFromHandle(handle string) string {
 	return registrable
 }
 
-// handleSubscription processes subscription create/delete events
+// handleSubscription processes subscription create/update/delete events
 // CREATE operation = user subscribed to community
+// UPDATE operation = user rewrote the record in place (subscribe with a new
+// contentVisibility rewrites the existing record with putRecord)
 // DELETE operation = user unsubscribed from community
 func (c *CommunityEventConsumer) handleSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	switch commit.Operation {
-	case "create":
+	case "create", "update":
 		return c.createSubscription(ctx, userDID, commit)
 	case "delete":
 		return c.deleteSubscription(ctx, userDID, commit)
 	default:
-		// Update operations shouldn't happen on subscriptions, but ignore gracefully
 		log.Printf("Ignoring unexpected operation on subscription: %s (userDID=%s, rkey=%s)",
 			commit.Operation, userDID, commit.RKey)
 		return nil
 	}
 }
 
-// createSubscription indexes a new subscription with retry logic
+// createSubscription indexes a subscription from a create or update event.
+//
+// An update is indexed by record URI: when the row at this URI names a
+// different community (the record's subject changed), the old (user,
+// community) row is removed before the new one is upserted. A crash between
+// the two steps is safe on redrive, because the URI lookup then finds no row
+// and only the upsert runs. With no row at this URI (the create was never
+// indexed), the update is indexed exactly as a create.
 func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("%w: subscription create event missing record data", ErrPermanentEvent)
+		return fmt.Errorf("%w: subscription %s event missing record data", ErrPermanentEvent, commit.Operation)
 	}
 
 	// Extract community DID from record's subject field (following atProto conventions)
@@ -1908,8 +1916,14 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		RecordCID:         commit.CID,
 	}
 
+	if commit.Operation == "update" {
+		if err := c.moveSubscriptionIfSubjectChanged(ctx, userDID, uri, communityDID); err != nil {
+			return err
+		}
+	}
+
 	// Idempotent for Jetstream replays: a conflict on (user, community) updates
-	// the stored record pointer instead of erroring. subscriber_count is
+	// the stored record pointer and contentVisibility instead of erroring. subscriber_count is
 	// maintained by a database trigger on community_subscriptions, not here.
 	_, err := c.repo.SubscribeWithCount(ctx, subscription)
 	if err != nil {
@@ -1933,6 +1947,26 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 
 	log.Printf("✓ Indexed subscription: %s -> %s (visibility: %d)",
 		userDID, communityDID, contentVisibility)
+	return nil
+}
+
+// moveSubscriptionIfSubjectChanged removes the user's row for the community
+// previously indexed at uri when an update names a different community.
+func (c *CommunityEventConsumer) moveSubscriptionIfSubjectChanged(ctx context.Context, userDID, uri, communityDID string) error {
+	indexed, err := c.repo.GetSubscriptionByURI(ctx, uri)
+	if err != nil {
+		if communities.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to look up subscription for update: %w", err)
+	}
+	if indexed.CommunityDID == communityDID {
+		return nil
+	}
+	if err := c.repo.UnsubscribeWithCount(ctx, userDID, indexed.CommunityDID); err != nil && !communities.IsNotFound(err) {
+		return fmt.Errorf("failed to remove subscription moved to another community: %w", err)
+	}
+	log.Printf("Subscription %s moved: %s -> %s", uri, indexed.CommunityDID, communityDID)
 	return nil
 }
 

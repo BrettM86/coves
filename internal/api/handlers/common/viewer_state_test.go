@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,7 @@ import (
 
 type viewerStateRepository struct {
 	communities.Repository
-	subscribed map[string]bool
+	subscribed map[string]int
 	blocked    bool
 	blockErr   error
 }
@@ -25,7 +26,7 @@ func (r *viewerStateRepository) GetSubscribedCommunityDIDs(
 	context.Context,
 	string,
 	[]string,
-) (map[string]bool, error) {
+) (map[string]int, error) {
 	return r.subscribed, nil
 }
 
@@ -49,7 +50,7 @@ func TestPopulateCommunityViewerState_MergesExistingFields(t *testing.T) {
 			Member:  &member,
 		},
 	}
-	repo := &viewerStateRepository{subscribed: map[string]bool{community.DID: false}}
+	repo := &viewerStateRepository{subscribed: map[string]int{}}
 
 	PopulateCommunityViewerState(
 		context.Background(),
@@ -80,4 +81,42 @@ func TestPopulateCommunityBlockState_PropagatesLookupFailure(t *testing.T) {
 
 	require.ErrorIs(t, err, cause)
 	assert.Nil(t, community.Viewer, "an unknown block state must not be serialized as false")
+}
+
+func TestPopulateCommunityViewerState_ReportsContentVisibility(t *testing.T) {
+	communityA := &communities.Community{DID: "did:plc:communitya"}
+	communityB := &communities.Community{DID: "did:plc:communityb"}
+	communityC := &communities.Community{DID: "did:plc:communityc"}
+	repo := &viewerStateRepository{subscribed: map[string]int{
+		"did:plc:communitya": 4,
+		"did:plc:communityb": 1,
+	}}
+
+	PopulateCommunityViewerState(
+		context.Background(),
+		authenticatedRequest(),
+		repo,
+		[]*communities.Community{communityA, communityB, communityC},
+	)
+
+	viewerJSON := func(t *testing.T, c *communities.Community) map[string]any {
+		t.Helper()
+		require.NotNil(t, c.Viewer, "%s has no viewer state", c.DID)
+		raw, err := json.Marshal(c.Viewer)
+		require.NoError(t, err)
+		var out map[string]any
+		require.NoError(t, json.Unmarshal(raw, &out))
+		return out
+	}
+
+	a := viewerJSON(t, communityA)
+	b := viewerJSON(t, communityB)
+	c := viewerJSON(t, communityC)
+
+	assert.Equal(t, true, a["subscribed"], "community A subscribed")
+	assert.Equal(t, float64(4), a["contentVisibility"], "community A contentVisibility")
+	assert.Equal(t, true, b["subscribed"], "community B subscribed")
+	assert.Equal(t, float64(1), b["contentVisibility"], "community B contentVisibility")
+	assert.Equal(t, false, c["subscribed"], "community C subscribed")
+	assert.NotContains(t, c, "contentVisibility", "unsubscribed community C must omit contentVisibility")
 }

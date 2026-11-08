@@ -245,3 +245,110 @@ func TestCommunitySubscriptionIngestion(t *testing.T) {
 		"after unsubscribing, the community keeps the other subscriber's count and the "+
 			"unsubscribed actor's own community count is zero")
 }
+
+// subscribeResponse is social.coves.community.subscribe's output.
+type subscribeResponse struct {
+	URI      string `json:"uri"`
+	CID      string `json:"cid"`
+	Existing bool   `json:"existing"`
+}
+
+// subscriptionRecordSubjects lists every social.coves.community.subscription
+// record in account's repo, straight from its PDS, and returns each one's
+// subject in listing order.
+func subscriptionRecordSubjects(t *testing.T, account *testkit.Account) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
+	defer cancel()
+
+	var subjects []string
+	cursor := ""
+	for {
+		params := url.Values{"repo": {account.DID}, "collection": {subscriptionCollection}, "limit": {"100"}}
+		if cursor != "" {
+			params.Set("cursor", cursor)
+		}
+		var page struct {
+			Records []struct {
+				Value struct {
+					Subject string `json:"subject"`
+				} `json:"value"`
+			} `json:"records"`
+			Cursor string `json:"cursor"`
+		}
+		require.NoError(t, account.XRPC().Query(ctx, "com.atproto.repo.listRecords", params, &page),
+			"listing the subscriber's subscription records on its PDS")
+		for _, record := range page.Records {
+			subjects = append(subjects, record.Value.Subject)
+		}
+		if page.Cursor == "" || len(page.Records) == 0 {
+			return subjects
+		}
+		cursor = page.Cursor
+	}
+}
+
+// TestCommunitySubscribeContentVisibilityRewritesOneRecord is the end-to-end
+// contract for changing a subscription's contentVisibility through the AppView.
+// It carries no ingestion marker: TestCommunitySubscriptionIngestion owns the
+// collection.
+//
+// A signed-in account subscribes with 2, then at once with 5, then at once with
+// 3, never waiting for the firehose in between. The AppView index has usually
+// not seen the first record when the second call arrives, so only reading the
+// account's own PDS can find it: the later calls must rewrite that one record in
+// place (existing: true, same URI) rather than create more. The index then
+// settles on the last value, with one subscriber.
+func TestCommunitySubscribeContentVisibilityRewritesOneRecord(t *testing.T) {
+	p := newPipeline(t)
+
+	creator := p.IndexedAccount(t, "cvc")
+	subscriberAccount := p.IndexedAccount(t, "cvs")
+	community := indexedCommunity(t, p, "cv", creator.DID)
+	subscriber := p.AppView.As(p.AppView.SignIn(t, subscriberAccount))
+
+	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
+	defer cancel()
+
+	before, err := p.Community(ctx, community.DID)
+	require.NoError(t, err)
+	require.Equal(t, 0, before.SubscriberCount, "fixture: a newly indexed community has no subscribers")
+
+	subscribe := func(contentVisibility int) subscribeResponse {
+		t.Helper()
+		var response subscribeResponse
+		require.NoError(t, subscriber.Procedure(ctx, "social.coves.community.subscribe",
+			map[string]any{"community": community.DID, "contentVisibility": contentVisibility}, &response),
+			"social.coves.community.subscribe with contentVisibility %d", contentVisibility)
+		return response
+	}
+
+	first := subscribe(2)
+	second := subscribe(5)
+	third := subscribe(3)
+
+	require.NotEmpty(t, first.URI, "the first subscribe answered without a uri")
+	require.False(t, first.Existing, "the first subscribe found no record, so it is not existing")
+	require.True(t, second.Existing, "the second subscribe must report the record the first one created")
+	require.Equal(t, first.URI, second.URI, "the second subscribe must rewrite the first record, not create another")
+	require.True(t, third.Existing, "the third subscribe must report the record the first one created")
+	require.Equal(t, first.URI, third.URI, "the third subscribe must rewrite the first record, not create another")
+
+	require.Equal(t, []string{community.DID}, subscriptionRecordSubjects(t, subscriberAccount),
+		"the subscriber's PDS must hold exactly one subscription record, for this community")
+
+	p.Await(t, "community.get as the subscriber to show contentVisibility 3 and one subscriber", func() (bool, error) {
+		var view struct {
+			SubscriberCount int `json:"subscriberCount"`
+			Viewer          *struct {
+				ContentVisibility *int `json:"contentVisibility"`
+			} `json:"viewer"`
+		}
+		if err := subscriber.Query(context.Background(), "social.coves.community.get",
+			url.Values{"community": {community.DID}}, &view); err != nil {
+			return false, err
+		}
+		return view.SubscriberCount == 1 && view.Viewer != nil &&
+			view.Viewer.ContentVisibility != nil && *view.Viewer.ContentVisibility == 3, nil
+	})
+}

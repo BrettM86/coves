@@ -28,7 +28,7 @@ A community is hosted by this instance when `pds_refresh_token_encrypted IS NOT 
 
 ## Subscriptions
 
-A subscription is a `social.coves.community.subscription` record in the user's repo whose `subject` is the community DID. The consumer indexes creates and deletes idempotently and ignores updates. `contentVisibility` runs from 1 (only the best content) to 5 (all content), is clamped to that range, and defaults to 3; it is stored, but no feed reads it yet.
+A subscription is a `social.coves.community.subscription` record in the user's repo whose `subject` is the community DID. The consumer indexes creates, updates and deletes by record URI, so an update that changes the subject moves the row to the new community. Subscribing when the viewer's PDS already holds a record for the community rewrites that record with putRecord rather than creating another. `contentVisibility` runs from 1 (only the best content) to 5 (all content), is clamped to that range, and defaults to 3. Only the home timeline reads it: levels 1 and 2 keep a community's posts at or above its top-10% / top-25% score line over its visible posts from the last 14 days (score above 0 only), levels 4 and 5 boost the Hot rank by 1.5× / 2×, and level 3 is the unchanged feed. Discover and community feeds ignore it.
 
 `subscriberCount` comes only from indexed subscription rows. A trigger added in migration 045 maintains `communities.subscriber_count`, and the profile record cannot set it. Go code must not adjust the count itself: a binary that still did would double-count against the trigger, which is why the migration header warns against overlapping old and new binaries in a rolling deploy.
 

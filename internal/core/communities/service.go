@@ -900,7 +900,9 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 
 	userDID := session.AccountDID.String()
 
-	// Clamp contentVisibility to valid range (1-5), default to 3 if 0 or invalid
+	// 0 means "omitted" (only the handler produces it). Out-of-range values
+	// that reach the service anyway are treated as the default.
+	supplied := contentVisibility != 0
 	if contentVisibility <= 0 || contentVisibility > 5 {
 		contentVisibility = 3
 	}
@@ -932,6 +934,21 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 	pdsClient, err := s.getPDSClient(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// The existing-record decision reads the viewer's own PDS, never the
+	// index: the index lags the firehose, so a repeated subscribe would
+	// otherwise create a second record.
+	existing, err := findSubscriptionRecord(ctx, pdsClient, communityDID)
+	if err != nil {
+		if pds.IsAuthError(err) {
+			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
+		}
+		return nil, fmt.Errorf("failed to list subscriptions on PDS: %w", err)
+	}
+
+	if existing != nil {
+		return subscribeExisting(ctx, pdsClient, existing, userDID, communityDID, contentVisibility, supplied)
 	}
 
 	// Generate TID for record key
@@ -967,6 +984,94 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 		RecordCID:         recordCID,
 	}
 
+	return subscription, nil
+}
+
+// subscriptionRecord is a subscription record listed from the viewer's PDS.
+type subscriptionRecord struct {
+	entry pds.RecordEntry
+	rkey  string
+}
+
+// maxSubscriptionListPages caps how many listRecords pages (of 100) the
+// subscribe path reads, so a PDS that never ends its cursor cannot keep the
+// request paging.
+const maxSubscriptionListPages = 50
+
+// findSubscriptionRecord lists every social.coves.community.subscription
+// record on the viewer's PDS and returns the one whose subject is
+// communityDID. Of several (legacy duplicates), the greatest rkey (newest TID)
+// wins. Returns nil when none matches. Hitting maxSubscriptionListPages is an
+// error even after a match: the newest matching rkey could be on a later page.
+func findSubscriptionRecord(ctx context.Context, pdsClient pds.Client, communityDID string) (*subscriptionRecord, error) {
+	var match *subscriptionRecord
+	cursor := ""
+	for range maxSubscriptionListPages {
+		page, err := pdsClient.ListRecords(ctx, "social.coves.community.subscription", 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range page.Records {
+			if subject, _ := entry.Value["subject"].(string); subject != communityDID {
+				continue
+			}
+			uri, parseErr := syntax.ParseATURI(entry.URI)
+			if parseErr != nil {
+				continue
+			}
+			rkey := uri.RecordKey().String()
+			if match == nil || rkey > match.rkey {
+				match = &subscriptionRecord{entry: entry, rkey: rkey}
+			}
+		}
+		if page.Cursor == "" || page.Cursor == cursor {
+			return match, nil
+		}
+		cursor = page.Cursor
+	}
+	return nil, fmt.Errorf("subscription listing did not end within %d pages", maxSubscriptionListPages)
+}
+
+// subscribeExisting handles subscribe when the viewer's PDS already holds a
+// subscription record for the community. A supplied value always rewrites the
+// record in place; an omitted one writes nothing and reports the listed record.
+func subscribeExisting(ctx context.Context, pdsClient pds.Client, existing *subscriptionRecord, userDID, communityDID string, contentVisibility int, supplied bool) (*Subscription, error) {
+	subscription := &Subscription{
+		UserDID:      userDID,
+		CommunityDID: communityDID,
+		SubscribedAt: time.Now(),
+		RecordURI:    existing.entry.URI,
+		RecordCID:    existing.entry.CID,
+		Existing:     true,
+	}
+
+	if !supplied {
+		subscription.ContentVisibility = 3
+		if listed, ok := existing.entry.Value["contentVisibility"].(float64); ok && listed >= 1 && listed <= 5 && listed == float64(int(listed)) {
+			subscription.ContentVisibility = int(listed)
+		}
+		return subscription, nil
+	}
+
+	createdAt, ok := existing.entry.Value["createdAt"].(string)
+	if !ok {
+		createdAt = time.Now().Format(time.RFC3339)
+	}
+	record := map[string]interface{}{
+		"$type":             "social.coves.community.subscription",
+		"subject":           communityDID,
+		"createdAt":         createdAt,
+		"contentVisibility": contentVisibility,
+	}
+	_, recordCID, err := pdsClient.PutRecord(ctx, "social.coves.community.subscription", existing.rkey, record, "")
+	if err != nil {
+		if pds.IsAuthError(err) {
+			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
+		}
+		return nil, fmt.Errorf("failed to update subscription on PDS: %w", err)
+	}
+	subscription.RecordCID = recordCID
+	subscription.ContentVisibility = contentVisibility
 	return subscription, nil
 }
 

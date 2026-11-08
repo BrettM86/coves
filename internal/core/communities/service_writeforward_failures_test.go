@@ -3,6 +3,8 @@ package communities_test
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,31 +38,138 @@ import (
 // client that retries forever, or one that reports success on nothing.
 
 // fakeUserPDS is the pds.Client the community service gets for a user session.
+//
+// It holds the user's records (records, in listing order), serves ListRecords
+// in pages with an offset cursor, and records every CreateRecord and PutRecord
+// call, including attempts that it then fails with an injected error.
 type fakeUserPDS struct {
 	t   *testing.T
 	did string
 
 	createErr error
 	deleteErr error
+	putErr    error
+	// listErr fails every ListRecords call; listErrOnCall fails only the call
+	// with that zero-based index, so a later page can fail after an earlier
+	// page was served.
+	listErr       error
+	listErrOnCall map[int]error
+	// listPageSize, when positive, caps the page size below the caller's limit
+	// so a test can put a record on a later page.
+	listPageSize int
+	// endlessCursor makes every page carry a fresh cursor, even past the last
+	// record, the way a misbehaving self-hosted PDS can.
+	endlessCursor bool
+
+	records []pds.RecordEntry
 
 	created []fakeWrite
 	deleted []fakeWrite
+	put     []fakeWrite
+
+	createAttempts []fakeWrite
+	putAttempts    []fakeWrite
+	listCalls      []fakeListCall
 }
 
 type fakeWrite struct {
 	collection string
 	rkey       string
 	record     map[string]interface{}
+	swapRecord string
+}
+
+type fakeListCall struct {
+	collection string
+	limit      int
+	cursor     string
+}
+
+// The fake's literal naming scheme: a record's URI is at://{did}/{collection}/{rkey};
+// CreateRecord returns CID "bafycid"+rkey and PutRecord returns "bafyput"+rkey.
+// Tests spell expected values out rather than calling fakeRecordURI.
+func (f *fakeUserPDS) fakeRecordURI(collection, rkey string) string {
+	return "at://" + f.did + "/" + collection + "/" + rkey
 }
 
 func (f *fakeUserPDS) CreateRecord(_ context.Context, collection, rkey string, record any) (string, string, error) {
+	asMap, ok := record.(map[string]interface{})
+	require.Truef(f.t, ok, "the service passed a %T rather than a record map", record)
+	write := fakeWrite{collection: collection, rkey: rkey, record: asMap}
+	f.createAttempts = append(f.createAttempts, write)
 	if f.createErr != nil {
 		return "", "", f.createErr
 	}
+	f.created = append(f.created, write)
+	uri, cid := f.fakeRecordURI(collection, rkey), "bafycid"+rkey
+	f.records = append(f.records, pds.RecordEntry{URI: uri, CID: cid, Value: asMap})
+	return uri, cid, nil
+}
+
+func (f *fakeUserPDS) PutRecord(_ context.Context, collection, rkey string, record any, swapRecord string) (string, string, error) {
 	asMap, ok := record.(map[string]interface{})
 	require.Truef(f.t, ok, "the service passed a %T rather than a record map", record)
-	f.created = append(f.created, fakeWrite{collection: collection, rkey: rkey, record: asMap})
-	return "at://" + f.did + "/" + collection + "/" + rkey, "bafycid" + rkey, nil
+	write := fakeWrite{collection: collection, rkey: rkey, record: asMap, swapRecord: swapRecord}
+	f.putAttempts = append(f.putAttempts, write)
+	if f.putErr != nil {
+		return "", "", f.putErr
+	}
+	f.put = append(f.put, write)
+	uri, cid := f.fakeRecordURI(collection, rkey), "bafyput"+rkey
+	for i := range f.records {
+		if f.records[i].URI == uri {
+			f.records[i] = pds.RecordEntry{URI: uri, CID: cid, Value: asMap}
+			return uri, cid, nil
+		}
+	}
+	f.records = append(f.records, pds.RecordEntry{URI: uri, CID: cid, Value: asMap})
+	return uri, cid, nil
+}
+
+func (f *fakeUserPDS) ListRecords(_ context.Context, collection string, limit int, cursor string) (*pds.ListRecordsResponse, error) {
+	call := len(f.listCalls)
+	f.listCalls = append(f.listCalls, fakeListCall{collection: collection, limit: limit, cursor: cursor})
+	require.Lessf(f.t, call, 50, "the service listed %d pages; it is not following the cursor to an end", call)
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if err := f.listErrOnCall[call]; err != nil {
+		return nil, err
+	}
+
+	var inCollection []pds.RecordEntry
+	for _, record := range f.records {
+		if strings.HasPrefix(record.URI, "at://"+f.did+"/"+collection+"/") {
+			inCollection = append(inCollection, record)
+		}
+	}
+
+	offset := 0
+	if cursor != "" {
+		var err error
+		offset, err = strconv.Atoi(cursor)
+		require.NoErrorf(f.t, err, "the service sent cursor %q, which this fake never issued", cursor)
+	}
+	issuedOffset := offset
+	pageSize := limit
+	if f.listPageSize > 0 && (pageSize <= 0 || f.listPageSize < pageSize) {
+		pageSize = f.listPageSize
+	}
+	require.Positivef(f.t, pageSize, "the service listed with limit %d", limit)
+	if offset > len(inCollection) {
+		offset = len(inCollection)
+	}
+	end := offset + pageSize
+	if end > len(inCollection) {
+		end = len(inCollection)
+	}
+	response := &pds.ListRecordsResponse{Records: append([]pds.RecordEntry(nil), inCollection[offset:end]...)}
+	if end < len(inCollection) {
+		response.Cursor = strconv.Itoa(end)
+	} else if f.endlessCursor {
+		response.Cursor = strconv.Itoa(issuedOffset + 1)
+	}
+	return response, nil
 }
 
 func (f *fakeUserPDS) DeleteRecord(_ context.Context, collection, rkey string) error {
@@ -74,19 +183,9 @@ func (f *fakeUserPDS) DeleteRecord(_ context.Context, collection, rkey string) e
 func (f *fakeUserPDS) DID() string     { return f.did }
 func (f *fakeUserPDS) HostURL() string { return "https://pds.invalid" }
 
-func (f *fakeUserPDS) ListRecords(context.Context, string, int, string) (*pds.ListRecordsResponse, error) {
-	f.t.Fatal("the community service listed records, which none of these paths does")
-	return nil, nil
-}
-
 func (f *fakeUserPDS) GetRecord(context.Context, string, string) (*pds.RecordResponse, error) {
 	f.t.Fatal("the community service read a record back on a write path")
 	return nil, nil
-}
-
-func (f *fakeUserPDS) PutRecord(context.Context, string, string, any, string) (string, string, error) {
-	f.t.Fatal("subscriptions and blocks are created and deleted, never updated in place")
-	return "", "", nil
 }
 
 func (f *fakeUserPDS) UploadBlob(context.Context, []byte, string) (*blobs.BlobRef, error) {

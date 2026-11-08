@@ -127,12 +127,16 @@ func TestCommunityConsumer_InvalidRKey_IsPermanent(t *testing.T) {
 
 func TestCommunityConsumer_SubscriptionMissingSubject_IsPermanent(t *testing.T) {
 	c := NewCommunityEventConsumer(nil, "did:web:test.local", true, nil)
-	err := c.HandleEvent(context.Background(), taxonomyEvent(
-		"did:plc:subscriber", "social.coves.community.subscription", "create", "s1",
-		map[string]interface{}{"createdAt": "2026-01-01T00:00:00Z"},
-	))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrPermanentEvent, "subscription record without subject is permanently invalid")
+	for _, op := range []string{"create", "update"} {
+		t.Run(op, func(t *testing.T) {
+			err := c.HandleEvent(context.Background(), taxonomyEvent(
+				"did:plc:subscriber", "social.coves.community.subscription", op, "s1",
+				map[string]interface{}{"createdAt": "2026-01-01T00:00:00Z"},
+			))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrPermanentEvent, "subscription record without subject is permanently invalid")
+		})
+	}
 }
 
 func TestAggregatorConsumer_ValidationRejections_ArePermanent(t *testing.T) {
@@ -311,6 +315,15 @@ func TestCommunityConsumer_NonDIDReferences_ArePermanent(t *testing.T) {
 		assert.ErrorIs(t, err, ErrPermanentEvent,
 			"a subscription subject that is not a DID can never resolve to a community; the FK-not-found "+
 				"branch (unresolved, redriven) must never see it")
+		assert.NotErrorIs(t, err, ErrUnresolvedReference)
+	})
+
+	t.Run("subscription update subject", func(t *testing.T) {
+		err := c.HandleEvent(ctx, taxonomyEvent("did:plc:subscriber", "social.coves.community.subscription", "update", "s1",
+			map[string]interface{}{"subject": "example.com", "createdAt": "2026-01-01T00:00:00Z", "contentVisibility": float64(2)}))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent,
+			"an updated subscription whose subject is not a DID is as permanently invalid as a created one")
 		assert.NotErrorIs(t, err, ErrUnresolvedReference)
 	})
 

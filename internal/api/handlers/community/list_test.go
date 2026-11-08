@@ -185,7 +185,7 @@ func (r *listTestRepo) ListSubscribers(ctx context.Context, communityDID string,
 	return nil, nil
 }
 
-func (r *listTestRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
+func (r *listTestRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]int, error) {
 	return nil, nil
 }
 

@@ -229,33 +229,23 @@ func TestCommunityConsumer_IgnoresUnrelatedCollections(t *testing.T) {
 		"a commit event with no commit body must not dereference it")
 }
 
-func TestCommunityConsumer_SubscriptionAndBlockIgnoreUpdates(t *testing.T) {
+func TestCommunityConsumer_BlockIgnoresUpdates(t *testing.T) {
 	t.Parallel()
 
-	// Subscriptions and blocks are create-or-delete records: there is nothing in
-	// one to edit except contentVisibility, and no client produces an update.
-	// The consumer therefore handles create and delete and logs anything else,
-	// which is worth pinning because the failure mode is silent — an update
-	// operation the consumer decided to ignore looks exactly like an event that
-	// never arrived.
-	//
-	// It is also the shape of a real defect in a neighbouring consumer: the vote
-	// consumer drops update commits the same way, and there a client CAN
-	// legitimately produce one (see tests/e2e/vote_contract_test.go). The
-	// difference is worth being able to point at.
+	// Blocks are create-or-delete records: there is nothing in one to edit and
+	// no client produces an update. The consumer therefore handles create and
+	// delete and logs anything else, which is worth pinning because the failure
+	// mode is silent — an update operation the consumer decided to ignore looks
+	// exactly like an event that never arrived. (Subscription updates carry a
+	// contentVisibility change and are indexed; see the subscription tests.)
 	c := NewCommunityEventConsumer(nil, "did:web:test.local", true, nil)
 	ctx := context.Background()
 
-	for _, collection := range []string{
-		"social.coves.community.subscription",
-		"social.coves.community.block",
-	} {
-		require.NoErrorf(t, c.HandleEvent(ctx, taxonomyEvent(
-			"did:plc:somebody", collection, "update", "rk1",
-			map[string]interface{}{"subject": "did:plc:community", "contentVisibility": float64(2)})),
-			"an update on %s must be ignored without reaching the repository (a nil repo here "+
-				"means anything that did would panic)", collection)
-	}
+	require.NoError(t, c.HandleEvent(ctx, taxonomyEvent(
+		"did:plc:somebody", "social.coves.community.block", "update", "rk1",
+		map[string]interface{}{"subject": "did:plc:community"})),
+		"an update on social.coves.community.block must be ignored without reaching the repository "+
+			"(a nil repo here means anything that did would panic)")
 }
 
 // TestCreateCommunityIgnoresRecordAssertedSubscriberCount verifies that an

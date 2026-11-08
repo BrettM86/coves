@@ -78,7 +78,8 @@ func PopulateViewerVoteState[T FeedPostProvider](
 	}
 }
 
-// PopulateCommunityViewerState enriches communities with the authenticated user's subscription state.
+// PopulateCommunityViewerState enriches communities with the authenticated user's subscription
+// state, including the stored contentVisibility of each subscribed community.
 // This is a no-op if the request is unauthenticated.
 func PopulateCommunityViewerState(
 	ctx context.Context,
@@ -111,11 +112,15 @@ func PopulateCommunityViewerState(
 
 	// Populate viewer state on each community
 	for _, c := range communityList {
-		isSubscribed := subscribed[c.DID]
+		contentVisibility, isSubscribed := subscribed[c.DID]
 		if c.Viewer == nil {
 			c.Viewer = &communities.CommunityViewerState{}
 		}
 		c.Viewer.Subscribed = &isSubscribed
+		c.Viewer.ContentVisibility = nil
+		if isSubscribed {
+			c.Viewer.ContentVisibility = &contentVisibility
+		}
 	}
 }
 

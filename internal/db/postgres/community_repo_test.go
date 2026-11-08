@@ -506,6 +506,69 @@ func TestCommunityRepository_List(t *testing.T) {
 	})
 }
 
+// TestCommunityRepository_SubscribeWithCount_StoresIncomingContentVisibility pins
+// the conflict branch of the subscribe upsert: a second SubscribeWithCount for
+// the same (user, community) is how a subscription record update (or a firehose
+// replay) reaches the index, so it must store the incoming content_visibility
+// and record_cid while leaving the trigger-maintained subscriber_count alone.
+func TestCommunityRepository_SubscribeWithCount_StoresIncomingContentVisibility(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
+	ctx := context.Background()
+
+	id := testkit.UniqueID(t)
+	communityDID := "did:plc:visupsert" + id
+	if _, err := repo.Create(ctx, &communities.Community{
+		DID:          communityDID,
+		Handle:       fmt.Sprintf("!visibility-upsert-%s@coves.local", id),
+		Name:         "visibility-upsert",
+		OwnerDID:     "did:web:coves.local",
+		CreatedByDID: "did:plc:user123",
+		HostedByDID:  "did:web:coves.local",
+		Visibility:   "public",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("Failed to create community: %v", err)
+	}
+
+	userDID := "did:plc:visupsertuser" + id
+	recordURI := "at://" + userDID + "/social.coves.community.subscription/3kvisupsert"
+	if _, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
+		UserDID: userDID, CommunityDID: communityDID, ContentVisibility: 3,
+		SubscribedAt: time.Now(), RecordURI: recordURI, RecordCID: "bafyvisibilityfirst",
+	}); err != nil {
+		t.Fatalf("First SubscribeWithCount failed: %v", err)
+	}
+	if _, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
+		UserDID: userDID, CommunityDID: communityDID, ContentVisibility: 5,
+		SubscribedAt: time.Now(), RecordURI: recordURI, RecordCID: "bafyvisibilitysecond",
+	}); err != nil {
+		t.Fatalf("Second SubscribeWithCount failed: %v", err)
+	}
+
+	var visibility, count int
+	var storedCID string
+	if err := db.QueryRowContext(ctx,
+		`SELECT s.content_visibility, s.record_cid, c.subscriber_count
+		 FROM community_subscriptions s JOIN communities c ON c.did = s.community_did
+		 WHERE s.user_did = $1 AND s.community_did = $2`, userDID, communityDID,
+	).Scan(&visibility, &storedCID, &count); err != nil {
+		t.Fatalf("Failed to read subscription row: %v", err)
+	}
+	if visibility != 5 {
+		t.Errorf("content_visibility = %d, want 5", visibility)
+	}
+	if storedCID != "bafyvisibilitysecond" {
+		t.Errorf("record_cid = %q, want %q", storedCID, "bafyvisibilitysecond")
+	}
+	if count != 1 {
+		t.Errorf("subscriber_count = %d, want 1", count)
+	}
+}
+
 // TestCommunityRepository_GetSubscribedCommunityDIDs covers the batched
 // membership lookup the list and feed views use to stamp viewer state on many
 // communities at once. The interesting cases are the ones a naive IN (...) query
@@ -553,27 +616,28 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 		}
 	})
 
-	t.Run("returns subscribed communities only", func(t *testing.T) {
-		// Subscribe to the first and third, leaving a gap in the middle so a
-		// query that returned everything it was asked about would fail.
+	t.Run("returns each subscribed community's stored content visibility", func(t *testing.T) {
+		// Subscribe to the first at 4 and the second at 1, leaving the third
+		// unsubscribed, so a query that returned everything it was asked about,
+		// or a single constant value, would fail.
 		sub1 := &communities.Subscription{
 			UserDID:           userDID,
 			CommunityDID:      communityDIDs[0],
-			ContentVisibility: 3,
+			ContentVisibility: 4,
 			SubscribedAt:      time.Now(),
 		}
 		if _, err := repo.Subscribe(ctx, sub1); err != nil {
 			t.Fatalf("Failed to subscribe to community 0: %v", err)
 		}
 
-		sub3 := &communities.Subscription{
+		sub2 := &communities.Subscription{
 			UserDID:           userDID,
-			CommunityDID:      communityDIDs[2],
-			ContentVisibility: 3,
+			CommunityDID:      communityDIDs[1],
+			ContentVisibility: 1,
 			SubscribedAt:      time.Now(),
 		}
-		if _, err := repo.Subscribe(ctx, sub3); err != nil {
-			t.Fatalf("Failed to subscribe to community 2: %v", err)
+		if _, err := repo.Subscribe(ctx, sub2); err != nil {
+			t.Fatalf("Failed to subscribe to community 1: %v", err)
 		}
 
 		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
@@ -581,18 +645,22 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
 		}
 
-		if len(result) != 2 {
-			t.Errorf("Expected 2 subscribed communities, got %d", len(result))
+		want := map[string]int{communityDIDs[0]: 4, communityDIDs[1]: 1}
+		if len(result) != len(want) {
+			t.Errorf("Expected exactly %v, got %v", want, result)
 		}
-
-		if !result[communityDIDs[0]] {
-			t.Errorf("Expected community 0 to be subscribed")
+		for did, visibility := range want {
+			got, ok := result[did]
+			if !ok {
+				t.Errorf("Expected %s to be subscribed, got %v", did, result)
+				continue
+			}
+			if got != visibility {
+				t.Errorf("Expected %s contentVisibility %d, got %d", did, visibility, got)
+			}
 		}
-		if result[communityDIDs[1]] {
-			t.Errorf("Expected community 1 to NOT be subscribed")
-		}
-		if !result[communityDIDs[2]] {
-			t.Errorf("Expected community 2 to be subscribed")
+		if _, ok := result[communityDIDs[2]]; ok {
+			t.Errorf("Expected community 2 to be absent, got %v", result)
 		}
 	})
 

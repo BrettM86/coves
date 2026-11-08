@@ -141,7 +141,9 @@ type RemovalReader interface {
 //   - false: User does not have this relationship
 type CommunityViewerState struct {
 	Subscribed *bool `json:"subscribed,omitempty"`
-	Member     *bool `json:"member,omitempty"`
+	// ContentVisibility is the subscription's 1-5 setting, set only when subscribed.
+	ContentVisibility *int  `json:"contentVisibility,omitempty"`
+	Member            *bool `json:"member,omitempty"`
 	// Blocked reports whether the viewer hides this community from aggregate feeds.
 	Blocked *bool `json:"blocked,omitempty"`
 	// Banned and the ban fields are set only when the viewer has an active
@@ -208,6 +210,8 @@ type Subscription struct {
 	RecordCID         string    `json:"recordCid,omitempty" db:"record_cid"`
 	ContentVisibility int       `json:"contentVisibility" db:"content_visibility"` // Feed slider: 1-5 (1=best content only, 5=all content)
 	ID                int       `json:"id" db:"id"`
+	// Existing is true when the viewer already had a subscription record on its PDS.
+	Existing bool `json:"-" db:"-"`
 }
 
 // CommunityBlock represents a user blocking a community

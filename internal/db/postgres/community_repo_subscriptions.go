@@ -60,11 +60,16 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 	// to the newest record means the redriven delete of the OLD record URI no
 	// longer matches the row (the consumer looks it up by record_uri) and is
 	// skipped, instead of tearing down a valid newer subscription.
+	// content_visibility also takes the incoming value, so a subscription
+	// record rewritten in place (an update event) stores its new setting. The
+	// conflict path is an UPDATE, so the subscriber_count trigger does not
+	// count it again.
 	query := `
 		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_did, community_did) DO UPDATE
-		SET record_uri = EXCLUDED.record_uri, record_cid = EXCLUDED.record_cid
+		SET record_uri = EXCLUDED.record_uri, record_cid = EXCLUDED.record_cid,
+		    content_visibility = EXCLUDED.content_visibility
 		RETURNING id, subscribed_at, content_visibility`
 
 	err = tx.QueryRowContext(ctx, query,
@@ -318,11 +323,12 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 	return result, nil
 }
 
-// GetSubscribedCommunityDIDs returns a map of community DIDs that the user is subscribed to
-// This is optimized for batch lookups when populating viewer state
-func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
+// GetSubscribedCommunityDIDs returns, for the given communities the user is
+// subscribed to, each one's stored content_visibility; unsubscribed DIDs are
+// absent. This is optimized for batch lookups when populating viewer state.
+func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]int, error) {
 	if len(communityDIDs) == 0 {
-		return map[string]bool{}, nil
+		return map[string]int{}, nil
 	}
 
 	// Build query with placeholders for IN clause
@@ -335,7 +341,7 @@ func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, 
 	}
 
 	query := fmt.Sprintf(`
-		SELECT community_did
+		SELECT community_did, content_visibility
 		FROM community_subscriptions
 		WHERE user_did = $1 AND community_did IN (%s)`,
 		strings.Join(placeholders, ", "))
@@ -350,13 +356,14 @@ func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, 
 		}
 	}()
 
-	result := make(map[string]bool)
+	result := make(map[string]int)
 	for rows.Next() {
 		var communityDID string
-		if err := rows.Scan(&communityDID); err != nil {
-			return nil, fmt.Errorf("failed to scan community DID: %w", err)
+		var contentVisibility int
+		if err := rows.Scan(&communityDID, &contentVisibility); err != nil {
+			return nil, fmt.Errorf("failed to scan subscribed community: %w", err)
 		}
-		result[communityDID] = true
+		result[communityDID] = contentVisibility
 	}
 
 	if err = rows.Err(); err != nil {

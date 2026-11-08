@@ -565,3 +565,119 @@ func TestUnsubscribeHandler_RequiresOAuthSession(t *testing.T) {
 
 // Ensure unused import is used
 var _ = errors.New
+
+// subscribeRequest posts body to HandleSubscribe as an authenticated viewer.
+func subscribeRequest(t *testing.T, service communities.Service, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	session := createTestOAuthSession("did:plc:testuser")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.OAuthSessionKey, session))
+	w := httptest.NewRecorder()
+	NewSubscribeHandler(service).HandleSubscribe(w, req)
+	return w
+}
+
+func TestSubscribeHandler_Subscribe_ReportsExisting(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing bool
+	}{
+		{name: "viewer already had a subscription record", existing: true},
+		{name: "new subscription record", existing: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &subscribeTestService{
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+					return &communities.Subscription{
+						RecordURI: "at://did:plc:testuser/social.coves.community.subscription/3kexisting",
+						RecordCID: "bafyexisting",
+						Existing:  tc.existing,
+					}, nil
+				},
+			}
+
+			w := subscribeRequest(t, service, `{"community":"did:plc:community123","contentVisibility":4}`)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", w.Code, w.Body.String())
+			}
+
+			var resp map[string]any
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp["uri"] != "at://did:plc:testuser/social.coves.community.subscription/3kexisting" {
+				t.Errorf("uri = %v", resp["uri"])
+			}
+			if resp["cid"] != "bafyexisting" {
+				t.Errorf("cid = %v", resp["cid"])
+			}
+			if resp["existing"] != tc.existing {
+				t.Errorf("existing = %v, want %v", resp["existing"], tc.existing)
+			}
+		})
+	}
+}
+
+func TestSubscribeHandler_Subscribe_ContentVisibilityInput(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantStatus   int
+		wantReceived int // value the service receives when it is called
+	}{
+		{name: "omitted reaches the service as zero", body: `{"community":"did:plc:community123"}`, wantStatus: http.StatusOK, wantReceived: 0},
+		{name: "1 passes through", body: `{"community":"did:plc:community123","contentVisibility":1}`, wantStatus: http.StatusOK, wantReceived: 1},
+		{name: "5 passes through", body: `{"community":"did:plc:community123","contentVisibility":5}`, wantStatus: http.StatusOK, wantReceived: 5},
+		{name: "0 rejected", body: `{"community":"did:plc:community123","contentVisibility":0}`, wantStatus: http.StatusBadRequest},
+		{name: "6 rejected", body: `{"community":"did:plc:community123","contentVisibility":6}`, wantStatus: http.StatusBadRequest},
+		{name: "-1 rejected", body: `{"community":"did:plc:community123","contentVisibility":-1}`, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			received := -100
+			service := &subscribeTestService{
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+					called = true
+					received = contentVisibility
+					return &communities.Subscription{
+						RecordURI: "at://did:plc:testuser/social.coves.community.subscription/3knew",
+						RecordCID: "bafynew",
+					}, nil
+				},
+			}
+
+			w := subscribeRequest(t, service, tc.body)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+
+			if tc.wantStatus == http.StatusBadRequest {
+				var errResp struct {
+					Error string `json:"error"`
+				}
+				if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if errResp.Error != "InvalidRequest" {
+					t.Errorf("error = %q, want InvalidRequest", errResp.Error)
+				}
+				if called {
+					t.Errorf("service was called with contentVisibility %d for a rejected request", received)
+				}
+				return
+			}
+
+			if !called {
+				t.Fatal("service was not called")
+			}
+			if received != tc.wantReceived {
+				t.Errorf("service received contentVisibility %d, want %d", received, tc.wantReceived)
+			}
+		})
+	}
+}

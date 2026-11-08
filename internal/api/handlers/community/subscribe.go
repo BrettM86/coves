@@ -41,7 +41,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	// Parse request body
 	var req struct {
 		Community         string `json:"community"`         // DID, handle, or scoped identifier
-		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
+		ContentVisibility *int   `json:"contentVisibility"` // Optional: 1-5 scale
 	}
 
 	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
@@ -51,6 +51,17 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
 		return
+	}
+
+	// 0 tells the service the value was omitted: an existing subscription
+	// keeps its value and a new one gets the default.
+	contentVisibility := 0
+	if req.ContentVisibility != nil {
+		contentVisibility = *req.ContentVisibility
+		if contentVisibility < 1 || contentVisibility > 5 {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "contentVisibility must be between 1 and 5")
+			return
+		}
 	}
 
 	// Get OAuth session from context (injected by auth middleware)
@@ -63,7 +74,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Subscribe via service (write-forward to PDS with DPoP authentication)
 	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
-	subscription, err := h.service.SubscribeToCommunity(r.Context(), session, req.Community, req.ContentVisibility)
+	subscription, err := h.service.SubscribeToCommunity(r.Context(), session, req.Community, contentVisibility)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -73,7 +84,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	response := map[string]interface{}{
 		"uri":      subscription.RecordURI,
 		"cid":      subscription.RecordCID,
-		"existing": false, // Would be true if already subscribed
+		"existing": subscription.Existing,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -303,12 +303,12 @@ func (f *fakeCommunityRepo) ListSubscribers(_ context.Context, communityDID stri
 	return f.subscribers, nil
 }
 
-func (f *fakeCommunityRepo) GetSubscribedCommunityDIDs(_ context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
+func (f *fakeCommunityRepo) GetSubscribedCommunityDIDs(_ context.Context, userDID string, communityDIDs []string) (map[string]int, error) {
 	f.record("GetSubscribedCommunityDIDs", userDID, communityDIDs)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return map[string]bool{}, nil
+	return map[string]int{}, nil
 }
 
 func (f *fakeCommunityRepo) BlockCommunity(_ context.Context, block *communities.CommunityBlock) (*communities.CommunityBlock, error) {
