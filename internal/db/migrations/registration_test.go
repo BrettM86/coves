@@ -21,7 +21,7 @@ func TestGoMigrationsRegisteredForGlobalGoosePath(t *testing.T) {
 		t.Fatalf("collecting migrations from the embedded filesystem: %v", err)
 	}
 
-	goMigrationVersions := []int64{62, 63, 64, 65}
+	goMigrationVersions := []int64{62, 63, 64, 65, 78}
 	for _, version := range goMigrationVersions {
 		migration, err := collected.Current(version)
 		if err != nil {

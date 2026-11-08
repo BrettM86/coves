@@ -62,11 +62,11 @@ func Check(embed map[string]interface{}) error {
 	if count > MaxImages {
 		return fmt.Errorf("%w: embed has %d images, at most %d allowed", ErrTooManyImages, count, MaxImages)
 	}
-	if embedType == embedblobs.TypeImagesWithAttachment {
-		main, _ := embed["images"].(map[string]interface{})
-		return Check(main)
+	gallery, ok := embedblobs.MainGallery(embed)
+	if !ok {
+		return nil
 	}
-	images, ok := embed["images"].([]interface{})
+	images, ok := gallery["images"].([]interface{})
 	if !ok {
 		return nil
 	}

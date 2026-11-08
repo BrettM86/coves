@@ -322,6 +322,8 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	// all sit on top of 034, so all forty-three have to come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),

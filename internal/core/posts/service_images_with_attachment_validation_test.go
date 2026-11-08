@@ -40,7 +40,6 @@ func TestCreatePost_ImagesWithAttachmentInvalidEmbed(t *testing.T) {
 	}{
 		{name: "missing main", target: "composite", key: "images", remove: true},
 		{name: "main is not an object", target: "composite", key: "images", value: []any{}},
-		{name: "main missing type", target: "main", key: "$type", remove: true},
 		{name: "non-image main", target: "main", key: "$type", value: "social.coves.embed.video"},
 		{name: "main gallery missing", target: "main", key: "images", remove: true},
 		{name: "main gallery is not array", target: "main", key: "images", value: map[string]any{}},

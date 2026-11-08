@@ -196,6 +196,8 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	// 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),

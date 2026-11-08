@@ -4,9 +4,26 @@ import (
 	"errors"
 	"fmt"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/embedimages"
 	"Coves/internal/validation"
 )
+
+// canonicalizeCommentEmbed returns an object embed in the canonical shape the
+// record is written in (embedblobs.CanonicalizeEmbed); a $type naming the wrong
+// schema at a non-union ref position wraps ErrInvalidEmbed. Any other value is
+// returned unchanged for validateCommentEmbed to judge.
+func canonicalizeCommentEmbed(embed interface{}) (interface{}, error) {
+	object, isObject := embed.(map[string]interface{})
+	if !isObject {
+		return embed, nil
+	}
+	canonical, err := embedblobs.CanonicalizeEmbed(object)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidEmbed, err)
+	}
+	return canonical, nil
+}
 
 // commentEmbedTypes are the embed types a comment may carry. The comment
 // lexicon's embed union is open, so the lexicon validator alone would accept
@@ -50,8 +67,7 @@ func (s *commentService) validateCommentEmbed(embed interface{}) error {
 			return fmt.Errorf("%w: %w", ErrInvalidEmbed, err)
 		}
 		if object["$type"] == "social.coves.embed.imagesWithAttachment" {
-			images, ok := object["images"].(map[string]interface{})
-			if !ok || images["$type"] != "social.coves.embed.images" {
+			if _, ok := embedblobs.MainGallery(object); !ok {
 				return fmt.Errorf("%w: imagesWithAttachment requires an images embed", ErrInvalidEmbed)
 			}
 			attachment, _ := object["attachment"].(map[string]interface{})

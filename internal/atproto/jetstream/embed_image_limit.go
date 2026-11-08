@@ -27,3 +27,17 @@ func validateEmbedImageCount(embed map[string]interface{}) error {
 	return fmt.Errorf("%w: embed has %d images, more than the lexicon maximum of %d",
 		ErrPermanentEvent, count, MaxEmbedImages)
 }
+
+// canonicalizeRecordEmbed returns a firehose record's embed in the canonical
+// shape the index stores (embedblobs.CanonicalizeEmbed), so blob references,
+// the image cap and hydration see an untyped gallery the same as a typed one.
+//
+// PERMANENT: a $type naming the wrong schema at a non-union ref position is
+// fixed in the record, so no retry can make it valid.
+func canonicalizeRecordEmbed(embed map[string]interface{}) (map[string]interface{}, error) {
+	canonical, err := embedblobs.CanonicalizeEmbed(embed)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPermanentEvent, err)
+	}
+	return canonical, nil
+}

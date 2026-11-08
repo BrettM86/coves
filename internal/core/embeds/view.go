@@ -255,16 +255,18 @@ func ServableEmbed(stored interface{}) interface{} {
 	case TypeImages:
 		dropViewImageURLs(embed["images"])
 	case TypeImagesWithAttachment:
-		gallery, _ := embed["images"].(map[string]interface{})
-		attachment, _ := embed["attachment"].(map[string]interface{})
-		if gallery["$type"] != TypeImages {
+		gallery, ok := embedblobs.MainGallery(embed)
+		if !ok {
 			return nil
 		}
+		attachment, _ := embed["attachment"].(map[string]interface{})
 		switch attachmentType, _ := attachment["$type"].(string); attachmentType {
 		case TypeExternal, TypePost, TypePost + viewSuffix:
 		default:
 			return nil
 		}
+		// The gallery's $type is optional under atproto; the view carries it.
+		gallery["$type"] = TypeImages
 		embed["images"] = ServableEmbed(gallery)
 		embed["attachment"] = ServableEmbed(attachment)
 	case TypeVideo:
@@ -376,8 +378,8 @@ func CommentImageCIDs(embed map[string]interface{}) []string {
 // projectImagesWithAttachment stages both parts before committing either, so
 // a malformed attachment never leaves the gallery partially hydrated.
 func projectImagesWithAttachment(embed map[string]interface{}, ownerDID, ownerPDSURL string) ([]mutation, bool) {
-	gallery, _ := embed["images"].(map[string]interface{})
-	if gallery["$type"] != TypeImages {
+	gallery, ok := embedblobs.MainGallery(embed)
+	if !ok {
 		return nil, false
 	}
 	images, _ := gallery["images"].([]interface{})

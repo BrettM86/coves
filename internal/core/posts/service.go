@@ -586,6 +586,14 @@ func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessi
 
 	applyPostV2Edit(&record, req)
 
+	// The standing embed may predate canonicalization, so the merged record is
+	// canonicalized, not only an embed the edit sent.
+	embed, err := canonicalizeEmbed(record.Embed)
+	if err != nil {
+		return nil, err
+	}
+	record.Embed = embed
+
 	// NORMALIZED AND VALIDATED AFTER THE MERGE AND BEFORE THE PUT, and every
 	// half of that is load-bearing. After the merge, because a facet's byte
 	// range is meaningful only against the content the record will actually
@@ -945,6 +953,12 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	if req.AuthorDID == "" {
 		return NewValidationError("authorDid", "authorDid must be set from authenticated user")
 	}
+
+	embed, err := canonicalizeEmbed(req.Embed)
+	if err != nil {
+		return err
+	}
+	req.Embed = embed
 
 	// Normalizes req.Embed and req.Facets IN PLACE as well as checking them —
 	// the record built later reads these same values, and the unfurl step then

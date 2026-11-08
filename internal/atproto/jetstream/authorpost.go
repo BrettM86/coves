@@ -485,6 +485,11 @@ func parseAuthorPostRecord(record map[string]interface{}) (*AuthorPostRecord, er
 	if parsed.CreatedAt == "" {
 		return nil, fmt.Errorf("%w: postv2 record missing createdAt field", ErrPermanentEvent)
 	}
+	embed, err := canonicalizeRecordEmbed(parsed.Embed)
+	if err != nil {
+		return nil, fmt.Errorf("postv2 record embed: %w", err)
+	}
+	parsed.Embed = embed
 	if err := validateEmbedImageCount(parsed.Embed); err != nil {
 		return nil, err
 	}

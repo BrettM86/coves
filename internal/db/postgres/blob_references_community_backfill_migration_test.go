@@ -23,6 +23,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	var existingCommunities int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM communities`).Scan(&existingCommunities))
 	require.Zero(t, existingCommunities, "the cloned database must contain no communities")
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -136,6 +138,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	require.Equal(t, oldUpdated, updated.UTC().Format(time.RFC3339))
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -168,6 +172,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 
 func TestCommunityBlobReferencesBackfill064_PagesPastCommunitiesWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),

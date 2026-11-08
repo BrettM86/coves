@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+
+	"Coves/internal/atproto/embedblobs"
 )
 
 // ErrInvalidImageFacet reports an #image facet that breaks a write rule.
@@ -12,9 +14,6 @@ var ErrInvalidImageFacet = errors.New("invalid image facet")
 const (
 	featureTypeImage = "social.coves.richtext.facet#image"
 	featureTypeCode  = "social.coves.richtext.facet#code"
-
-	embedTypeImages               = "social.coves.embed.images"
-	embedTypeImagesWithAttachment = "social.coves.embed.imagesWithAttachment"
 )
 
 // CheckImageFacets checks every #image facet against the record's embed and
@@ -92,11 +91,8 @@ type byteRange struct{ start, end int }
 
 func newImageFacetRules(facets []interface{}, embed map[string]interface{}) *imageFacetRules {
 	rules := &imageFacetRules{placed: make(map[int]bool)}
-	if embedType, _ := embed["$type"].(string); embedType == embedTypeImagesWithAttachment {
-		embed, _ = embed["images"].(map[string]interface{})
-	}
-	if embedType, _ := embed["$type"].(string); embedType == embedTypeImages {
-		if images, ok := embed["images"].([]interface{}); ok {
+	if gallery, ok := embedblobs.MainGallery(embed); ok {
+		if images, ok := gallery["images"].([]interface{}); ok {
 			rules.hasImages = true
 			rules.imageCount = len(images)
 		}
@@ -142,7 +138,7 @@ func (r *imageFacetRules) check(facet map[string]interface{}, features []interfa
 		return fmt.Errorf("index %w", err)
 	}
 	if !r.hasImages {
-		return fmt.Errorf("index %d needs a %s embed", index, embedTypeImages)
+		return fmt.Errorf("index %d needs a %s embed", index, embedblobs.TypeImages)
 	}
 	if index < 0 || index >= r.imageCount {
 		return fmt.Errorf("index %d does not name an image of the embed (%d images)", index, r.imageCount)
@@ -205,14 +201,12 @@ func facetRange(facet map[string]interface{}) (byteRange, error) {
 
 // EmbedHasImages reports whether embed carries at least one image: it is a
 // social.coves.embed.images embed with a non-empty images array, or a
-// social.coves.embed.imagesWithAttachment whose nested images object is one.
+// social.coves.embed.imagesWithAttachment whose main gallery (embedblobs.MainGallery) has one.
 func EmbedHasImages(embed map[string]interface{}) bool {
-	if embedType, _ := embed["$type"].(string); embedType == embedTypeImagesWithAttachment {
-		embed, _ = embed["images"].(map[string]interface{})
-	}
-	if embedType, _ := embed["$type"].(string); embedType != embedTypeImages {
+	gallery, ok := embedblobs.MainGallery(embed)
+	if !ok {
 		return false
 	}
-	images, _ := embed["images"].([]interface{})
+	images, _ := gallery["images"].([]interface{})
 	return len(images) > 0
 }

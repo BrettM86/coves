@@ -60,8 +60,6 @@ func TestCommentImagesWithAttachmentInvalidGalleryRejected(t *testing.T) {
 		name, images          string
 		update, withValidator bool
 	}{
-		{name: "create missing type with valid blob", images: missingType, withValidator: true},
-		{name: "update missing type with valid blob", images: missingType, update: true, withValidator: true},
 		{name: "create missing type with identity CID", images: missingTypeIdentityCID, withValidator: true},
 		{name: "update missing type with identity CID", images: missingTypeIdentityCID, update: true, withValidator: true},
 		{name: "create wrong type with identity CID", images: wrongTypeIdentityCID, withValidator: true},

@@ -56,6 +56,8 @@ func contentBackfillRows(t *testing.T, db *sql.DB, subjects ...string) []content
 
 func TestContentBlobReferencesBackfill062_PostEmbeds(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -124,6 +126,8 @@ func TestContentBlobReferencesBackfill062_PostEmbeds(t *testing.T) {
 
 func TestContentBlobReferencesBackfill062_LegacyPostCommunityOwnsImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -165,6 +169,8 @@ func TestContentBlobReferencesBackfill062_LegacyPostCommunityOwnsImages(t *testi
 
 func TestContentBlobReferencesBackfill062_CommentImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -210,6 +216,8 @@ func TestContentBlobReferencesBackfill062_CommentImages(t *testing.T) {
 
 func TestContentBlobReferencesBackfill062_CanonicalDedupAndInvalidEmbeds(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -272,6 +280,8 @@ func TestContentBlobReferencesBackfill062_CanonicalDedupAndInvalidEmbeds(t *test
 
 func TestContentBlobReferencesBackfill062_EmptyBatchesBeforePopulatedBatches(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -363,6 +373,8 @@ func TestContentBlobReferencesBackfill062_EmptyBatchesBeforePopulatedBatches(t *
 
 func TestContentBlobReferencesBackfill062_SoftDeletedContent(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -448,6 +460,8 @@ func TestContentBlobReferencesBackfill062_AdminRemovedPostRemainsActive(t *testi
 	// The removal runs through the current moderation service, so it is
 	// recorded at the current schema; rolling back afterwards leaves an
 	// admin-removed post in place for 062 to backfill.
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -482,6 +496,8 @@ func TestContentBlobReferencesBackfill062_AdminRemovedPostRemainsActive(t *testi
 
 func TestContentBlobReferencesBackfill062_PreservesConsumerRowsAndContentOnDown(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -575,6 +591,8 @@ func TestContentBlobReferencesBackfill062_PreservesConsumerRowsAndContentOnDown(
 	testkit.MigrateUp(t, db)
 	assert.ElementsMatch(t, want, contentBackfillRows(t, db, postURI, commentURI))
 	checkPreserved()
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -632,6 +650,8 @@ func contentBackfillImagesEmbed(cids []string) string {
 
 func TestContentBlobReferencesBackfill062_SkipsRecordsOverImageLimit(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),
@@ -688,6 +708,8 @@ func TestContentBlobReferencesBackfill062_SkipsRecordsOverImageLimit(t *testing.
 
 func TestContentBlobReferencesBackfill062_CensusCountsEverySkip(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),

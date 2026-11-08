@@ -1527,6 +1527,11 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 		// identical bytes can never parse differently.
 		return nil, fmt.Errorf("%w: failed to unmarshal comment record: %v", ErrPermanentEvent, err)
 	}
+	embed, err := canonicalizeRecordEmbed(comment.Embed)
+	if err != nil {
+		return nil, err
+	}
+	comment.Embed = embed
 
 	// Validate required fields. PERMANENT: structurally invalid forever.
 	// The content field must be present; it may be empty only when the comment

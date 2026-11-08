@@ -3,6 +3,7 @@ package posts
 import (
 	"fmt"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/embedimages"
 	"Coves/internal/core/embeds"
 	"Coves/internal/validation"
@@ -35,6 +36,20 @@ const (
 // arbitrarily long array, and the AppView would normalize every entry and then
 // sign a record violating the schema this normalization exists to guarantee.
 const maxEmbedSources = 50
+
+// canonicalizeEmbed returns embed in the canonical shape the record is written
+// in: the optional $type filled at the non-union ref positions readers dispatch
+// on (embedblobs.CanonicalizeEmbed). A $type that names the wrong schema at one
+// of those positions is an invalid embed. It runs before the content gate on
+// both write paths, so validation, the admission fingerprint and the PDS
+// record all see the same shape.
+func canonicalizeEmbed(embed map[string]interface{}) (map[string]interface{}, error) {
+	canonical, err := embedblobs.CanonicalizeEmbed(embed)
+	if err != nil {
+		return nil, newInvalidEmbedErrorFrom("embed", err)
+	}
+	return canonical, nil
+}
 
 // validateEmbed verifies that a client-provided embed conforms to one of the
 // post.create lexicon union members: it must carry a recognized $type
@@ -73,8 +88,9 @@ func validateEmbed(embed map[string]interface{}) error {
 		if err := validateEmbedImages(embed); err != nil {
 			return err
 		}
-		main, ok := embed["images"].(map[string]interface{})
-		if !ok || main["$type"] != embedTypeImages {
+		// canonicalizeEmbed has stamped the gallery's optional $type.
+		main, ok := embedblobs.MainGallery(embed)
+		if !ok {
 			return newInvalidEmbedError("embed", "imagesWithAttachment requires an images embed in 'images'")
 		}
 		if err := validateEmbed(main); err != nil {

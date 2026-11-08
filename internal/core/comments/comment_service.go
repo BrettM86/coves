@@ -878,6 +878,12 @@ func commentContent(rawContent string, embed interface{}) (string, error) {
 
 // CreateComment creates a new comment on a post or reply to another comment
 func (s *commentService) CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error) {
+	embed, err := canonicalizeCommentEmbed(req.Embed)
+	if err != nil {
+		return nil, err
+	}
+	req.Embed = embed
+
 	content, err := commentContent(req.Content, req.Embed)
 	if err != nil {
 		return nil, err
@@ -999,6 +1005,12 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 	}
 
 	// Validate new content; the updated record takes its embed from the request.
+	embed, err := canonicalizeCommentEmbed(req.Embed)
+	if err != nil {
+		return nil, err
+	}
+	req.Embed = embed
+
 	content, err := commentContent(req.Content, req.Embed)
 	if err != nil {
 		return nil, err

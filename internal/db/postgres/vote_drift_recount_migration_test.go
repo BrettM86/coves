@@ -80,6 +80,8 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
 	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
+		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
 		"077 (Bluesky profile import dismissal) must be rolled back first")
 	require.EqualValues(t, 76, testkit.MigrateDownOne(t, db, 76),

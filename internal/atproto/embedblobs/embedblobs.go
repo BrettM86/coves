@@ -75,11 +75,11 @@ func ImageCount(embed map[string]interface{}) int {
 	var images interface{}
 	switch embedType, _ := embed["$type"].(string); embedType {
 	case TypeImagesWithAttachment:
-		gallery, _ := embed["images"].(map[string]interface{})
 		attachment, _ := embed["attachment"].(map[string]interface{})
 		count := 0
-		if gallery["$type"] == TypeImages {
-			count = ImageCount(gallery)
+		if gallery, ok := MainGallery(embed); ok {
+			entries, _ := gallery["images"].([]interface{})
+			count = len(entries)
 		}
 		if attachment["$type"] == TypeExternal {
 			count += ImageCount(attachment)
@@ -117,8 +117,7 @@ func PostReferencesAndSkipped(embed map[string]interface{}) ([]Reference, int) {
 	case TypeImages:
 		references.addImages(embed["images"], KindPostImage)
 	case TypeImagesWithAttachment:
-		gallery, _ := embed["images"].(map[string]interface{})
-		if gallery["$type"] == TypeImages {
+		if gallery, ok := MainGallery(embed); ok {
 			references.addImages(gallery["images"], KindPostImage)
 		}
 		attachment, _ := embed["attachment"].(map[string]interface{})
@@ -143,14 +142,12 @@ func CommentReferences(embed map[string]interface{}) []Reference {
 // CommentReferencesAndSkipped is CommentReferences plus the number of image
 // entries that yielded no reference, counted as in PostReferencesAndSkipped.
 func CommentReferencesAndSkipped(embed map[string]interface{}) ([]Reference, int) {
-	if embed["$type"] == TypeImagesWithAttachment {
-		embed, _ = embed["images"].(map[string]interface{})
-	}
-	if embed["$type"] != TypeImages {
+	gallery, ok := MainGallery(embed)
+	if !ok {
 		return nil, 0
 	}
 	var references referenceCollector
-	references.addImages(embed["images"], KindCommentImage)
+	references.addImages(gallery["images"], KindCommentImage)
 	return references.items, references.skipped
 }
 
