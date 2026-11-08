@@ -1,11 +1,11 @@
 module Coves
 
-go 1.26.0
+go 1.27
 
-toolchain go1.26.10
+toolchain go1.27.3
 
 require (
-	github.com/bluesky-social/indigo v0.0.0-20261020053033-bdacece3f80e
+	github.com/bluesky-social/indigo v0.0.0-20261106080107-a20146f0f81d
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/cors v1.2.2
 	github.com/gorilla/websocket v1.5.3
@@ -25,7 +25,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	golang.org/x/image v0.47.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/time v0.16.0
 )
