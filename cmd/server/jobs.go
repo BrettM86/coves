@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/core/aggregators"
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/posts"
 )
@@ -17,18 +18,17 @@ const (
 	oauthCleanupInterval = time.Hour
 
 	// tokenRefreshInterval is how often aggregator OAuth tokens are checked
-	// for imminent expiry.
-	tokenRefreshInterval = 30 * time.Minute
-
-	// tokenRefreshExpiryBuffer is how far ahead of expiry a token is
-	// refreshed. At two ticks of headroom, a single failed attempt still
-	// leaves another before the token actually expires.
-	tokenRefreshExpiryBuffer = time.Hour
+	// for imminent expiry. The job refreshes tokens within
+	// aggregators.TokenRefreshWindow (30 minutes) of expiry: a fresh token,
+	// recorded as expiring in one hour, is outside that window, and at a
+	// 10-minute interval at least three ticks fall inside it, so a failed
+	// attempt still leaves others before the token actually expires.
+	tokenRefreshInterval = 10 * time.Minute
 
 	// tokenRefreshHeartbeatCycles controls how often the refresh job logs
-	// that it is alive while it has no work to do. At 6 cycles that is once
+	// that it is alive while it has no work to do. At 18 cycles that is once
 	// every three hours — enough to distinguish "idle" from "dead".
-	tokenRefreshHeartbeatCycles = 6
+	tokenRefreshHeartbeatCycles = 18
 )
 
 // runTicker runs work on an interval until ctx is cancelled, recovering from
@@ -267,7 +267,7 @@ func startAggregatorTokenRefreshJob(ctx context.Context, wg *sync.WaitGroup, ref
 	runTicker(ctx, wg, "aggregator-token-refresh", tokenRefreshInterval, func(ctx context.Context) {
 		cycleCount++
 
-		refreshed, errs := refresher.RefreshExpiringTokens(ctx, tokenRefreshExpiryBuffer)
+		refreshed, errs := refresher.RefreshExpiringTokens(ctx, aggregators.TokenRefreshWindow)
 
 		// Cancellation during shutdown is not a failure. Logging it at ERROR
 		// meant every clean deploy produced error-rate noise.

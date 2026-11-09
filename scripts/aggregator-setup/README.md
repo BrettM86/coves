@@ -60,7 +60,7 @@ Re-running this script fails because the record already exists. To change the de
 
 The key is shown once. Minting another replaces it immediately.
 
-Do not log out of the browser session that minted the key. Logout revokes the OAuth tokens the key runs on, and the key starts failing with 401 within the hour. Close the tab, clear the cookie, or sign in as a different account instead. If it happens, sign in again and mint a new key.
+Creating the key signs that browser session out; sign in again to use the web app. Logging out afterwards does not affect the key.
 
 The aggregator's `.env` needs only:
 

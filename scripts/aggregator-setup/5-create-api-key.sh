@@ -99,6 +99,9 @@ echo "  ckapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 echo
 echo -e "${RED}⚠ IMPORTANT: Save this key immediately! It cannot be retrieved again.${NC}"
 echo
+echo "Creating the key signs this browser session out: sign in again to use"
+echo "the web app. Logging out afterwards does not affect the key."
+echo
 read -p "Enter the API key you received: " API_KEY
 
 # Validate API key format

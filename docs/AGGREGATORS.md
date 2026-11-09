@@ -42,9 +42,9 @@ Aggregators authenticate with `Authorization: Bearer ckapi_<64 hex>`. The auth m
 
 `createApiKey` requires an OAuth session (browser login as the aggregator account) and an `aggregators` row, so the service record must be indexed first. It returns the key once. Only the SHA-256 hash and the 12-character prefix are stored. Each aggregator has one key, and minting a new one invalidates the old one immediately. `getApiKey` and `revokeApiKey` complete the set.
 
-The key is bound to a copy of the minting OAuth session: access token, refresh token and DPoP key, encrypted at rest (see [CREDENTIAL_ENCRYPTION.md](CREDENTIAL_ENCRYPTION.md)). The AppView uses that session to write the aggregator's posts to its PDS. A background job runs every 30 minutes and refreshes tokens that expire within the hour, and `APIKeyService` also refreshes on demand.
+Creating the key takes over the minting OAuth session: its row is moved to session ID `apikey`, and the access token, refresh token and DPoP key are stored with the key, encrypted at rest (see [CREDENTIAL_ENCRYPTION.md](CREDENTIAL_ENCRYPTION.md)). The AppView uses that session to write the aggregator's posts to its PDS. A background job runs every 10 minutes and refreshes tokens that expire within 30 minutes, and `APIKeyService` also refreshes on demand.
 
-The browser session and the key share one refresh-token lineage. Logging out of the browser session that minted the key revokes those tokens at the PDS, and the key starts failing with 401 at its next refresh. Close the tab or clear the cookie instead of logging out. If it happens, log in again and mint a new key.
+Creating the key signs that browser session out; sign in again to use the web app. A new sign-in gets its own session, so logging out afterwards does not affect the key. If storing the key fails, the browser session is left as it was.
 
 ## Thumbnails
 

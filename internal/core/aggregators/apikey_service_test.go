@@ -581,17 +581,6 @@ func TestAPIKeyService_GenerateKey_Success(t *testing.T) {
 		},
 	}
 
-	// Create mock OAuth store that tracks saved sessions
-	mockStore := &mockOAuthStore{
-		saveSessionFunc: func(ctx context.Context, session oauth.ClientSessionData) error {
-			savedSession = &session
-			return nil
-		},
-	}
-	mockApp := &oauth.ClientApp{Store: mockStore}
-
-	service := NewAPIKeyService(repo, mockApp)
-
 	// Create OAuth session
 	did, _ := syntax.ParseDID(aggregatorDID)
 	session := &oauth.ClientSessionData{
@@ -606,6 +595,17 @@ func TestAPIKeyService_GenerateKey_Success(t *testing.T) {
 		DPoPAuthServerNonce:     "auth_nonce_123",
 		DPoPHostNonce:           "host_nonce_456",
 	}
+
+	// The operator's row is in the store (the key creation moves it); the
+	// store tracks what is saved under the API key session.
+	sessions := map[string]oauth.ClientSessionData{"original_session": *session}
+	mockStore := newMapOAuthStore(sessions)
+	saveSession := mockStore.saveSessionFunc
+	mockStore.saveSessionFunc = func(ctx context.Context, data oauth.ClientSessionData) error {
+		savedSession = &data
+		return saveSession(ctx, data)
+	}
+	service := NewAPIKeyService(repo, &oauth.ClientApp{Store: mockStore})
 
 	plainKey, keyPrefix, err := service.GenerateKey(context.Background(), aggregatorDID, session)
 	if err != nil {
@@ -696,21 +696,24 @@ func TestAPIKeyService_GenerateKey_OAuthStoreSaveError(t *testing.T) {
 		},
 	}
 
-	// Create mock OAuth store that fails on save
-	mockStore := &mockOAuthStore{
-		saveSessionFunc: func(ctx context.Context, session oauth.ClientSessionData) error {
-			return errors.New("failed to save session")
-		},
-	}
-	mockApp := &oauth.ClientApp{Store: mockStore}
-
-	service := NewAPIKeyService(repo, mockApp)
-
 	did, _ := syntax.ParseDID(aggregatorDID)
 	session := &oauth.ClientSessionData{
-		AccountDID:  did,
-		AccessToken: "test_token",
+		AccountDID:              did,
+		SessionID:               "operator_session",
+		AccessToken:             "test_token",
+		RefreshToken:            "test_refresh_token",
+		HostURL:                 "https://pds.example.com",
+		AuthServerURL:           "https://auth.example.com",
+		AuthServerTokenEndpoint: "https://auth.example.com/oauth/token",
+		DPoPPrivateKeyMultibase: "z1234567890",
 	}
+
+	// Create mock OAuth store that holds the operator's session but fails on save
+	mockStore := newMapOAuthStore(map[string]oauth.ClientSessionData{"operator_session": *session})
+	mockStore.saveSessionFunc = func(ctx context.Context, session oauth.ClientSessionData) error {
+		return errors.New("failed to save session")
+	}
+	service := NewAPIKeyService(repo, &oauth.ClientApp{Store: mockStore})
 
 	_, _, err := service.GenerateKey(context.Background(), aggregatorDID, session)
 	if err == nil {
@@ -1222,9 +1225,9 @@ func TestAPIKeyService_RefreshExpiringTokens_PassesCorrectExpiryBuffer(t *testin
 }
 
 func TestAPIKeyService_RefreshExpiringTokens_TokensStillValid(t *testing.T) {
-	// When tokens are still valid (not within refresh buffer), no refresh should happen
-	// This tests the case where RefreshTokensIfNeeded returns early because tokens are valid
-	expiresAt := time.Now().Add(1 * time.Hour) // Well beyond the 5 minute buffer
+	// When tokens are still valid (not within the job's window), no refresh
+	// happens and nothing is counted as refreshed.
+	expiresAt := time.Now().Add(2 * time.Hour) // Beyond the 1 hour window passed below
 
 	repo := &mockRepository{
 		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
@@ -1242,10 +1245,8 @@ func TestAPIKeyService_RefreshExpiringTokens_TokensStillValid(t *testing.T) {
 
 	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
 
-	// Tokens are valid, so RefreshTokensIfNeeded returns early without error
-	// and counts as "refreshed" (even though no actual refresh was needed)
-	if refreshed != 1 {
-		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 1", refreshed)
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
 	}
 	if len(errs) != 0 {
 		t.Errorf("RefreshExpiringTokens() errors count = %d, want 0", len(errs))
@@ -1282,7 +1283,7 @@ func TestAPIKeyService_RefreshExpiringTokens_TokensExpired_RefreshFails(t *testi
 
 func TestAPIKeyService_RefreshExpiringTokens_MixedResults(t *testing.T) {
 	// Multiple aggregators: some with valid tokens, some with expired tokens
-	validExpiry := time.Now().Add(1 * time.Hour)
+	validExpiry := time.Now().Add(2 * time.Hour) // beyond the 1 hour window passed below
 	expiredExpiry := time.Now().Add(-1 * time.Hour)
 
 	repo := &mockRepository{
@@ -1311,9 +1312,9 @@ func TestAPIKeyService_RefreshExpiringTokens_MixedResults(t *testing.T) {
 
 	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
 
-	// 2 valid tokens should count as refreshed, 1 expired token should fail
-	if refreshed != 2 {
-		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 2", refreshed)
+	// 2 valid tokens are not due and not counted, 1 expired token should fail
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
 	}
 	if len(errs) != 1 {
 		t.Errorf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
@@ -1546,6 +1547,191 @@ func TestAPIKeyService_StoredSession(t *testing.T) {
 			default:
 				if err == nil || errors.Is(err, ErrOAuthSessionDead) || !errors.Is(err, row.wantWrapped) {
 					t.Errorf("error: got %v, want one matching the store error and not ErrOAuthSessionDead", err)
+				}
+			}
+		})
+	}
+}
+
+// newMapOAuthStore returns a mockOAuthStore whose sessions live in the given
+// map, keyed by session ID. Like the Postgres store, a missing row is
+// ErrSessionNotFound on both read and delete.
+func newMapOAuthStore(sessions map[string]oauth.ClientSessionData) *mockOAuthStore {
+	return &mockOAuthStore{
+		getSessionFunc: func(_ context.Context, _ syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
+			data, ok := sessions[sessionID]
+			if !ok {
+				return nil, covesoauth.ErrSessionNotFound
+			}
+			return &data, nil
+		},
+		saveSessionFunc: func(_ context.Context, data oauth.ClientSessionData) error {
+			sessions[data.SessionID] = data
+			return nil
+		},
+		deleteSessionFunc: func(_ context.Context, _ syntax.DID, sessionID string) error {
+			if _, ok := sessions[sessionID]; !ok {
+				return covesoauth.ErrSessionNotFound
+			}
+			delete(sessions, sessionID)
+			return nil
+		},
+	}
+}
+
+// A failed key creation must leave the operator signed in with the session
+// they had, and must not leave an API key session or a stored key behind.
+func TestAPIKeyService_GenerateKey_FailureLeavesOperatorSignedIn(t *testing.T) {
+	const aggregatorDID = "did:plc:operatorfailbot"
+	operatorRow := func(sessionID, accessToken, refreshToken string) oauth.ClientSessionData {
+		return oauth.ClientSessionData{
+			AccountDID:              syntax.DID(aggregatorDID),
+			SessionID:               sessionID,
+			HostURL:                 "https://pds.example.com",
+			AuthServerURL:           "https://auth.example.com",
+			AuthServerTokenEndpoint: "https://auth.example.com/oauth/token",
+			AccessToken:             accessToken,
+			RefreshToken:            refreshToken,
+			DPoPPrivateKeyMultibase: "z1234567890",
+		}
+	}
+	setAPIKeyErr := errors.New("database error")
+	rows := []struct {
+		name         string
+		stored       map[string]oauth.ClientSessionData
+		request      oauth.ClientSessionData
+		setAPIKeyErr error
+		// failSave and failDelete make the store fail those writes.
+		failSave   func(oauth.ClientSessionData) bool
+		failDelete string
+		want       map[string]oauth.ClientSessionData
+		// wantMoveNotUndone: the error must report that the rollback failed.
+		wantMoveNotUndone bool
+	}{
+		{
+			name: "replacing a key fails",
+			stored: map[string]oauth.ClientSessionData{
+				"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh"),
+				"apikey":           operatorRow("apikey", "previous-access", "previous-refresh"),
+			},
+			request:      operatorRow("operator-session", "stale-access", "stale-refresh"),
+			setAPIKeyErr: setAPIKeyErr,
+			want: map[string]oauth.ClientSessionData{
+				"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh"),
+				"apikey":           operatorRow("apikey", "previous-access", "previous-refresh"),
+			},
+		},
+		{
+			name:         "storing the key fails and the operator session cannot be restored",
+			stored:       map[string]oauth.ClientSessionData{"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh")},
+			request:      operatorRow("operator-session", "stale-access", "stale-refresh"),
+			setAPIKeyErr: setAPIKeyErr,
+			failSave: func(data oauth.ClientSessionData) bool {
+				return data.SessionID == "operator-session"
+			},
+			want:              map[string]oauth.ClientSessionData{"apikey": operatorRow("apikey", "stored-access", "stored-refresh")},
+			wantMoveNotUndone: true,
+		},
+		{
+			name:       "removing the operator session fails",
+			stored:     map[string]oauth.ClientSessionData{"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh")},
+			request:    operatorRow("operator-session", "stale-access", "stale-refresh"),
+			failDelete: "operator-session",
+			want:       map[string]oauth.ClientSessionData{"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh")},
+		},
+		{
+			name:         "storing the key fails",
+			stored:       map[string]oauth.ClientSessionData{"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh")},
+			request:      operatorRow("operator-session", "stale-access", "stale-refresh"),
+			setAPIKeyErr: setAPIKeyErr,
+			want:         map[string]oauth.ClientSessionData{"operator-session": operatorRow("operator-session", "stored-access", "stored-refresh")},
+		},
+		{
+			name:    "request session is the API key session",
+			stored:  map[string]oauth.ClientSessionData{"apikey": operatorRow("apikey", "stored-access", "stored-refresh")},
+			request: operatorRow("apikey", "stale-access", "stale-refresh"),
+			want:    map[string]oauth.ClientSessionData{"apikey": operatorRow("apikey", "stored-access", "stored-refresh")},
+		},
+		{
+			name:    "operator signed out before the move",
+			stored:  map[string]oauth.ClientSessionData{},
+			request: operatorRow("operator-session", "stale-access", "stale-refresh"),
+			want:    map[string]oauth.ClientSessionData{},
+		},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			keyStored := false
+			repo := &mockRepository{
+				getAggregatorFunc: func(_ context.Context, did string) (*Aggregator, error) {
+					return &Aggregator{DID: did, DisplayName: "Test"}, nil
+				},
+				setAPIKeyFunc: func(context.Context, string, string, string, *OAuthCredentials) error {
+					if row.setAPIKeyErr != nil {
+						return row.setAPIKeyErr
+					}
+					keyStored = true
+					return nil
+				},
+			}
+			store := newMapOAuthStore(row.stored)
+			if row.failSave != nil {
+				save := store.saveSessionFunc
+				store.saveSessionFunc = func(ctx context.Context, data oauth.ClientSessionData) error {
+					if row.failSave(data) {
+						return errors.New("save failed")
+					}
+					return save(ctx, data)
+				}
+			}
+			if row.failDelete != "" {
+				deleteSession := store.deleteSessionFunc
+				store.deleteSessionFunc = func(ctx context.Context, did syntax.DID, sessionID string) error {
+					if sessionID == row.failDelete {
+						return errors.New("delete failed")
+					}
+					return deleteSession(ctx, did, sessionID)
+				}
+			}
+			service := NewAPIKeyService(repo, &oauth.ClientApp{Store: store})
+			request := row.request
+
+			_, _, err := service.GenerateKey(context.Background(), aggregatorDID, &request)
+
+			if err == nil {
+				t.Fatal("GenerateKey() expected error, got nil")
+			}
+			if got := errors.Is(err, covesoauth.ErrSessionMoveNotUndone); got != row.wantMoveNotUndone {
+				t.Errorf("errors.Is(err, ErrSessionMoveNotUndone) = %v, want %v (error: %v)", got, row.wantMoveNotUndone, err)
+			}
+			refreshTokenHolders := map[string]int{}
+			for _, stored := range row.stored {
+				refreshTokenHolders[stored.RefreshToken]++
+			}
+			for _, holders := range refreshTokenHolders {
+				if holders > 1 {
+					t.Errorf("%d session rows share one refresh token after failed key creation", holders)
+				}
+			}
+			if keyStored {
+				t.Error("GenerateKey() stored an API key although key creation failed")
+			}
+			if len(row.stored) != len(row.want) {
+				t.Errorf("sessions after failure: got %d rows, want %d", len(row.stored), len(row.want))
+			}
+			for sessionID, want := range row.want {
+				got, ok := row.stored[sessionID]
+				if !ok {
+					t.Errorf("session %q missing after failed key creation", sessionID)
+					continue
+				}
+				if got.AccessToken != want.AccessToken || got.RefreshToken != want.RefreshToken {
+					t.Errorf("session %q tokens changed by failed key creation", sessionID)
+				}
+			}
+			if _, ok := row.want["apikey"]; !ok {
+				if _, ok := row.stored["apikey"]; ok {
+					t.Error("an API key session remains after failed key creation")
 				}
 			}
 		})

@@ -26,6 +26,11 @@ var ErrRefreshRejected = errors.New("OAuth refresh grant rejected")
 // deleted; the user must sign in again.
 var ErrSessionCorrupt = errors.New("OAuth session credentials corrupt")
 
+// ErrSessionMoveNotUndone means MoveSession's commit (or the move itself)
+// failed and the move could not be undone, so the stored sessions are not as
+// they were before the call.
+var ErrSessionMoveNotUndone = errors.New("the OAuth session move could not be undone")
+
 // Rotated credentials must be written even when the request that triggered
 // the rotation has been abandoned: the authorization server has already
 // consumed the previous refresh token.
@@ -41,6 +46,117 @@ func RunSessionOperation(ctx context.Context, app *oauth.ClientApp, did syntax.D
 		})
 	}
 	return runSessionOperation(ctx, app, did, sessionID, operation)
+}
+
+// MoveSession renames a stored session from fromSessionID to toSessionID,
+// replacing any session already stored under toSessionID, and then runs commit
+// with the moved credentials. The source row is reloaded under the
+// coordination of both sessions (locked in from-then-to order), so a refresh
+// in flight on either finishes before the move reads the row. A missing source
+// row is returned as the store reports it, with nothing written.
+//
+// If the move or commit fails, the move is undone: the source row is put back
+// and the destination gets back the session it held before, if any, and the
+// failure is returned. With the Postgres store the rename and its undo are
+// each one transaction, so the credentials are never held by two rows. If the
+// undo fails, the returned error also wraps ErrSessionMoveNotUndone.
+func MoveSession(ctx context.Context, app *oauth.ClientApp, did syntax.DID, fromSessionID, toSessionID string, commit func(context.Context, *oauth.ClientSessionData) error) error {
+	if fromSessionID == toSessionID {
+		return fmt.Errorf("move OAuth session: source and destination are both %q", fromSessionID)
+	}
+	coordinator, ok := app.Store.(sessionOperationCoordinator)
+	if !ok {
+		return moveSession(ctx, app, did, fromSessionID, toSessionID, commit)
+	}
+	return coordinator.withSessionOperation(ctx, did, fromSessionID, func(ctx context.Context) error {
+		return coordinator.withSessionOperation(ctx, did, toSessionID, func(ctx context.Context) error {
+			return moveSession(ctx, app, did, fromSessionID, toSessionID, commit)
+		})
+	})
+}
+
+// sessionRenamer is a store that can rename a session row atomically.
+// renameSession returns the session the destination held before (nil if
+// none); undoSessionRename reverses the rename and restores that session.
+type sessionRenamer interface {
+	renameSession(ctx context.Context, did syntax.DID, fromSessionID, toSessionID string) (previousDestination *oauth.ClientSessionData, err error)
+	undoSessionRename(ctx context.Context, did syntax.DID, fromSessionID, toSessionID string, previousDestination *oauth.ClientSessionData) error
+}
+
+func storeSessionRenamer(store oauth.ClientAuthStore) (sessionRenamer, bool) {
+	if wrapper, ok := store.(*MobileAwareStoreWrapper); ok {
+		store = wrapper.ClientAuthStore
+	}
+	renamer, ok := store.(sessionRenamer)
+	return renamer, ok
+}
+
+func moveSession(ctx context.Context, app *oauth.ClientApp, did syntax.DID, fromSessionID, toSessionID string, commit func(context.Context, *oauth.ClientSessionData) error) error {
+	original, err := app.Store.GetSession(ctx, did, fromSessionID)
+	if err != nil {
+		return err
+	}
+	if original == nil {
+		return ErrSessionNotFound
+	}
+	moved := *original
+	moved.SessionID = toSessionID
+
+	if renamer, ok := storeSessionRenamer(app.Store); ok {
+		previous, err := renamer.renameSession(ctx, did, fromSessionID, toSessionID)
+		if err != nil {
+			return fmt.Errorf("move OAuth session: %w", err)
+		}
+		if err := commit(ctx, &moved); err != nil {
+			undoContext, cancel := persistenceContext(ctx)
+			defer cancel()
+			if undoErr := renamer.undoSessionRename(undoContext, did, fromSessionID, toSessionID, previous); undoErr != nil {
+				return errors.Join(err, fmt.Errorf("%w: %w", ErrSessionMoveNotUndone, undoErr))
+			}
+			return err
+		}
+		return nil
+	}
+
+	previous, err := app.Store.GetSession(ctx, did, toSessionID)
+	if errors.Is(err, ErrSessionNotFound) {
+		previous = nil
+	} else if err != nil {
+		return fmt.Errorf("read OAuth session move destination: %w", err)
+	}
+	if err := app.Store.SaveSession(ctx, moved); err != nil {
+		return fmt.Errorf("save moved OAuth session: %w", err)
+	}
+	if err := app.Store.DeleteSession(ctx, did, fromSessionID); err != nil {
+		return errors.Join(fmt.Errorf("delete moved OAuth session source: %w", err),
+			restoreMovedSession(ctx, app, did, *original, toSessionID, previous))
+	}
+	if err := commit(ctx, &moved); err != nil {
+		return errors.Join(err, restoreMovedSession(ctx, app, did, *original, toSessionID, previous))
+	}
+	return nil
+}
+
+// restoreMovedSession undoes a move on a store that cannot rename atomically.
+// It puts the source row back first and only then restores the destination
+// (its previous session, or no row), so a failure leaves the credentials in
+// at least one row. Any failure is returned wrapped in ErrSessionMoveNotUndone.
+func restoreMovedSession(ctx context.Context, app *oauth.ClientApp, did syntax.DID, original oauth.ClientSessionData, toSessionID string, previous *oauth.ClientSessionData) error {
+	restoreContext, cancel := persistenceContext(ctx)
+	defer cancel()
+	if err := app.Store.SaveSession(restoreContext, original); err != nil {
+		return fmt.Errorf("%w: restore OAuth session source: %w", ErrSessionMoveNotUndone, err)
+	}
+	if previous != nil {
+		if err := app.Store.SaveSession(restoreContext, *previous); err != nil {
+			return fmt.Errorf("%w: restore OAuth session destination: %w", ErrSessionMoveNotUndone, err)
+		}
+		return nil
+	}
+	if err := app.Store.DeleteSession(restoreContext, did, toSessionID); err != nil && !errors.Is(err, ErrSessionNotFound) {
+		return fmt.Errorf("%w: remove OAuth session destination: %w", ErrSessionMoveNotUndone, err)
+	}
+	return nil
 }
 
 // ResumeSession rebuilds a stored session's DPoP signer without coordinating

@@ -72,7 +72,23 @@ func sessionLockKey(did syntax.DID, sessionID string) int64 {
 // lookups and feed queries. Each operation costs one coordination connection
 // for its whole duration; the wait for the lock is bounded by
 // sessionLockTimeout and reported as ErrSessionBusy.
+//
+// A nested operation (one whose ctx already carries this store's coordination
+// connection) takes its lock on that same connection instead of checking out
+// another, so nesting cannot stall on the bounded coordination pool. Callers
+// must nest in a consistent key order to avoid deadlock.
 func (s *PostgresOAuthStore) withSessionOperation(ctx context.Context, did syntax.DID, sessionID string, operation func(context.Context) error) error {
+	if owned, ok := ctx.Value(sessionConnectionKey{}).(sessionConnection); ok && owned.database == s.coordination {
+		lockKey := sessionLockKey(did, sessionID)
+		if err := acquireSessionLock(ctx, owned.connection, lockKey, s.lockTimeout); err != nil {
+			return err
+		}
+		defer s.releaseSessionLock(ctx, owned.connection, lockKey, did, sessionID)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return operation(ctx)
+	}
 	connection, err := s.coordination.Conn(ctx)
 	if err != nil {
 		return err

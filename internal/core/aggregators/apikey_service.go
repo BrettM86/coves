@@ -27,6 +27,10 @@ const (
 	APIKeyTotalLength = 70
 	// TokenRefreshBuffer is how long before expiry we should refresh tokens
 	TokenRefreshBuffer = 5 * time.Minute
+	// TokenRefreshWindow is how far ahead of expiry the scheduled refresh job
+	// renews tokens. It must be narrower than the one-hour expiry recorded for
+	// a fresh token, or every cycle would refresh every aggregator.
+	TokenRefreshWindow = 30 * time.Minute
 	// DefaultSessionID is used for API key sessions since aggregators have a single session
 	DefaultSessionID = "apikey"
 )
@@ -65,6 +69,12 @@ func NewAPIKeyService(repo Repository, oauthApp *oauth.ClientApp) *APIKeyService
 
 // GenerateKey creates a new API key for an aggregator.
 // The aggregator must have completed OAuth authentication first.
+// Creating a key ends the operator's browser session: the OAuth session the
+// request authenticated with is moved to the API key session (DefaultSessionID),
+// so the key holds the only copy of its refresh token and signing out of the
+// web app afterwards cannot revoke it. If storing the key fails, the move is
+// undone: the operator's session and any previous key's session are restored.
+// If that undo also fails, the error wraps oauth.ErrSessionMoveNotUndone.
 // Returns the plain-text key (only shown once) and the key prefix for reference.
 func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey, keyPrefix string, err error) {
 	// Validate aggregator exists
@@ -76,6 +86,9 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, o
 	// Validate OAuth session matches the aggregator
 	if oauthSession.AccountDID.String() != aggregatorDID {
 		return "", "", ErrOAuthSessionMismatch
+	}
+	if oauthSession.SessionID == DefaultSessionID {
+		return "", "", fmt.Errorf("failed to create API key: request session is already the API key session")
 	}
 
 	// Generate random key
@@ -92,53 +105,46 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, o
 	// Hash the key for storage (SHA-256)
 	keyHash := hashAPIKey(plainKey)
 
-	// Extract OAuth credentials from session
-	// Note: ClientSessionData doesn't store token expiry from the OAuth response.
-	// We use a 1-hour default which matches typical OAuth access token lifetimes.
-	// Token refresh happens proactively before expiry via RefreshTokensIfNeeded.
-	tokenExpiry := time.Now().Add(1 * time.Hour)
-	oauthCreds := &OAuthCredentials{
-		AccessToken:             oauthSession.AccessToken,
-		RefreshToken:            oauthSession.RefreshToken,
-		TokenExpiresAt:          tokenExpiry,
-		PDSURL:                  oauthSession.HostURL,
-		AuthServerIss:           oauthSession.AuthServerURL,
-		AuthServerTokenEndpoint: oauthSession.AuthServerTokenEndpoint,
-		DPoPPrivateKeyMultibase: oauthSession.DPoPPrivateKeyMultibase,
-		DPoPAuthServerNonce:     oauthSession.DPoPAuthServerNonce,
-		DPoPPDSNonce:            oauthSession.DPoPHostNonce,
+	// Move the operator's session to the API key session, then store the key
+	// with the moved credentials. The store row is reloaded under the session
+	// lock, so a refresh that rotated tokens after this request was
+	// authenticated is not lost. If storing the key fails, the move is undone.
+	commit := func(ctx context.Context, moved *oauth.ClientSessionData) error {
+		// Note: ClientSessionData doesn't store token expiry from the OAuth response.
+		// We use a 1-hour default which matches typical OAuth access token lifetimes.
+		// Token refresh happens proactively before expiry via RefreshTokensIfNeeded.
+		oauthCreds := &OAuthCredentials{
+			AccessToken:             moved.AccessToken,
+			RefreshToken:            moved.RefreshToken,
+			TokenExpiresAt:          time.Now().Add(1 * time.Hour),
+			PDSURL:                  moved.HostURL,
+			AuthServerIss:           moved.AuthServerURL,
+			AuthServerTokenEndpoint: moved.AuthServerTokenEndpoint,
+			DPoPPrivateKeyMultibase: moved.DPoPPrivateKeyMultibase,
+			DPoPAuthServerNonce:     moved.DPoPAuthServerNonce,
+			DPoPPDSNonce:            moved.DPoPHostNonce,
+		}
+		if err := oauthCreds.Validate(); err != nil {
+			return fmt.Errorf("invalid OAuth credentials: %w", err)
+		}
+		if err := s.repo.SetAPIKey(ctx, aggregatorDID, keyPrefix, keyHash, oauthCreds); err != nil {
+			return fmt.Errorf("failed to store API key: %w", err)
+		}
+		return nil
 	}
-
-	// Validate OAuth credentials before proceeding
-	if err := oauthCreds.Validate(); err != nil {
-		return "", "", fmt.Errorf("invalid OAuth credentials: %w", err)
-	}
-
-	// Store the OAuth session in the store FIRST (before API key)
-	// This prevents a race condition where the API key exists but can't refresh tokens.
-	// Order: OAuth session → API key (if session fails, no dangling API key)
-	apiKeySession := *oauthSession // Copy session data
-	apiKeySession.SessionID = DefaultSessionID
-	if err := s.oauthApp.Store.SaveSession(ctx, apiKeySession); err != nil {
-		slog.Error("failed to store OAuth session for API key - aborting key creation",
-			"did", aggregatorDID,
-			"error", err,
-		)
-		return "", "", fmt.Errorf("failed to store OAuth session for token refresh: %w", err)
-	}
-
-	// Now store key hash and OAuth credentials in aggregators table
-	// If this fails, we have an orphaned OAuth session, but that's less problematic
-	// than having an API key that can't refresh tokens.
-	if err := s.repo.SetAPIKey(ctx, aggregatorDID, keyPrefix, keyHash, oauthCreds); err != nil {
-		// Best effort cleanup of the OAuth session we just stored
-		if deleteErr := s.oauthApp.Store.DeleteSession(ctx, oauthSession.AccountDID, DefaultSessionID); deleteErr != nil {
-			slog.Warn("failed to cleanup OAuth session after API key storage failure",
+	if err := covesoauth.MoveSession(ctx, s.oauthApp, oauthSession.AccountDID, oauthSession.SessionID, DefaultSessionID, commit); err != nil {
+		if errors.Is(err, covesoauth.ErrSessionMoveNotUndone) {
+			slog.Error("failed to create API key; the operator session could not be restored",
 				"did", aggregatorDID,
-				"error", deleteErr,
+				"error", err,
+			)
+		} else {
+			slog.Error("failed to create API key; operator session left in place",
+				"did", aggregatorDID,
+				"error", err,
 			)
 		}
-		return "", "", fmt.Errorf("failed to store API key: %w", err)
+		return "", "", fmt.Errorf("failed to create API key: %w", err)
 	}
 
 	slog.Info("API key generated for aggregator",
@@ -208,15 +214,20 @@ func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*Aggr
 // RefreshTokensIfNeeded checks if the OAuth tokens are expired or expiring soon,
 // and refreshes them if necessary.
 func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, creds *AggregatorCredentials) error {
-	// Check if tokens need refresh
-	if creds.OAuthTokenExpiresAt != nil {
-		if time.Until(*creds.OAuthTokenExpiresAt) > TokenRefreshBuffer {
-			// Tokens still valid
-			return nil
-		}
+	if !tokensDue(creds, TokenRefreshBuffer) {
+		return nil
 	}
+	return s.refreshTokens(ctx, creds)
+}
 
-	// Need to refresh tokens
+// tokensDue reports whether creds' tokens expire within buffer (or have no
+// recorded expiry).
+func tokensDue(creds *AggregatorCredentials, buffer time.Duration) bool {
+	return creds.OAuthTokenExpiresAt == nil || time.Until(*creds.OAuthTokenExpiresAt) <= buffer
+}
+
+// refreshTokens refreshes creds' tokens unconditionally.
+func (s *APIKeyService) refreshTokens(ctx context.Context, creds *AggregatorCredentials) error {
 	slog.Info("refreshing OAuth tokens for aggregator",
 		"did", creds.DID,
 		"expires_at", creds.OAuthTokenExpiresAt,
@@ -415,6 +426,13 @@ func (s *APIKeyService) RefreshExpiringTokens(ctx context.Context, expiryBuffer 
 
 	// Refresh tokens for each aggregator with per-aggregator timeout
 	for _, creds := range aggregators {
+		// The repository selected with expiryBuffer; decide with the same
+		// window so a token that is not yet due is neither refreshed nor
+		// counted.
+		if !tokensDue(creds, expiryBuffer) {
+			continue
+		}
+
 		slog.Info("[TOKEN-REFRESH] Attempting token refresh for aggregator",
 			"did", creds.DID,
 			"token_expires_at", creds.OAuthTokenExpiresAt,
@@ -423,7 +441,7 @@ func (s *APIKeyService) RefreshExpiringTokens(ctx context.Context, expiryBuffer 
 		// Create per-aggregator timeout context to prevent slow OAuth servers
 		// from blocking the entire refresh cycle
 		refreshCtx, cancel := context.WithTimeout(ctx, perAggregatorRefreshTimeout)
-		err := s.RefreshTokensIfNeeded(refreshCtx, creds)
+		err := s.refreshTokens(refreshCtx, creds)
 		cancel()
 
 		if err != nil {

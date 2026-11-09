@@ -342,3 +342,37 @@ func waitForBridgedVoteJob(wg *sync.WaitGroup) <-chan struct{} {
 	}()
 	return done
 }
+
+// expiringTokenRefresherFake reports the expiry buffer of each call.
+type expiringTokenRefresherFake struct {
+	buffers chan time.Duration
+}
+
+func (f *expiringTokenRefresherFake) RefreshExpiringTokens(_ context.Context, expiryBuffer time.Duration) (int, []error) {
+	select {
+	case f.buffers <- expiryBuffer:
+	default:
+	}
+	return 0, nil
+}
+
+// The job's window must be narrower than the expiry recorded for a fresh
+// token (one hour), or every cycle refreshes every aggregator.
+func TestStartAggregatorTokenRefreshJob_PassesThirtyMinuteWindow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	fake := &expiringTokenRefresherFake{buffers: make(chan time.Duration, 1)}
+
+	startAggregatorTokenRefreshJob(ctx, &wg, fake)
+
+	select {
+	case buffer := <-fake.buffers:
+		require.Equal(t, 30*time.Minute, buffer, "startup refresh cycle expiry buffer")
+	case <-time.After(5 * time.Second):
+		t.Fatal("aggregator token refresh job did not run a startup cycle")
+	}
+
+	cancel()
+	wg.Wait()
+}

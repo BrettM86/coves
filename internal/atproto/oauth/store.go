@@ -57,6 +57,10 @@ func NewCoordinatedPostgresOAuthStore(db, coordination *sql.DB, sessionTTL time.
 
 // GetSession retrieves a session by DID and session ID
 func (s *PostgresOAuthStore) GetSession(ctx context.Context, did syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
+	return getSession(ctx, s.sessionDatabase(ctx), did, sessionID)
+}
+
+func getSession(ctx context.Context, database sessionDatabase, did syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
 	query := `
 		SELECT
 			did, session_id, host_url, auth_server_iss,
@@ -73,7 +77,7 @@ func (s *PostgresOAuthStore) GetSession(ctx context.Context, did syntax.DID, ses
 	var scopes pq.StringArray
 	var dpopAuthServerNonce, dpopHostNonce sql.NullString
 
-	err := s.sessionDatabase(ctx).QueryRowContext(ctx, query, did.String(), sessionID).Scan(
+	err := database.QueryRowContext(ctx, query, did.String(), sessionID).Scan(
 		&session.AccountDID,
 		&session.SessionID,
 		&hostURL,
@@ -124,6 +128,10 @@ func (s *PostgresOAuthStore) GetSession(ctx context.Context, did syntax.DID, ses
 
 // SaveSession saves or updates a session (upsert operation)
 func (s *PostgresOAuthStore) SaveSession(ctx context.Context, sess oauth.ClientSessionData) error {
+	return s.saveSession(ctx, s.sessionDatabase(ctx), sess)
+}
+
+func (s *PostgresOAuthStore) saveSession(ctx context.Context, database sessionDatabase, sess oauth.ClientSessionData) error {
 	// Input validation per atProto OAuth security requirements
 
 	// Validate DID format
@@ -220,7 +228,7 @@ func (s *PostgresOAuthStore) SaveSession(ctx context.Context, sess oauth.ClientS
 		pdsURL = sess.AuthServerURL // Fallback to auth server URL
 	}
 
-	_, err := s.sessionDatabase(ctx).ExecContext(
+	_, err := database.ExecContext(
 		ctx, query,
 		sess.AccountDID.String(),
 		sess.SessionID,
@@ -242,6 +250,95 @@ func (s *PostgresOAuthStore) SaveSession(ctx context.Context, sess oauth.ClientS
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 
+	return nil
+}
+
+// beginSessionTransaction opens a transaction on the locked coordination
+// connection while a session operation is in progress, otherwise on db.
+func (s *PostgresOAuthStore) beginSessionTransaction(ctx context.Context) (*sql.Tx, error) {
+	if owned, ok := ctx.Value(sessionConnectionKey{}).(sessionConnection); ok && owned.database == s.coordination {
+		return owned.connection.BeginTx(ctx, nil)
+	}
+	return s.db.BeginTx(ctx, nil)
+}
+
+// renameSession implements sessionRenamer: in one transaction it removes the
+// destination row (returning what it held, or nil if there was no live row)
+// and renames the source row to the destination, so there is never a moment
+// with two copies of the source's credentials.
+func (s *PostgresOAuthStore) renameSession(ctx context.Context, did syntax.DID, fromSessionID, toSessionID string) (*oauth.ClientSessionData, error) {
+	transaction, err := s.beginSessionTransaction(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin OAuth session rename: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	previous, err := getSession(ctx, transaction, did, toSessionID)
+	if errors.Is(err, ErrSessionNotFound) {
+		previous = nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read OAuth session rename destination: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx,
+		`DELETE FROM oauth_sessions WHERE did = $1 AND session_id = $2`,
+		did.String(), toSessionID,
+	); err != nil {
+		return nil, fmt.Errorf("remove OAuth session rename destination: %w", err)
+	}
+	result, err := transaction.ExecContext(ctx, `
+		UPDATE oauth_sessions SET session_id = $3, expires_at = $4, updated_at = NOW()
+		WHERE did = $1 AND session_id = $2 AND expires_at > NOW()`,
+		did.String(), fromSessionID, toSessionID, time.Now().Add(s.sessionTTL),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("rename OAuth session: %w", err)
+	}
+	renamed, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("rename OAuth session: %w", err)
+	}
+	if renamed != 1 {
+		return nil, ErrSessionNotFound
+	}
+	if err := transaction.Commit(); err != nil {
+		return nil, fmt.Errorf("commit OAuth session rename: %w", err)
+	}
+	return previous, nil
+}
+
+// undoSessionRename implements sessionRenamer: in one transaction it renames
+// the destination row back to the source and, if previousDestination is not
+// nil, stores it again under the destination.
+func (s *PostgresOAuthStore) undoSessionRename(ctx context.Context, did syntax.DID, fromSessionID, toSessionID string, previousDestination *oauth.ClientSessionData) error {
+	transaction, err := s.beginSessionTransaction(ctx)
+	if err != nil {
+		return fmt.Errorf("begin OAuth session rename undo: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	result, err := transaction.ExecContext(ctx, `
+		UPDATE oauth_sessions SET session_id = $3, updated_at = NOW()
+		WHERE did = $1 AND session_id = $2`,
+		did.String(), toSessionID, fromSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("rename OAuth session back: %w", err)
+	}
+	renamed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rename OAuth session back: %w", err)
+	}
+	if renamed != 1 {
+		return fmt.Errorf("rename OAuth session back: %w", ErrSessionNotFound)
+	}
+	if previousDestination != nil {
+		if err := s.saveSession(ctx, transaction, *previousDestination); err != nil {
+			return fmt.Errorf("restore OAuth session rename destination: %w", err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit OAuth session rename undo: %w", err)
+	}
 	return nil
 }
 
