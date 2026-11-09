@@ -1167,35 +1167,20 @@ func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// HandleLogout revokes the session and clears cookies
+// HandleLogout revokes the session and clears cookies only after local revocation.
+// Accepts the sealed token as Authorization: Bearer (mobile) or the
+// coves_session cookie (web); Bearer takes precedence, as in the auth middleware.
 // POST /oauth/logout
 func (h *OAuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get session from cookie (now sealed)
-	cookie, err := r.Cookie("coves_session")
+	// Decode credentials without reading the store: a store outage must not
+	// masquerade as an invalid token. Missing or invalid credentials are an
+	// idempotent success: there is no row they could name.
+	did, sessionID, err := h.getSessionIdentifiersFromRequest(r)
 	if err != nil {
-		// No session, just return success
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
-		return
-	}
-
-	// Unseal the session token
-	sealed, err := h.client.UnsealSession(cookie.Value)
-	if err != nil {
-		// Invalid session, clear cookie and return
 		h.clearSessionCookie(w)
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
-		return
-	}
-
-	// Parse DID
-	did, err := syntax.ParseDID(sealed.DID)
-	if err != nil {
-		// Invalid DID, clear cookie and return
-		h.clearSessionCookie(w)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
 		return
@@ -1208,38 +1193,36 @@ func (h *OAuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	// ResumeSession instead so a corrupt row is deleted and reported as
 	// ErrSessionCorrupt; the revoke and delete steps mirror Indigo's Logout.
 	logout := func(ctx context.Context) error {
-		session, err := ResumeSession(ctx, h.client.ClientApp, did, sealed.SessionID)
+		session, err := ResumeSession(ctx, h.client.ClientApp, did, sessionID)
 		if err != nil {
 			return err
 		}
 		if session.Data.AuthServerRevocationEndpoint == "" {
-			slog.Info("authorization server does not support token revocation; skipping", "did", did, "session_id", sealed.SessionID)
+			slog.Info("authorization server does not support token revocation; skipping", "did", did, "session_id", sessionID)
 		} else if err := session.RevokeSession(ctx); err != nil {
 			// Best effort, as in Indigo: the local row is deleted regardless.
-			slog.Warn("failed to revoke OAuth tokens on authorization server", "error", err, "did", did, "session_id", sealed.SessionID)
+			slog.Warn("failed to revoke OAuth tokens on authorization server", "error", err, "did", did, "session_id", sessionID)
 		}
-		return h.client.ClientApp.Store.DeleteSession(ctx, did, sealed.SessionID)
+		return h.client.ClientApp.Store.DeleteSession(ctx, did, sessionID)
 	}
 	if coordinator, ok := h.client.ClientApp.Store.(sessionOperationCoordinator); ok {
-		err = coordinator.withSessionOperation(ctx, did, sealed.SessionID, logout)
+		err = coordinator.withSessionOperation(ctx, did, sessionID, logout)
 	} else {
 		err = logout(ctx)
 	}
 	if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionCorrupt) {
 		// A corrupt row has already been deleted by ResumeSession; either way
-		// there is nothing left to revoke, so the cookie can go.
-		slog.Info("logout: session already removed", "did", did, "session_id", sealed.SessionID)
+		// there is nothing left to revoke, so the credential can go.
+		slog.Info("logout: session already removed", "did", did, "session_id", sessionID)
 	} else if err != nil {
 		// Keep the cookie: the row may still exist, so reporting success would
 		// leave a replayable token behind. Clients retry on 503.
-		slog.Error("failed to revoke or delete OAuth session", "error", err, "did", did, "session_id", sealed.SessionID)
+		slog.Error("failed to revoke or delete OAuth session", "error", err, "did", did, "session_id", sessionID)
 		http.Error(w, "logout temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Clear session cookie
 	h.clearSessionCookie(w)
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "logged_out"})
@@ -1365,41 +1348,43 @@ func (h *OAuthHandler) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// GetSessionFromRequest extracts session data from an HTTP request
+// GetSessionFromRequest extracts session data from an HTTP request.
 func (h *OAuthHandler) GetSessionFromRequest(r *http.Request) (*oauth.ClientSessionData, error) {
-	// Try to get session from cookie (web) - now using sealed tokens
-	cookie, err := r.Cookie("coves_session")
-	if err == nil && cookie.Value != "" {
-		// Unseal the token to get DID and session ID
-		sealed, err := h.client.UnsealSession(cookie.Value)
-		if err == nil {
-			did, err := syntax.ParseDID(sealed.DID)
-			if err == nil {
-				return h.store.GetSession(r.Context(), did, sealed.SessionID)
-			}
+	did, sessionID, err := h.getSessionIdentifiersFromRequest(r)
+	if err != nil {
+		return nil, err
+	}
+	return h.store.GetSession(r.Context(), did, sessionID)
+}
+
+// getSessionIdentifiersFromRequest validates credentials without accessing the
+// session store. Its errors describe unusable credentials, never store failures.
+func (h *OAuthHandler) getSessionIdentifiersFromRequest(r *http.Request) (syntax.DID, string, error) {
+	var token string
+	if authorization := r.Header.Get("Authorization"); authorization != "" {
+		// Match the auth middleware: Bearer takes precedence, schemes are
+		// case-insensitive, and an invalid header never falls back to a cookie.
+		scheme, value, found := strings.Cut(authorization, " ")
+		if !found || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(value) == "" {
+			return "", "", fmt.Errorf("invalid Authorization header")
 		}
+		token = strings.TrimSpace(value)
+	} else if cookie, err := r.Cookie("coves_session"); err == nil {
+		token = cookie.Value
+	}
+	if token == "" {
+		return "", "", fmt.Errorf("no session found")
 	}
 
-	// Try to get session from Authorization header (mobile)
-	authHeader := r.Header.Get("Authorization")
-	if authHeader != "" {
-		// Expected format: "Bearer <sealed_token>"
-		const prefix = "Bearer "
-		if len(authHeader) > len(prefix) && authHeader[:len(prefix)] == prefix {
-			sealedToken := authHeader[len(prefix):]
-			sealed, err := h.client.UnsealSession(sealedToken)
-			if err != nil {
-				return nil, fmt.Errorf("invalid sealed token: %w", err)
-			}
-			did, err := syntax.ParseDID(sealed.DID)
-			if err != nil {
-				return nil, fmt.Errorf("invalid DID in sealed token: %w", err)
-			}
-			return h.store.GetSession(r.Context(), did, sealed.SessionID)
-		}
+	sealed, err := h.client.UnsealSession(token)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid sealed token: %w", err)
 	}
-
-	return nil, fmt.Errorf("no session found")
+	did, err := syntax.ParseDID(sealed.DID)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid DID in sealed token: %w", err)
+	}
+	return did, sealed.SessionID, nil
 }
 
 // HandleProtectedResourceMetadata returns OAuth protected resource metadata
