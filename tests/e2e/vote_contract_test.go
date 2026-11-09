@@ -529,12 +529,22 @@ func TestAtomicVoteDirectionReplacementIngestion(t *testing.T) {
 		thread, err := p.Thread(context.Background(), post.URI, nil)
 		_, found := thread.find(comment.URI)
 		return found, err
-	})
+	}, withReadCadence())
 	for _, target := range []struct {
 		name    string
 		subject strongRef
 	}{{"post", post}, {"comment", commentSubject}} {
 		t.Run(target.name, func(t *testing.T) {
+			// The comment target reads through getComments, which has its own
+			// 20/minute cap; its waits poll at the capped-read cadence.
+			// The window the setup wait opened is not this subtest's to spend,
+			// and a fresh bucket before the withdrawal wait keeps a slow but
+			// healthy arc (two long waits plus Holds' six reads) under the cap.
+			var cadence []testkit.WaitOption
+			if target.name == "comment" {
+				cadence = append(cadence, withReadCadence())
+				p.FreshReadQuota(t, "comment-arc")
+			}
 			observe := func(up, down, score int) (bool, error) {
 				if target.name == "post" {
 					view, err := p.Post(context.Background(), post.URI)
@@ -546,7 +556,7 @@ func TestAtomicVoteDirectionReplacementIngestion(t *testing.T) {
 			}
 			oldKey := testkit.TID()
 			voter.PutRecord(t, voteCollection, oldKey, voteRecord(target.subject, "up"))
-			p.Await(t, "initial upvote", func() (bool, error) { return observe(1, 0, 1) })
+			p.Await(t, "initial upvote", func() (bool, error) { return observe(1, 0, 1) }, cadence...)
 			newKey := testkit.TID()
 			ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
 			defer cancel()
@@ -556,10 +566,13 @@ func TestAtomicVoteDirectionReplacementIngestion(t *testing.T) {
 					{"$type": "com.atproto.repo.applyWrites#create", "collection": voteCollection, "rkey": newKey, "value": voteRecord(target.subject, "down")},
 				},
 			}, nil))
-			p.Await(t, "atomic direction replacement to reach counts", func() (bool, error) { return observe(0, 1, -1) })
+			p.Await(t, "atomic direction replacement to reach counts", func() (bool, error) { return observe(0, 1, -1) }, cadence...)
 			p.Holds(t, "replacement count remains stable", func() (bool, error) { return observe(0, 1, -1) })
 			voter.DeleteExistingRecord(t, voteCollection, newKey)
-			p.Await(t, "replacement withdrawal to clear counts", func() (bool, error) { return observe(0, 0, 0) })
+			if target.name == "comment" {
+				p.FreshReadQuota(t, "comment-withdrawal")
+			}
+			p.Await(t, "replacement withdrawal to clear counts", func() (bool, error) { return observe(0, 0, 0) }, cadence...)
 		})
 	}
 }
