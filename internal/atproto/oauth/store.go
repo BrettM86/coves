@@ -45,7 +45,7 @@ func NewPostgresOAuthStore(db *sql.DB, sessionTTL time.Duration) oauth.ClientAut
 // the same database, instead of the request pool db.
 func NewCoordinatedPostgresOAuthStore(db, coordination *sql.DB, sessionTTL time.Duration) oauth.ClientAuthStore {
 	if sessionTTL == 0 {
-		sessionTTL = 7 * 24 * time.Hour // Default to 7 days
+		sessionTTL = DefaultSessionTTL
 	}
 	return &PostgresOAuthStore{
 		db:           db,

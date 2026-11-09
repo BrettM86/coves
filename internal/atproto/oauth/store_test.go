@@ -5,6 +5,7 @@ package oauth
 import (
 	"context"
 	"testing"
+	"time"
 
 	"Coves/tests/testkit"
 
@@ -41,8 +42,21 @@ func TestPostgresOAuthStore_SaveAndGetSession(t *testing.T) {
 	}
 
 	// Save session
+	before := time.Now()
 	err = store.SaveSession(ctx, session)
 	assert.NoError(t, err)
+	after := time.Now()
+
+	// A sessionTTL of 0 must fall back to the 365-day OAuth session lifetime,
+	// not a shorter row lifetime that logs users out early.
+	var expiresAt time.Time
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT expires_at FROM oauth_sessions WHERE did = $1 AND session_id = $2`,
+		did.String(), "session123",
+	).Scan(&expiresAt))
+	const wantTTL = 365 * 24 * time.Hour
+	assert.WithinRange(t, expiresAt, before.Add(wantTTL-time.Hour), after.Add(wantTTL+time.Hour),
+		"expires_at should be 365 days after save for the default session TTL")
 
 	// Retrieve session
 	retrieved, err := store.GetSession(ctx, did, "session123")

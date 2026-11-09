@@ -20,6 +20,10 @@ type OAuthClient struct {
 	SealSecret []byte // For sealing mobile tokens
 }
 
+// DefaultSessionTTL is the default OAuth session lifetime (1 year, confidential
+// clients only). The client and the session store both default to it.
+const DefaultSessionTTL = 365 * 24 * time.Hour
+
 // OAuthConfig holds Coves OAuth client configuration
 type OAuthConfig struct {
 	PublicURL       string
@@ -149,7 +153,7 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore, opts ...cl
 	// Note: The auth server ultimately enforces these limits. Public clients with longer TTLs
 	// configured here will still be limited to 14 days by the auth server.
 	if config.SessionTTL == 0 {
-		config.SessionTTL = 365 * 24 * time.Hour // 1 year (confidential clients only)
+		config.SessionTTL = DefaultSessionTTL
 	}
 	if config.SealedTokenTTL == 0 {
 		config.SealedTokenTTL = 548 * 24 * time.Hour // 18 months (confidential clients only)

@@ -375,11 +375,6 @@ func (a *application) buildIdentity() {
 }
 
 func (a *application) buildAuth() error {
-	// The wrapper intercepts SaveAuthRequestInfo to capture mobile CSRF state
-	// from the request context, so it must be what everything else holds.
-	baseOAuthStore := oauth.NewCoordinatedPostgresOAuthStore(a.db, a.sessionCoordinationDB, 0) // 0 = default 7-day TTL
-	a.oauthStore = oauth.NewMobileAwareStoreWrapper(baseOAuthStore)
-
 	oauthConfig := &oauth.OAuthConfig{
 		PublicURL:  a.cfg.OAuth.PublicURL,
 		SealSecret: a.cfg.OAuth.SealSecret,
@@ -396,7 +391,14 @@ func (a *application) buildAuth() error {
 		// clients. Our own defaults then apply — see oauth.NewOAuthClient.
 		ClientPrivateKeyMultibase: a.cfg.OAuth.ClientPrivateKeyMultibase,
 		ClientKeyID:               a.cfg.OAuth.ClientKeyID,
+		SessionTTL:                oauth.DefaultSessionTTL,
 	}
+
+	// Session rows expire with the client's session lifetime. The wrapper
+	// intercepts SaveAuthRequestInfo to capture mobile CSRF state from the
+	// request context, so it must be what everything else holds.
+	baseOAuthStore := oauth.NewCoordinatedPostgresOAuthStore(a.db, a.sessionCoordinationDB, oauthConfig.SessionTTL)
+	a.oauthStore = oauth.NewMobileAwareStoreWrapper(baseOAuthStore)
 
 	client, err := oauth.NewOAuthClient(oauthConfig, a.oauthStore)
 	if err != nil {
