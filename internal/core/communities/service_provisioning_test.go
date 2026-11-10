@@ -85,21 +85,71 @@ func newCommunityServiceWithDatabase(t *testing.T) (
 	t.Helper()
 
 	db := testkit.DB(t)
-	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	pdsServer := testkit.NewPDS(t)
+	service, repo := buildCommunityService(t, db, pdsServer)
+	return service, repo, pdsServer, db
+}
+
+// communityServiceWiring is what a buildCommunityService option may replace.
+// Each substitution wraps or redirects a real dependency; nothing is faked.
+type communityServiceWiring struct {
+	wrapRepository    func(communities.Repository) communities.Repository
+	wrapBlobService   func(blobs.Service) blobs.Service
+	recordPDSURL      string // where the service writes records
+	provisionerPDSURL string // where the provisioner calls createAccount
+}
+
+type communityServiceOption func(*communityServiceWiring)
+
+func withRepositoryWrapper(wrap func(communities.Repository) communities.Repository) communityServiceOption {
+	return func(w *communityServiceWiring) { w.wrapRepository = wrap }
+}
+
+func withBlobServiceWrapper(wrap func(blobs.Service) blobs.Service) communityServiceOption {
+	return func(w *communityServiceWiring) { w.wrapBlobService = wrap }
+}
+
+func withRecordPDSURL(pdsURL string) communityServiceOption {
+	return func(w *communityServiceWiring) { w.recordPDSURL = pdsURL }
+}
+
+func withProvisionerPDSURL(pdsURL string) communityServiceOption {
+	return func(w *communityServiceWiring) { w.provisionerPDSURL = pdsURL }
+}
+
+// buildCommunityService wires the service over an existing database and PDS, so
+// a test can build a second, healthy instance over the state a failed one left.
+// The returned repository is the one the service uses, wrapper included.
+func buildCommunityService(t *testing.T, db *sql.DB, pdsServer *testkit.PDS, opts ...communityServiceOption) (
+	communities.Service, communities.Repository,
+) {
+	t.Helper()
+
+	wiring := communityServiceWiring{recordPDSURL: pdsServer.URL(), provisionerPDSURL: pdsServer.URL()}
+	for _, opt := range opts {
+		opt(&wiring)
+	}
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+	if wiring.wrapRepository != nil {
+		repo = wiring.wrapRepository(repo)
+	}
+	blobService := blobs.NewBlobService(pdsServer.URL(), blobs.PrivateHostOptions(true)...)
+	if wiring.wrapBlobService != nil {
+		blobService = wiring.wrapBlobService(blobService)
+	}
 	pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 2, MaxLongEdge: media.DefaultMaxLongEdge})
 	require.NoError(t, err)
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
-		pdsServer.URL(),
+		wiring.recordPDSURL,
 		instanceDID,
 		instanceDomain,
-		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
+		communities.NewPDSAccountProvisioner(instanceDomain, wiring.provisionerPDSURL, communities.PrivateHostOptions(true)...),
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
-		blobs.NewBlobService(pdsServer.URL(), blobs.PrivateHostOptions(true)...), pipeline,
+		blobService, pipeline,
 		communities.PrivateHostOptions(true)...,
 	)
-	return service, repo, pdsServer, db
+	return service, repo
 }
 
 func TestService_CreateProvisionsAResolvableAccount(t *testing.T) {

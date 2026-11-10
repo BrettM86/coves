@@ -142,6 +142,12 @@ func (h *communityMediaHarness) requestsAt(path string) []mediaPDSRequest {
 
 func (h *communityMediaHarness) writeImage(ctx context.Context, operation string, avatar, banner []byte) error {
 	if operation == "create" {
+		// The seeded row stands in for the community an update writes to; a
+		// create of its name would find the name taken.
+		h.repo.mu.Lock()
+		delete(h.repo.byHandle, h.stored.Handle)
+		delete(h.repo.byDID, h.stored.DID)
+		h.repo.mu.Unlock()
 		req := aValidCreateRequest()
 		req.AvatarBlob, req.BannerBlob = avatar, banner
 		req.AvatarMimeType, req.BannerMimeType = "image/png", "image/png"

@@ -2686,3 +2686,17 @@ func (m *mockUserRepo) SetBlueskyProfileImportDismissed(ctx context.Context, did
 func (m *mockUserRepo) GetBlueskyProfileImportDismissedAt(ctx context.Context, did string) (*time.Time, error) {
 	return nil, nil
 }
+
+func (*mockCommunityRepo) SaveProvisioningAccount(context.Context, *communities.ProvisioningAccount) error {
+	return nil
+}
+
+func (*mockCommunityRepo) GetProvisioningAccountByHandle(context.Context, string) (*communities.ProvisioningAccount, error) {
+	return nil, communities.ErrProvisioningAccountNotFound
+}
+
+func (*mockCommunityRepo) DeleteProvisioningAccount(context.Context, string) error { return nil }
+
+func (*mockCommunityRepo) AttachHostedCredentials(context.Context, *communities.Community) error {
+	return communities.ErrCommunityNotFound
+}

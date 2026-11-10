@@ -22,8 +22,10 @@ import (
 	"Coves/internal/core/media"
 	"Coves/internal/validation"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/bluesky-social/indigo/xrpc" //nolint:staticcheck // SA1019: atclient changes error formatting and URL handling; migration tracked separately
 	"github.com/rivo/uniseg"
 )
 
@@ -219,15 +221,16 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("blob service not configured, cannot upload community images")
 	}
 
-	// V2: Provision a real PDS account for this community
+	// V2: Provision a real PDS account for this community, or resume the one an
+	// interrupted create by the same creator already made.
 	// This calls com.atproto.server.createAccount internally
 	// The PDS will:
 	//   1. Generate a signing keypair (stored in PDS, we never see it)
 	//   2. Create a DID (did:plc:xxx)
 	//   3. Return credentials (DID, tokens)
-	pdsAccount, err := s.provisioner.ProvisionCommunityAccount(ctx, req.Name)
+	pdsAccount, resumed, err := s.provisionOrResumeCommunityAccount(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to provision PDS account for community: %w", err)
+		return nil, err
 	}
 
 	// Validate the atProto handle
@@ -323,7 +326,13 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// V2: Write to COMMUNITY's own repository (not instance repo!)
 	// Repository: at://COMMUNITY_DID/social.coves.community.profile/self
 	// Authenticate using community's access token
-	recordURI, recordCID, err := s.createRecordOnPDSAs(
+	// A resumed account may already hold the profile from the interrupted
+	// create, so it is written with putRecord, which replaces it.
+	writeProfile := s.createRecordOnPDSAs
+	if resumed {
+		writeProfile = s.putRecordOnPDSAs
+	}
+	recordURI, recordCID, err := writeProfile(
 		ctx,
 		pdsAccount.DID, // repo = community's DID (community owns its repo!)
 		"social.coves.community.profile",
@@ -367,16 +376,253 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	}
 
 	// CRITICAL: Persist PDS credentials immediately to database
-	// The Jetstream consumer will eventually index the community profile from the firehose,
-	// but it won't have the PDS credentials. We must store them now so we can:
+	// The Jetstream consumer indexes the community profile from the firehose,
+	// possibly before this point, but it never has the PDS credentials. We must
+	// store them now so we can:
 	// 1. Update the community profile later (using its own credentials)
 	// 2. Re-authenticate if access tokens expire
-	_, err = s.repo.Create(ctx, community)
-	if err != nil {
+	// If this fails, the provisioning account still holds the password and a
+	// retry of the same request resumes the account.
+	if err := s.persistCreatedCommunity(ctx, community); err != nil {
 		return nil, fmt.Errorf("failed to persist community with credentials: %w", err)
 	}
 
 	return community, nil
+}
+
+// provisionOrResumeCommunityAccount returns the PDS account for a community
+// being created, and whether it was resumed from an earlier interrupted create
+// rather than created now.
+//
+// The generated credentials are saved as a provisioning account BEFORE
+// createAccount. The password is generated here, so that row is enough to sign
+// in to the account even if the createAccount response is lost; if the save
+// fails, no account is created. A later create for the same handle by the same
+// creator signs in with the saved credentials instead of creating a second
+// account, which the PDS would refuse because the handle is taken.
+func (s *communityService) provisionOrResumeCommunityAccount(ctx context.Context, req CreateCommunityRequest) (*CommunityPDSAccount, bool, error) {
+	prepared, err := s.provisioner.PrepareCommunityAccount(req.Name)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to provision PDS account for community: %w", err)
+	}
+
+	pending, err := s.repo.GetProvisioningAccountByHandle(ctx, prepared.Handle)
+	if errors.Is(err, ErrProvisioningAccountNotFound) {
+		// A finished create deletes its provisioning account, so a community
+		// row is then all that holds the name.
+		_, lookupErr := s.repo.GetByHandle(ctx, prepared.Handle)
+		if lookupErr == nil {
+			return nil, false, fmt.Errorf("community %s: %w", prepared.Handle, ErrHandleTaken)
+		}
+		if !errors.Is(lookupErr, ErrCommunityNotFound) {
+			return nil, false, fmt.Errorf("failed to check whether community handle %s is taken: %w", prepared.Handle, lookupErr)
+		}
+		saveErr := s.repo.SaveProvisioningAccount(ctx, &ProvisioningAccount{
+			Handle:       prepared.Handle,
+			Name:         req.Name,
+			CreatedByDID: req.CreatedByDID,
+			HostedByDID:  req.HostedByDID,
+			PDSURL:       prepared.PDSURL,
+			PDSEmail:     prepared.Email,
+			PDSPassword:  prepared.Password,
+		})
+		if errors.Is(saveErr, ErrProvisioningAccountExists) {
+			// A concurrent create for the same name saved first.
+			return nil, false, fmt.Errorf("community %s is being created: %w", prepared.Handle, ErrHandleTaken)
+		}
+		if saveErr != nil {
+			return nil, false, fmt.Errorf("failed to save community provisioning account: %w", saveErr)
+		}
+		return s.createProvisionedAccount(ctx, prepared)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to look up community provisioning account: %w", err)
+	}
+
+	// Never resume an account another creator started: the name is taken.
+	if pending.CreatedByDID != req.CreatedByDID || pending.HostedByDID != req.HostedByDID {
+		return nil, false, fmt.Errorf("community %s is being created by another creator: %w", prepared.Handle, ErrHandleTaken)
+	}
+
+	stored := &PreparedCommunityAccount{
+		Name:     req.Name,
+		Handle:   pending.Handle,
+		Email:    pending.PDSEmail,
+		Password: pending.PDSPassword,
+		PDSURL:   pending.PDSURL,
+	}
+	session, err := createPDSSession(ctx, s.pdsHTTPClient, pending.PDSURL, pending.PDSEmail, pending.PDSPassword)
+	if errors.Is(err, errPDSSessionAuthenticationFailed) {
+		// The interrupted create never made the account: make it now, with the
+		// password already saved.
+		return s.createProvisionedAccount(ctx, stored)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to resume PDS account for community %s: %w", pending.Handle, err)
+	}
+	return s.resumeProvisionedAccount(ctx, stored, session)
+}
+
+// resumeProvisionedAccount returns the account a session opened with saved
+// provisioning credentials, as resumed.
+func (s *communityService) resumeProvisionedAccount(
+	ctx context.Context, stored *PreparedCommunityAccount, session *atproto.ServerCreateSession_Output,
+) (*CommunityPDSAccount, bool, error) {
+	// Never overwrite a finished community. Its credentials are stored, so the
+	// provisioning account is a leftover from a cleanup that failed.
+	existing, err := s.repo.GetByDID(ctx, session.Did)
+	switch {
+	case err == nil && existing.PDSRefreshToken != "":
+		s.deleteProvisioningAccount(ctx, stored.Handle)
+		return nil, false, ErrCommunityAlreadyExists
+	case err != nil && !errors.Is(err, ErrCommunityNotFound):
+		return nil, false, fmt.Errorf("failed to check community %s for stored credentials: %w", session.Did, err)
+	}
+
+	return &CommunityPDSAccount{
+		DID:          session.Did,
+		Handle:       session.Handle,
+		Email:        stored.Email,
+		Password:     stored.Password,
+		AccessToken:  session.AccessJwt,
+		RefreshToken: session.RefreshJwt,
+		PDSURL:       stored.PDSURL,
+	}, true, nil
+}
+
+// createProvisionedAccount calls createAccount with credentials already saved
+// as a provisioning account, and reports whether the account was resumed
+// rather than created.
+//
+// A refusal (a 4xx response) does not prove no account exists: the HTTP client
+// retries a request whose response was lost, and an overlapping create by the
+// same creator may have made the account first, so the PDS refuses because the
+// handle is taken. The saved credentials are tried first; if they open a
+// session the account is resumed. The provisioning account is deleted, freeing
+// the name, only when the refusal is one a retry cannot change (a 4xx other
+// than 408 or 429) AND the PDS rejects the saved credentials as invalid; if the
+// refusal says the handle is taken, another account holds it and the error
+// wraps ErrHandleTaken. Any other failure, including a 408 or 429 while an
+// overlapping create may still be making the account, keeps it.
+func (s *communityService) createProvisionedAccount(ctx context.Context, prepared *PreparedCommunityAccount) (*CommunityPDSAccount, bool, error) {
+	account, err := s.provisioner.CreatePreparedCommunityAccount(ctx, prepared)
+	if err == nil {
+		return account, false, nil
+	}
+	createErr := fmt.Errorf("failed to provision PDS account for community: %w", err)
+	var xrpcErr *xrpc.Error
+	if !errors.As(err, &xrpcErr) || xrpcErr.StatusCode < 400 || xrpcErr.StatusCode >= 500 ||
+		xrpcErr.StatusCode == http.StatusRequestTimeout || xrpcErr.StatusCode == http.StatusTooManyRequests {
+		return nil, false, createErr
+	}
+
+	session, sessionErr := createPDSSession(ctx, s.pdsHTTPClient, prepared.PDSURL, prepared.Email, prepared.Password)
+	if sessionErr == nil {
+		return s.resumeProvisionedAccount(ctx, prepared, session)
+	}
+	if errors.Is(sessionErr, errPDSSessionAuthenticationFailed) {
+		s.deleteProvisioningAccount(ctx, prepared.Handle)
+		if isHandleTakenRefusal(xrpcErr) {
+			return nil, false, fmt.Errorf("%w: %w", ErrHandleTaken, createErr)
+		}
+		return nil, false, createErr
+	}
+	return nil, false, fmt.Errorf("%w (checking for an existing account also failed: %w)", createErr, sessionErr)
+}
+
+// isHandleTakenRefusal reports whether a createAccount refusal says another
+// account already holds the handle. The reference PDS answers 400
+// InvalidRequest "Handle already taken: <handle>"; HandleNotAvailable is the
+// lexicon's name for the same refusal.
+func isHandleTakenRefusal(xrpcErr *xrpc.Error) bool {
+	var body *xrpc.XRPCError
+	if !errors.As(xrpcErr.Wrapped, &body) {
+		return false
+	}
+	return body.ErrStr == "HandleNotAvailable" ||
+		(body.ErrStr == "InvalidRequest" && strings.Contains(strings.ToLower(body.Message), "handle already taken"))
+}
+
+const (
+	// communityPersistTimeout bounds the final save, which runs detached from
+	// the request: once the account and profile exist, a client disconnect must
+	// not abandon storing their credentials.
+	communityPersistTimeout = 15 * time.Second
+)
+
+// communityPersistBackoffs are the waits between attempts of the final save.
+var communityPersistBackoffs = []time.Duration{100 * time.Millisecond, 400 * time.Millisecond}
+
+// persistCreatedCommunity stores a created community with its credentials, then
+// deletes its provisioning account. Transient failures are retried; a refusal
+// that a retry cannot change is returned at once.
+func (s *communityService) persistCreatedCommunity(ctx context.Context, community *Community) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), communityPersistTimeout)
+	defer cancel()
+
+	for attempt := 0; ; attempt++ {
+		err := s.createOrAttachCommunity(ctx, community)
+		if err == nil {
+			break
+		}
+		if !isRetryablePersistError(err) || attempt == len(communityPersistBackoffs) {
+			return err
+		}
+		timer := time.NewTimer(communityPersistBackoffs[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w (retry abandoned: %w)", err, ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	s.deleteProvisioningAccount(ctx, community.Handle)
+	return nil
+}
+
+// createOrAttachCommunity inserts the community row, or, when the firehose
+// consumer has already indexed the profile record into a credential-less row,
+// attaches the credentials to that row.
+func (s *communityService) createOrAttachCommunity(ctx context.Context, community *Community) error {
+	_, err := s.repo.Create(ctx, community)
+	if !errors.Is(err, ErrCommunityAlreadyExists) {
+		return err
+	}
+	attachErr := s.repo.AttachHostedCredentials(ctx, community)
+	if errors.Is(attachErr, ErrCommunityCredentialsConflict) {
+		// An earlier attempt whose commit acknowledgement was lost may already
+		// have stored exactly these credentials.
+		existing, getErr := s.repo.GetByDID(ctx, community.DID)
+		if getErr != nil {
+			return fmt.Errorf("failed to check the stored credentials of community %s: %w", community.DID, getErr)
+		}
+		if existing.HostedByDID == community.HostedByDID && existing.PDSRefreshToken == community.PDSRefreshToken {
+			return nil
+		}
+	}
+	if attachErr != nil {
+		return fmt.Errorf("failed to attach credentials to the indexed community: %w", attachErr)
+	}
+	return nil
+}
+
+// isRetryablePersistError reports whether a failed final save may succeed if
+// attempted again.
+func isRetryablePersistError(err error) bool {
+	return !errors.Is(err, ErrHandleTaken) &&
+		!errors.Is(err, ErrDIDHasAccountActivity) &&
+		!errors.Is(err, ErrCommunityCredentialsConflict) &&
+		!IsValidationError(err)
+}
+
+// deleteProvisioningAccount removes a provisioning account that is no longer
+// needed. A failure only leaves a stale row behind, so it is logged, by handle
+// alone, rather than returned.
+func (s *communityService) deleteProvisioningAccount(ctx context.Context, handle string) {
+	if err := s.repo.DeleteProvisioningAccount(ctx, handle); err != nil {
+		log.Printf("[COMMUNITY_CREATE] failed to delete provisioning account for %s: %v", handle, err)
+	}
 }
 
 // GetCommunity retrieves a community from AppView DB

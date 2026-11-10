@@ -38,6 +38,15 @@ type Repository interface {
 	Update(ctx context.Context, community *Community) (*Community, error)
 	UpdateHandle(ctx context.Context, did, handle string) error
 	Delete(ctx context.Context, did string) error
+
+	// Provisioning accounts hold the generated credentials of a community PDS
+	// account from before createAccount until the community row stores them.
+	SaveProvisioningAccount(ctx context.Context, account *ProvisioningAccount) error
+	GetProvisioningAccountByHandle(ctx context.Context, handle string) (*ProvisioningAccount, error)
+	DeleteProvisioningAccount(ctx context.Context, handle string) error
+	// AttachHostedCredentials stores credentials on an existing credential-less
+	// row hosted by community.HostedByDID.
+	AttachHostedCredentials(ctx context.Context, community *Community) error
 	RebuildProfileBlobReferences(ctx context.Context, did string) error
 
 	// Credential Management (for token refresh)

@@ -44,6 +44,8 @@ func untypedGalleryStoredEmbed(t *testing.T, db *sql.DB, table, uri string) stri
 
 func TestUntypedGalleryBackfill078_StampsTypeAndBackfillsReferences(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
+		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
 		"078 (untyped gallery backfill) must be rolled back first")
 
@@ -161,6 +163,7 @@ func TestUntypedGalleryBackfill078_StampsTypeAndBackfillsReferences(t *testing.T
 	for _, table := range []string{"posts", "comments", "blob_references", "moderation_media_blocks"} {
 		snapshots[table] = nestedBackfillSnapshot(t, db, table, "")
 	}
+	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79))
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78))
 	testkit.MigrateUp(t, db)
 	for table, before := range snapshots {

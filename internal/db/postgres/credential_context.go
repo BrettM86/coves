@@ -17,6 +17,12 @@ func communityPDSRefreshTokenCredentialContext(did string) string {
 	return "communities.pds_refresh_token_encrypted:" + did
 }
 
+// The provisioning row exists before the account has a DID, so it binds to the
+// handle, its primary key.
+func communityProvisioningPasswordCredentialContext(handle string) string {
+	return "community_provisioning_accounts.pds_password_encrypted:" + handle
+}
+
 func aggregatorOAuthAccessTokenCredentialContext(did string) string {
 	return "aggregators.oauth_access_token_encrypted:" + did
 }

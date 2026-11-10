@@ -63,6 +63,8 @@ func TestNotificationMigration053_ActivationSingleton(t *testing.T) {
 func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
+		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
 		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),
@@ -128,6 +130,8 @@ func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 func TestNotificationMigration055_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
+		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
 		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),

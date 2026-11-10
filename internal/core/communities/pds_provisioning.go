@@ -65,29 +65,21 @@ func NewPDSAccountProvisioner(instanceDomain, pdsURL string, opts ...PDSClientOp
 	}
 }
 
-// ProvisionCommunityAccount creates a real PDS account for a community with PDS-managed keys
-//
-// V2.0 Architecture (PDS-Managed Keys):
-// 1. Generates community handle and credentials
-// 2. Calls com.atproto.server.createAccount (PDS generates DID and keys)
-// 3. Returns credentials for storage
-//
-// V2.0 Design Philosophy:
-// - PDS manages ALL cryptographic keys (signing + rotation)
-// - Communities can migrate between Coves-controlled PDSs using standard atProto migration
-// - Simpler, faster, ships immediately
-// - Migration uses com.atproto.server.getServiceAuth + standard migration endpoints
-//
-// Future V2.1 (Optional Portability Enhancement):
-// - Add Coves-controlled rotation key alongside PDS rotation key
-// - Enables migration to non-Coves PDSs
-// - Implement when actual external migration is needed
-//
-// SECURITY: The returned credentials MUST be encrypted before database storage
-func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
-	ctx context.Context,
-	communityName string,
-) (*CommunityPDSAccount, error) {
+// PreparedCommunityAccount is a community PDS account before createAccount:
+// the handle and system email derived from the community name and a freshly
+// generated password. CreateCommunity persists it before creating the account,
+// so the password is known even if the createAccount response is lost.
+type PreparedCommunityAccount struct {
+	Name     string // Community name the handle and email derive from
+	Handle   string // e.g., c-gaming.coves.social
+	Email    string // System email for PDS account management
+	Password string // Cleartext password (MUST be encrypted before database storage)
+	PDSURL   string // PDS the account is created on
+}
+
+// PrepareCommunityAccount generates the handle, system email and password for a
+// community's PDS account without contacting the PDS.
+func (p *PDSAccountProvisioner) PrepareCommunityAccount(communityName string) (*PreparedCommunityAccount, error) {
 	if communityName == "" {
 		return nil, fmt.Errorf("community name is required")
 	}
@@ -109,7 +101,53 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 		return nil, fmt.Errorf("failed to generate password: %w", err)
 	}
 
-	// 4. Create PDS account - let PDS generate DID and all keys
+	return &PreparedCommunityAccount{
+		Name:     communityName,
+		Handle:   handle,
+		Email:    email,
+		Password: password,
+		PDSURL:   p.pdsURL,
+	}, nil
+}
+
+// ProvisionCommunityAccount prepares and creates a community PDS account in one
+// step. CreateCommunity does not use it: it persists the prepared credentials
+// between the two steps.
+func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
+	ctx context.Context,
+	communityName string,
+) (*CommunityPDSAccount, error) {
+	prepared, err := p.PrepareCommunityAccount(communityName)
+	if err != nil {
+		return nil, err
+	}
+	return p.CreatePreparedCommunityAccount(ctx, prepared)
+}
+
+// CreatePreparedCommunityAccount creates a real PDS account for a community with
+// PDS-managed keys, using the prepared handle, email and password.
+//
+// V2.0 Architecture (PDS-Managed Keys):
+// 1. Calls com.atproto.server.createAccount (PDS generates DID and keys)
+// 2. Returns credentials for storage
+//
+// V2.0 Design Philosophy:
+// - PDS manages ALL cryptographic keys (signing + rotation)
+// - Communities can migrate between Coves-controlled PDSs using standard atProto migration
+// - Simpler, faster, ships immediately
+// - Migration uses com.atproto.server.getServiceAuth + standard migration endpoints
+//
+// Future V2.1 (Optional Portability Enhancement):
+// - Add Coves-controlled rotation key alongside PDS rotation key
+// - Enables migration to non-Coves PDSs
+// - Implement when actual external migration is needed
+//
+// SECURITY: The returned credentials MUST be encrypted before database storage
+func (p *PDSAccountProvisioner) CreatePreparedCommunityAccount(
+	ctx context.Context,
+	prepared *PreparedCommunityAccount,
+) (*CommunityPDSAccount, error) {
+	// Create PDS account - let PDS generate DID and all keys
 	// The PDS will:
 	//   1. Generate a signing keypair (stored in PDS, never exported)
 	//   2. Generate rotation keys (stored in PDS)
@@ -121,14 +159,14 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	// this community's generated password and system email. See newPDSHTTPClient.
 	client := &xrpc.Client{
 		Client: p.httpClient,
-		Host:   p.pdsURL,
+		Host:   prepared.PDSURL,
 	}
 
-	emailStr := email
-	passwordStr := password
+	emailStr := prepared.Email
+	passwordStr := prepared.Password
 
 	input := &atproto.ServerCreateAccount_Input{
-		Handle:   handle,
+		Handle:   prepared.Handle,
 		Email:    &emailStr,
 		Password: &passwordStr,
 		// No Did parameter - let PDS generate it
@@ -137,10 +175,10 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 
 	output, err := atproto.ServerCreateAccount(ctx, client, input)
 	if err != nil {
-		return nil, fmt.Errorf("PDS account creation failed for community %s: %w", communityName, err)
+		return nil, fmt.Errorf("PDS account creation failed for community %s: %w", prepared.Name, err)
 	}
 
-	// 5. Return account credentials with cleartext password
+	// Return account credentials with cleartext password
 	// CRITICAL: The password MUST be encrypted (not hashed) before database storage
 	// We need to recover the plaintext password to call com.atproto.server.createSession
 	// when access/refresh tokens expire (90-day window on refresh tokens)
@@ -148,11 +186,11 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	return &CommunityPDSAccount{
 		DID:            output.Did,        // The community's DID (PDS-generated)
 		Handle:         output.Handle,     // e.g., gaming.community.coves.social
-		Email:          email,             // community-gaming@community.coves.social
-		Password:       password,          // Cleartext - will be encrypted by repository
+		Email:          prepared.Email,    // community-gaming@community.coves.social
+		Password:       prepared.Password, // Cleartext - will be encrypted by repository
 		AccessToken:    output.AccessJwt,  // JWT for making API calls
 		RefreshToken:   output.RefreshJwt, // For refreshing sessions
-		PDSURL:         p.pdsURL,          // PDS hosting this community
+		PDSURL:         prepared.PDSURL,   // PDS hosting this community
 		RotationKeyPEM: "",                // Empty - PDS manages keys (V2.1: add Coves rotation key)
 		SigningKeyPEM:  "",                // Empty - PDS manages keys
 	}, nil

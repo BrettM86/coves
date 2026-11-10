@@ -17,6 +17,16 @@ var (
 	// ErrCommunityAlreadyExists is returned when trying to create a community with duplicate DID
 	ErrCommunityAlreadyExists = errors.New("community already exists")
 
+	// ErrProvisioningAccountNotFound is returned when no provisioning account holds the handle
+	ErrProvisioningAccountNotFound = errors.New("community provisioning account not found")
+
+	// ErrProvisioningAccountExists is returned when a provisioning account already holds the handle
+	ErrProvisioningAccountExists = errors.New("community provisioning account already exists")
+
+	// ErrCommunityCredentialsConflict is returned when credentials cannot be attached to an
+	// existing community row: it already has credentials or another instance hosts it
+	ErrCommunityCredentialsConflict = errors.New("community credentials cannot be attached")
+
 	// ErrDIDHasAccountActivity is returned when creating a community whose DID
 	// is already an account here: it has a users row or authored a post,
 	// comment or vote. Indexing it as a community too would make its

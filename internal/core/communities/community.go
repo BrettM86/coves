@@ -464,3 +464,17 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 
 	return view
 }
+
+// ProvisioningAccount is a community PDS account whose generated credentials
+// are persisted before createAccount, so a creation that fails part-way can
+// resume with the same account.
+type ProvisioningAccount struct {
+	CreatedAt    time.Time
+	Handle       string
+	Name         string
+	CreatedByDID string
+	HostedByDID  string
+	PDSURL       string
+	PDSEmail     string
+	PDSPassword  string
+}

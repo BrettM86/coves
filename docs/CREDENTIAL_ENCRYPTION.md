@@ -8,7 +8,7 @@ This replaced the pgcrypto scheme from migrations 006, 007 and 025, which kept i
 
 The cipher is `internal/crypto/credentialcipher`. A sealed value is one version byte (`credentialcipher.Version`, `0x01`), a 12-byte random nonce, the ciphertext and the 16-byte GCM tag. pgcrypto output starts with `0xC3`, so the two formats never collide on the first byte.
 
-Every value is bound to an authenticated context string `<table>.<column>:<did>` (`internal/db/postgres/credential_context.go`), together with the version byte. A ciphertext copied to another row or column fails to open. Because the context is part of the authenticated data, renaming a credential table or column requires a re-encryption pass.
+Every value is bound to an authenticated context string `<table>.<column>:<did>` (`internal/db/postgres/credential_context.go`), together with the version byte. `community_provisioning_accounts.pds_password_encrypted` binds the handle instead, because that row is written before the account has a DID. A ciphertext copied to another row or column fails to open. Because the context is part of the authenticated data, renaming a credential table or column requires a re-encryption pass.
 
 Repositories take the cipher as a constructor argument, encrypt before the write and decrypt after the scan. A value that fails to open makes the read return an error wrapping `credentialcipher.ErrInvalidCiphertext` and naming the DID; nothing is skipped or returned empty. An unknown version byte also wraps `ErrUnsupportedVersion`. A `0xC3` first byte is reported as pgcrypto legacy ciphertext, meaning the startup conversion has not run on that database.
 

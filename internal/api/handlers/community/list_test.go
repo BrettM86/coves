@@ -707,3 +707,17 @@ func TestListHandler_ResponseEnvelope(t *testing.T) {
 		})
 	}
 }
+
+func (*listTestRepo) SaveProvisioningAccount(context.Context, *communities.ProvisioningAccount) error {
+	return nil
+}
+
+func (*listTestRepo) GetProvisioningAccountByHandle(context.Context, string) (*communities.ProvisioningAccount, error) {
+	return nil, communities.ErrProvisioningAccountNotFound
+}
+
+func (*listTestRepo) DeleteProvisioningAccount(context.Context, string) error { return nil }
+
+func (*listTestRepo) AttachHostedCredentials(context.Context, *communities.Community) error {
+	return communities.ErrCommunityNotFound
+}

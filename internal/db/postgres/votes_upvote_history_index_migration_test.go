@@ -17,6 +17,8 @@ func TestVotesUpvoteHistoryIndexMigration054_DownAndUpRoundTrip(t *testing.T) {
 	db := testkit.DB(t)
 
 	assertVotesUpvoteHistoryIndex(t, db, "after 054 Up")
+	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
+		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),
 		"078 (untyped gallery $type stamp) must be rolled back first")
 	require.EqualValues(t, 77, testkit.MigrateDownOne(t, db, 77),

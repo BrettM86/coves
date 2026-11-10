@@ -437,3 +437,17 @@ var errRepositoryUnavailable = errors.New("connection pool exhausted")
 // Without it, a method added to Repository would make the fake silently unused
 // rather than making this file fail to build.
 var _ communities.Repository = (*fakeCommunityRepo)(nil)
+
+func (*fakeCommunityRepo) SaveProvisioningAccount(context.Context, *communities.ProvisioningAccount) error {
+	return nil
+}
+
+func (*fakeCommunityRepo) GetProvisioningAccountByHandle(context.Context, string) (*communities.ProvisioningAccount, error) {
+	return nil, communities.ErrProvisioningAccountNotFound
+}
+
+func (*fakeCommunityRepo) DeleteProvisioningAccount(context.Context, string) error { return nil }
+
+func (*fakeCommunityRepo) AttachHostedCredentials(context.Context, *communities.Community) error {
+	return communities.ErrCommunityNotFound
+}

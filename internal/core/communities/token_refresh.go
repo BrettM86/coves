@@ -120,6 +120,28 @@ func reauthenticateWithPassword(
 		return "", "", fmt.Errorf("password is required")
 	}
 
+	session, err := createPDSSession(ctx, httpClient, pdsURL, email, password)
+	if err != nil {
+		return "", "", err
+	}
+	return session.AccessJwt, session.RefreshJwt, nil
+}
+
+// errPDSSessionAuthenticationFailed marks a createSession the PDS refused with
+// 401 AuthenticationRequired: no account matches the identifier and password.
+// Any other failure, including a 401 AccountTakedown for an account that
+// exists, says nothing about whether the account exists.
+var errPDSSessionAuthenticationFailed = errors.New("PDS refused the identifier and password")
+
+// createPDSSession opens a session with com.atproto.server.createSession and
+// returns the account DID and tokens. A 401 AuthenticationRequired from the PDS
+// wraps errPDSSessionAuthenticationFailed.
+//
+// httpClient is REQUIRED and is the SSRF guard: the request body carries the
+// CLEARTEXT password. See reauthenticateWithPassword.
+func createPDSSession(
+	ctx context.Context, httpClient *http.Client, pdsURL, identifier, password string,
+) (*atproto.ServerCreateSession_Output, error) {
 	// Create unauthenticated XRPC client
 	client := &xrpc.Client{
 		Client: httpClient,
@@ -129,20 +151,27 @@ func reauthenticateWithPassword(
 	// Prepare createSession input
 	// The identifier can be either email or handle
 	input := &atproto.ServerCreateSession_Input{
-		Identifier: email,
+		Identifier: identifier,
 		Password:   password,
 	}
 
 	// Call com.atproto.server.createSession
 	output, err := atproto.ServerCreateSession(ctx, client, input)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create session: %w", err)
+		var xrpcErr *xrpc.Error
+		var xrpcBody *xrpc.XRPCError
+		if !errors.Is(err, covesoauth.ErrBlockedAddress) && errors.As(err, &xrpcErr) &&
+			xrpcErr.StatusCode == http.StatusUnauthorized &&
+			errors.As(xrpcErr.Wrapped, &xrpcBody) && xrpcBody.ErrStr == "AuthenticationRequired" {
+			return nil, fmt.Errorf("failed to create session: %w: %w", errPDSSessionAuthenticationFailed, err)
+		}
+		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
 	// Validate response
-	if output.AccessJwt == "" || output.RefreshJwt == "" {
-		return "", "", fmt.Errorf("createSession response missing tokens")
+	if output.Did == "" || output.AccessJwt == "" || output.RefreshJwt == "" {
+		return nil, fmt.Errorf("createSession response missing DID or tokens")
 	}
 
-	return output.AccessJwt, output.RefreshJwt, nil
+	return output, nil
 }
