@@ -84,6 +84,33 @@ announce_host() {
 announce_host "the AppView's PDS" "${PDS_URL#http://}"
 announce_host "the federated PDS" "${PDS2_URL#http://}"
 
+# BigSky caps each host at 50 events/s, 2,500/hour and 20,000/day, and when a
+# cap is hit it holds the host's events silently: every consumer stays
+# connected and nothing arrives. One make ci run writes about 2,500 events to
+# the AppView's PDS, so the suite stalled mid-e2e once it grew past the hourly
+# cap (2026-11-09; /admin/pds/list showed EventsSeenSinceStartup=2500). Raise
+# the caps far above anything a run produces. The host row exists once
+# requestCrawl has returned, so this has to come after the announcements.
+raise_host_limits() {
+    local hostport=$1 code
+    echo "▶ Raising the relay's event limits for $hostport..."
+    code=$(
+        curl -sS -o /tmp/changeLimits.out -w '%{http_code}' \
+            -X POST "$RELAY_URL/admin/pds/changeLimits" \
+            -H "Authorization: Bearer $RELAY_ADMIN_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "{\"host\":\"$hostport\",\"per_second\":1000,\"per_hour\":1000000,\"per_day\":10000000,\"crawl_rate\":50,\"repo_limit\":10000}"
+    )
+    if [[ $code != 200 ]]; then
+        echo "  ✗ relay refused the limit change for $hostport (HTTP $code): $(cat /tmp/changeLimits.out)" >&2
+        exit 1
+    fi
+    echo "  ✓ event limits raised for $hostport"
+}
+
+raise_host_limits "${PDS_URL#http://}"
+raise_host_limits "${PDS2_URL#http://}"
+
 # ---------------------------------------------------------------------------
 # PDS accounts
 # ---------------------------------------------------------------------------
