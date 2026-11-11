@@ -48,6 +48,10 @@ type PDSAccountProvisioner struct {
 	// so a client assembled per call would be the same code with a per-call chance
 	// of being assembled wrongly.
 	httpClient *http.Client
+
+	// pdsAdminPassword, when set, mints a single-use invite before each
+	// createAccount. Never logged.
+	pdsAdminPassword string
 }
 
 // NewPDSAccountProvisioner creates a new provisioner for V2.0 (PDS-managed keys)
@@ -58,10 +62,15 @@ type PDSAccountProvisioner struct {
 // PrivateHostOptions(cfg.IsDevEnv); tests that drive a PDS on loopback pass
 // PrivateHostOptions(true), because loopback is exactly what the guard refuses.
 func NewPDSAccountProvisioner(instanceDomain, pdsURL string, opts ...PDSClientOption) *PDSAccountProvisioner {
+	cfg := &pdsClientConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return &PDSAccountProvisioner{
-		instanceDomain: instanceDomain,
-		pdsURL:         pdsURL,
-		httpClient:     newPDSHTTPClient(opts...),
+		instanceDomain:   instanceDomain,
+		pdsURL:           pdsURL,
+		httpClient:       newPDSHTTPClient(opts...),
+		pdsAdminPassword: cfg.pdsAdminPassword,
 	}
 }
 
@@ -173,6 +182,22 @@ func (p *PDSAccountProvisioner) CreatePreparedCommunityAccount(
 		// No RecoveryKey - PDS manages rotation keys
 	}
 
+	// An invite-required PDS rejects createAccount without a code, so mint a
+	// single-use one with the admin password when it is configured.
+	if p.pdsAdminPassword != "" {
+		// The admin password only goes to the configured PDS. A persisted
+		// resume can carry a different URL, and an invite minted on one PDS
+		// cannot be redeemed on another.
+		if strings.TrimSuffix(prepared.PDSURL, "/") != strings.TrimSuffix(p.pdsURL, "/") {
+			return nil, fmt.Errorf("community %s targets PDS %s, not the configured PDS; refusing to send the admin password", prepared.Name, prepared.PDSURL)
+		}
+		inviteCode, err := p.mintInviteCode(ctx, p.pdsURL)
+		if err != nil {
+			return nil, fmt.Errorf("invite code mint failed for community %s: %w", prepared.Name, err)
+		}
+		input.InviteCode = &inviteCode
+	}
+
 	output, err := atproto.ServerCreateAccount(ctx, client, input)
 	if err != nil {
 		return nil, fmt.Errorf("PDS account creation failed for community %s: %w", prepared.Name, err)
@@ -194,6 +219,27 @@ func (p *PDSAccountProvisioner) CreatePreparedCommunityAccount(
 		RotationKeyPEM: "",                // Empty - PDS manages keys (V2.1: add Coves rotation key)
 		SigningKeyPEM:  "",                // Empty - PDS manages keys
 	}, nil
+}
+
+// mintInviteCode calls com.atproto.server.createInviteCode with useCount 1.
+// indigo sends AdminToken as basic auth admin:<password> for this method. The
+// client is the guarded p.httpClient for the reason given in
+// CreatePreparedCommunityAccount.
+func (p *PDSAccountProvisioner) mintInviteCode(ctx context.Context, pdsURL string) (string, error) {
+	adminPassword := p.pdsAdminPassword
+	client := &xrpc.Client{
+		Client:     p.httpClient,
+		Host:       pdsURL,
+		AdminToken: &adminPassword,
+	}
+	output, err := atproto.ServerCreateInviteCode(ctx, client, &atproto.ServerCreateInviteCode_Input{UseCount: 1})
+	if err != nil {
+		return "", err
+	}
+	if output.Code == "" {
+		return "", fmt.Errorf("PDS returned an empty invite code")
+	}
+	return output.Code, nil
 }
 
 // generateSecurePassword creates a cryptographically secure random password

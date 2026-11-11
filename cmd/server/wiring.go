@@ -532,7 +532,8 @@ func (a *application) buildServices(ctx context.Context) error {
 	// the guard would otherwise refuse.
 	communityPDSOptions := communities.PrivateHostOptions(a.allowPrivateHosts())
 	provisioner := communities.NewPDSAccountProvisioner(
-		a.cfg.Instance.Domain, a.cfg.PDS.URL, communityPDSOptions...,
+		a.cfg.Instance.Domain, a.cfg.PDS.URL,
+		append(communityPDSOptions, communities.WithPDSAdminPassword(a.cfg.PDS.AdminPassword))...,
 	)
 	a.communityService = communities.NewCommunityService(
 		a.communityRepo,

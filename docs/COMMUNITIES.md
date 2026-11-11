@@ -38,7 +38,7 @@ A `social.coves.community.block` record in the user's repo hides that community 
 
 ## Creation
 
-`COMMUNITY_CREATORS`, a comma-separated list of DIDs, restricts `community.create` to those accounts; anyone else gets 403 `CommunityCreationRestricted`. When it is empty any signed-in user can create a community. The handler rejects a client-supplied `createdByDid` or `hostedByDid`; the service derives both from the session and the instance configuration.
+`COMMUNITY_CREATORS`, a comma-separated list of DIDs, restricts `community.create` to those accounts; anyone else gets 403 `CommunityCreationRestricted`. When it is empty any signed-in user can create a community. The handler rejects a client-supplied `createdByDid` or `hostedByDid`; the service derives both from the session and the instance configuration. When `PDS_ADMIN_PASSWORD` is set, the AppView mints a single-use invite before creating the community's PDS account, so creation works on an invite-required PDS.
 
 ## Community moderators
 

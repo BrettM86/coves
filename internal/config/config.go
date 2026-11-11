@@ -374,7 +374,9 @@ type PDSConfig struct {
 	InstancePassword string
 
 	// AdminPassword mints single-use PDS invite codes after a successful
-	// captcha. Empty disables the signup-token endpoint.
+	// captcha, and mints the invite for each community PDS account. Empty
+	// disables the signup-token endpoint and creates community accounts
+	// without an invite.
 	AdminPassword string
 }
 

@@ -206,7 +206,8 @@ func main() {
 	// substitute an unguarded util.RobustHTTPClient().
 	communityPDSOptions := communities.PrivateHostOptions(allowPrivateHosts(cfg))
 	provisioner := communities.NewPDSAccountProvisioner(
-		cfg.Instance.Domain, cfg.PDS.URL, communityPDSOptions...)
+		cfg.Instance.Domain, cfg.PDS.URL,
+		append(communityPDSOptions, communities.WithPDSAdminPassword(cfg.PDS.AdminPassword))...)
 	communityService := communities.NewCommunityService(
 		postgresRepo.NewCommunityRepository(db, credentialCipher),
 		cfg.PDS.URL,

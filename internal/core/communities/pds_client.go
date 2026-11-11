@@ -35,6 +35,10 @@ type pdsClientConfig struct {
 	// seam these tests need must not be reachable from any non-test package.
 	// pds/factory.go's field of the same name is the shape this copies.
 	transportOptions []covesoauth.Option
+
+	// pdsAdminPassword mints community invite codes. Only
+	// NewPDSAccountProvisioner reads it.
+	pdsAdminPassword string
 }
 
 // PDSClientOption configures the HTTP client this package's xrpc calls go
@@ -52,6 +56,13 @@ type PDSClientOption func(*pdsClientConfig)
 // exactly the address class the guard refuses.
 func WithPrivateHostsAllowed() PDSClientOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
 	return func(c *pdsClientConfig) { c.allowPrivateHosts = true }
+}
+
+// WithPDSAdminPassword sets the PDS admin password used to mint community invite
+// codes. Only NewPDSAccountProvisioner uses it; empty leaves createAccount
+// without an invite, which suits a PDS with invites off.
+func WithPDSAdminPassword(password string) PDSClientOption {
+	return func(c *pdsClientConfig) { c.pdsAdminPassword = password }
 }
 
 // withTransportOptions is the test seam, unexported so production cannot reach
