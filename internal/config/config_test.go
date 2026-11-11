@@ -776,12 +776,105 @@ func TestAppDSN(t *testing.T) {
 			},
 		},
 		{
-			name:    "zero timeout leaves the DSN untouched",
+			name:    "zero timeout adds only jit=off",
 			dsn:     "postgres://u:p@db:5432/coves",
 			timeout: 0,
 			check: func(t *testing.T, got string) {
-				if got != "postgres://u:p@db:5432/coves" {
-					t.Errorf("result = %q, want the DSN unchanged", got)
+				parsed, err := url.Parse(got)
+				if err != nil {
+					t.Fatalf("result is not a valid URL: %v", err)
+				}
+				if parsed.Host != "db:5432" || parsed.Path != "/coves" || parsed.User.String() != "u:p" {
+					t.Errorf("result = %q, want the same server, database and credentials", got)
+				}
+				if v := parsed.Query().Get("jit"); v != "off" {
+					t.Errorf("jit = %q, want %q", v, "off")
+				}
+				if parsed.Query().Has("statement_timeout") {
+					t.Errorf("result = %q, a zero timeout must not add statement_timeout", got)
+				}
+			},
+		},
+		{
+			name:    "url form gains jit=off alongside statement_timeout",
+			dsn:     "postgres://u:p@db:5432/coves?sslmode=disable",
+			timeout: 30 * time.Second,
+			check: func(t *testing.T, got string) {
+				parsed, err := url.Parse(got)
+				if err != nil {
+					t.Fatalf("result is not a valid URL: %v", err)
+				}
+				if v := parsed.Query().Get("jit"); v != "off" {
+					t.Errorf("jit = %q, want %q", v, "off")
+				}
+				if v := parsed.Query().Get("statement_timeout"); v != "30000" {
+					t.Errorf("statement_timeout = %q, want %q", v, "30000")
+				}
+				if v := parsed.Query().Get("sslmode"); v != "disable" {
+					t.Errorf("sslmode = %q, existing parameters must be preserved", v)
+				}
+			},
+		},
+		{
+			name:    "url form with zero timeout gains jit=off",
+			dsn:     "postgres://u:p@db:5432/coves?sslmode=disable",
+			timeout: 0,
+			check: func(t *testing.T, got string) {
+				parsed, err := url.Parse(got)
+				if err != nil {
+					t.Fatalf("result is not a valid URL: %v", err)
+				}
+				if v := parsed.Query().Get("jit"); v != "off" {
+					t.Errorf("jit = %q, want %q", v, "off")
+				}
+				if v := parsed.Query().Get("sslmode"); v != "disable" {
+					t.Errorf("sslmode = %q, existing parameters must be preserved", v)
+				}
+			},
+		},
+		{
+			name:    "url form with an explicit jit is left alone",
+			dsn:     "postgres://u:p@db:5432/coves?jit=on",
+			timeout: 30 * time.Second,
+			check: func(t *testing.T, got string) {
+				parsed, err := url.Parse(got)
+				if err != nil {
+					t.Fatalf("result is not a valid URL: %v", err)
+				}
+				if v := parsed.Query()["jit"]; len(v) != 1 || v[0] != "on" {
+					t.Errorf("jit = %q, want the operator's single %q", v, "on")
+				}
+				if v := parsed.Query().Get("statement_timeout"); v != "30000" {
+					t.Errorf("statement_timeout = %q, want %q", v, "30000")
+				}
+			},
+		},
+		{
+			name:    "keyword form gains jit=off",
+			dsn:     "host=db user=u dbname=coves sslmode=disable",
+			timeout: 15 * time.Second,
+			check: func(t *testing.T, got string) {
+				if !strings.Contains(got, "jit=off") {
+					t.Errorf("result = %q, want jit=off", got)
+				}
+				if !strings.Contains(got, "host=db") {
+					t.Errorf("result = %q, existing keywords must be preserved", got)
+				}
+			},
+		},
+		{
+			name:    "keyword form with an explicit jit is left alone",
+			dsn:     "host=db jit=on",
+			timeout: 15 * time.Second,
+			check: func(t *testing.T, got string) {
+				if strings.Contains(got, "jit=off") {
+					t.Errorf("result = %q, want the operator's jit=on preserved", got)
+				}
+				if !strings.Contains(got, "jit=on") {
+					t.Errorf("result = %q, want jit=on kept", got)
+				}
+				if !strings.Contains(got, "statement_timeout=15000") {
+					t.Errorf("result = %q, want statement_timeout=15000", got)
 				}
 			},
 		},

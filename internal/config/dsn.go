@@ -14,8 +14,13 @@ import (
 // to every connection the pool opens without a per-query round trip.
 const statementTimeoutParam = "statement_timeout"
 
+// jitParam is the PostgreSQL runtime parameter that enables just-in-time
+// compilation of query expressions. It is forwarded in the startup packet the
+// same way as statement_timeout.
+const jitParam = "jit"
+
 // AppDSN returns the connection string used by the application pool, with
-// statement_timeout applied.
+// statement_timeout applied and JIT compilation turned off.
 //
 // Enforcing the bound server-side rather than with a per-query
 // context.WithTimeout is deliberate, though not because context cancellation
@@ -26,14 +31,26 @@ const statementTimeoutParam = "statement_timeout"
 // is enforced by the server itself, needs no extra round trip, and applies to
 // every query without each call site remembering a deadline.
 //
-// An explicit statement_timeout already present in the URL is left alone, so
-// an operator can override it per deployment.
+// JIT is turned off because the AppView's workload is short OLTP queries, for
+// which compilation never pays for itself. The planner's cost estimates for
+// the heavier reads (the notification list in particular) cross PostgreSQL's
+// JIT thresholds, and compilation then cost 0.3 s in development and 20 s in
+// production against a query that executes in milliseconds. jit=off is added
+// whatever StatementTimeout is.
+//
+// An explicit statement_timeout or jit parameter already present in the URL
+// is left alone, so an operator can override either per deployment. A value
+// set through options=-c is not detected and is overridden.
 func (d DatabaseConfig) AppDSN() (string, error) {
 	if err := requireURL(d.URL); err != nil {
 		return "", err
 	}
+	dsn, err := withConnParam(d.URL, jitParam, "off")
+	if err != nil {
+		return "", err
+	}
 	if d.StatementTimeout <= 0 {
-		return d.URL, nil
+		return dsn, nil
 	}
 	// PostgreSQL reads a bare integer as milliseconds. Clamp up rather than
 	// down: statement_timeout=0 means "no limit", so rounding a sub-millisecond
@@ -42,7 +59,7 @@ func (d DatabaseConfig) AppDSN() (string, error) {
 	if milliseconds < 1 {
 		milliseconds = 1
 	}
-	return withConnParam(d.URL, statementTimeoutParam, strconv.FormatInt(milliseconds, 10))
+	return withConnParam(dsn, statementTimeoutParam, strconv.FormatInt(milliseconds, 10))
 }
 
 // MigrationDSN returns the connection string used for schema migrations.
@@ -76,7 +93,7 @@ func requireURL(dsn string) error {
 // Both accepted forms are handled: the URL form ("postgres://...") that this
 // project uses everywhere, and the keyword/value form ("host=... user=...")
 // that libpq also accepts, so an operator switching styles does not silently
-// lose the timeout.
+// lose the parameter.
 func withConnParam(dsn, key, value string) (string, error) {
 	trimmed := strings.TrimSpace(dsn)
 	if err := requireURL(trimmed); err != nil {
