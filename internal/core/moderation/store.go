@@ -281,6 +281,22 @@ type Transaction interface {
 	// calls it so each already-recorded owner is purged again exactly once per
 	// activation.
 	RependCDNPurgeTargets(ctx context.Context, cids []string) ([]imageproxy.BlockedBlob, error)
+	// IsHostedCommunity reports whether this AppView holds the community's PDS
+	// credentials (a communities row with a PDS refresh token). It never
+	// consults hosted_by_did.
+	IsHostedCommunity(ctx context.Context, communityDID string) (bool, error)
+	// RequireCommunityRecordRemoval makes the row for (write.CommunityDID,
+	// write.SubjectURI) desire a removal owned by write.RemovalActionID,
+	// inserting it or taking it over, bumping its generation and making it
+	// pending and due now. What the row records about the repo (every
+	// attempt progress field CommunityRecordWriteStore persists) is kept, and
+	// so is the claim.
+	RequireCommunityRecordRemoval(ctx context.Context, write CommunityRecordWrite) error
+	// RequestCommunityRecordRestore makes the row desire a restore, pinning
+	// acceptanceCID (empty for a comment), only when the row's
+	// RemovalActionID is removalActionID; it bumps the generation and makes
+	// the row pending and due now. It reports whether it changed a row.
+	RequestCommunityRecordRestore(ctx context.Context, communityDID, subjectURI, removalActionID, acceptanceCID string) (bool, error)
 }
 
 // MediaPurger removes cached bytes of newly blocked blobs.

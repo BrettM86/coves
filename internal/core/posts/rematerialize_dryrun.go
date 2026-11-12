@@ -544,6 +544,12 @@ func (r *dryRunCommunityRepo) PutRecordWithCommit(_ context.Context, collection,
 	return &pds.RecordCommit{URI: rec.URI, CID: rec.CID, CommitRev: "dryrun"}, nil
 }
 
+// PutRecordGuardedByCommit is PutRecordWithCommit: the overlay has no commits
+// to guard against.
+func (r *dryRunCommunityRepo) PutRecordGuardedByCommit(ctx context.Context, collection, rkey string, record any, swapRecord, _ string) (*pds.RecordCommit, error) {
+	return r.PutRecordWithCommit(ctx, collection, rkey, record, swapRecord)
+}
+
 func (r *dryRunCommunityRepo) ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error) {
 	return nil, fmt.Errorf("dry run: the re-materialization tool must never batch community writes")
 }

@@ -40,6 +40,7 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 	}
 	fingerprint := mutationFingerprint(ActionRestore, request.ActionID, reviewedURI, reviewedCID, request.ExpectedVersion, request.Reason, "", request.PrivateNote)
 	var result *MutationResult
+	var recordWrite *CommunityRecordSubject
 	var ruleError error
 	err := s.store.InTransaction(ctx, func(ctx context.Context, tx Transaction) error {
 		fail := func(err error) error {
@@ -166,6 +167,10 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if err != nil {
 			return unavailable(err)
 		}
+		recordWrite, err = requestCommunityRecordRestore(ctx, tx, removal, current)
+		if err != nil {
+			return unavailable(err)
+		}
 		state, err := newSubjectState(removal.SubjectURI, version+1, recordState, current, nil, activeLabels, s.config.InstanceDID)
 		if err != nil {
 			return err
@@ -181,6 +186,9 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 			return nil, ruleError
 		}
 		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
+	}
+	if s.config.CommunityRecordWrites != nil && recordWrite != nil {
+		s.config.CommunityRecordWrites.WriteAfterCommit(ctx, *recordWrite)
 	}
 	return result, nil
 }

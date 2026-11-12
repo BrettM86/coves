@@ -46,6 +46,9 @@ type inMemoryModerationState struct {
 	mediaBlocks     map[moderation.MediaBlock]bool
 	cdnPurgeTargets []imageproxy.BlockedBlob
 	nextActionID    int
+	// communityRecordWrites are the outbox rows, one per subject in a hosted
+	// community. They roll back with the transaction that wrote them.
+	communityRecordWrites map[moderation.CommunityRecordSubject]moderation.CommunityRecordWrite
 }
 
 func (state inMemoryModerationState) copy() inMemoryModerationState {
@@ -60,6 +63,11 @@ func (state inMemoryModerationState) copy() inMemoryModerationState {
 		mediaBlocks:     make(map[moderation.MediaBlock]bool, len(state.mediaBlocks)),
 		cdnPurgeTargets: append([]imageproxy.BlockedBlob(nil), state.cdnPurgeTargets...),
 		nextActionID:    state.nextActionID,
+		communityRecordWrites: make(map[moderation.CommunityRecordSubject]moderation.CommunityRecordWrite,
+			len(state.communityRecordWrites)),
+	}
+	for key, write := range state.communityRecordWrites {
+		working.communityRecordWrites[key] = copyCommunityRecordWrite(write)
 	}
 	for key, comment := range state.indexedComments {
 		comment.ImageCIDs = append([]string(nil), comment.ImageCIDs...)
@@ -110,6 +118,21 @@ type inMemoryModerationStore struct {
 	// a DID with no entry has no account activity and no community row.
 	accountSubjectFacts     map[string]moderation.AccountSubjectFacts
 	failAccountSubjectFacts error
+	// failSaveIdempotencyRecord fails the last write of a mutation, rolling
+	// back everything the transaction wrote before it.
+	failSaveIdempotencyRecord error
+	// hostedCommunities are the community DIDs whose PDS credentials this
+	// AppView holds.
+	hostedCommunities map[string]bool
+	// outboxNow is the clock the community record write rows are scheduled
+	// by; nil uses now.
+	outboxNow func() time.Time
+	// communityRecordLeases holds each claimed row's lease expiry.
+	communityRecordLeases    map[moderation.CommunityRecordSubject]time.Time
+	nextCommunityRecordClaim int64
+	// failCommunityRecordOutcome fails the next Complete or Reschedule of a
+	// subject's row once, before anything is persisted.
+	failCommunityRecordOutcome map[moderation.CommunityRecordSubject]error
 }
 
 func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
@@ -124,7 +147,11 @@ func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
 			labelDecisions:  make(map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision),
 			idempotency:     make(map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord),
 			mediaBlocks:     make(map[moderation.MediaBlock]bool),
+
+			communityRecordWrites: make(map[moderation.CommunityRecordSubject]moderation.CommunityRecordWrite),
 		},
+		hostedCommunities:     make(map[string]bool),
+		communityRecordLeases: make(map[moderation.CommunityRecordSubject]time.Time),
 	}
 }
 
@@ -221,6 +248,9 @@ func (transaction *inMemoryModerationTransaction) CountLiveIdempotencyKeys(_ con
 
 func (transaction *inMemoryModerationTransaction) SaveIdempotencyRecord(_ context.Context, record moderation.IdempotencyRecord) error {
 	transaction.store.writeCalls = append(transaction.store.writeCalls, "SaveIdempotencyRecord")
+	if transaction.store.failSaveIdempotencyRecord != nil {
+		return transaction.store.failSaveIdempotencyRecord
+	}
 	key := inMemoryModerationIdempotencyKey{record.ActorDID, record.AuthorityDID, record.Key}
 	transaction.state.idempotency[key] = record
 	return nil
@@ -421,7 +451,275 @@ func (transaction *inMemoryModerationTransaction) DeactivateMediaBlocks(_ contex
 
 func (*inMemoryModerationTransaction) InsertLabel(context.Context, labels.Issue) error { return nil }
 
+// ---------------------------------------------------------------------------
+// Community record writes: the outbox rows, in the transaction and for the
+// queue. The semantics are the moderation.Transaction and
+// moderation.CommunityRecordWriteStore contracts.
+// ---------------------------------------------------------------------------
+
+func copyCommunityRecordWrite(write moderation.CommunityRecordWrite) moderation.CommunityRecordWrite {
+	if write.LastWriteStartedAt != nil {
+		startedAt := *write.LastWriteStartedAt
+		write.LastWriteStartedAt = &startedAt
+	}
+	return write
+}
+
+func (store *inMemoryModerationStore) outboxClock() time.Time {
+	if store.outboxNow != nil {
+		return store.outboxNow()
+	}
+	return store.now
+}
+
+// repend makes a row pending and due now under a new generation.
+func repend(write *moderation.CommunityRecordWrite, now time.Time) {
+	write.Generation++
+	write.Completed = false
+	write.NextAttemptAt = now
+	write.Attempts = 0
+	write.LastFailureCode = ""
+}
+
+func requireCommunityRecordRemoval(state *inMemoryModerationState, write moderation.CommunityRecordWrite, now time.Time) {
+	key := moderation.CommunityRecordSubject{CommunityDID: write.CommunityDID, SubjectURI: write.SubjectURI}
+	existing, exists := state.communityRecordWrites[key]
+	var next moderation.CommunityRecordWrite
+	if exists {
+		// What the row knows about the repo (every attempt progress field)
+		// survives a new owning action, and so do its generation and claim.
+		next = copyCommunityRecordWrite(existing)
+	}
+	next.CommunityDID, next.SubjectURI = write.CommunityDID, write.SubjectURI
+	next.SubjectCollection, next.SubjectCID = write.SubjectCollection, write.SubjectCID
+	next.RemovalActionID, next.Code, next.RemovalCreatedAt = write.RemovalActionID, write.Code, write.RemovalCreatedAt
+	next.Desired = moderation.CommunityRecordRemoved
+	next.RestoreAcceptanceCID = ""
+	repend(&next, now)
+	state.communityRecordWrites[key] = next
+}
+
+func requestCommunityRecordRestore(state *inMemoryModerationState, communityDID, subjectURI, removalActionID, acceptanceCID string, now time.Time) bool {
+	key := moderation.CommunityRecordSubject{CommunityDID: communityDID, SubjectURI: subjectURI}
+	write, exists := state.communityRecordWrites[key]
+	if !exists || write.RemovalActionID != removalActionID {
+		return false
+	}
+	write.Desired = moderation.CommunityRecordRestored
+	write.RestoreAcceptanceCID = acceptanceCID
+	repend(&write, now)
+	state.communityRecordWrites[key] = write
+	return true
+}
+
+func (transaction *inMemoryModerationTransaction) IsHostedCommunity(_ context.Context, communityDID string) (bool, error) {
+	return transaction.store.hostedCommunities[communityDID], nil
+}
+
+func (transaction *inMemoryModerationTransaction) RequireCommunityRecordRemoval(_ context.Context, write moderation.CommunityRecordWrite) error {
+	requireCommunityRecordRemoval(transaction.state, write, transaction.store.outboxClock())
+	return nil
+}
+
+func (transaction *inMemoryModerationTransaction) RequestCommunityRecordRestore(_ context.Context, communityDID, subjectURI, removalActionID, acceptanceCID string) (bool, error) {
+	return requestCommunityRecordRestore(transaction.state, communityDID, subjectURI, removalActionID, acceptanceCID, transaction.store.outboxClock()), nil
+}
+
+// seedCommunityRecordRemoval commits a removal row outside a mutation.
+func (store *inMemoryModerationStore) seedCommunityRecordRemoval(write moderation.CommunityRecordWrite) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	requireCommunityRecordRemoval(&store.state, write, store.outboxClock())
+}
+
+// seedCommunityRecordRestore commits a restore request outside a mutation.
+func (store *inMemoryModerationStore) seedCommunityRecordRestore(communityDID, subjectURI, removalActionID, acceptanceCID string) bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return requestCommunityRecordRestore(&store.state, communityDID, subjectURI, removalActionID, acceptanceCID, store.outboxClock())
+}
+
+// communityRecordWrite reads a committed row.
+func (store *inMemoryModerationStore) communityRecordWrite(communityDID, subjectURI string) (moderation.CommunityRecordWrite, bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	write, exists := store.state.communityRecordWrites[moderation.CommunityRecordSubject{CommunityDID: communityDID, SubjectURI: subjectURI}]
+	return copyCommunityRecordWrite(write), exists
+}
+
+// committedCommunityRecordWriteCount is how many rows are committed.
+func (store *inMemoryModerationStore) committedCommunityRecordWriteCount() int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.state.communityRecordWrites)
+}
+
+// markCommunityRecordWriteCompleted stands in for a worker finishing a row.
+func (store *inMemoryModerationStore) markCommunityRecordWriteCompleted(communityDID, subjectURI string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := moderation.CommunityRecordSubject{CommunityDID: communityDID, SubjectURI: subjectURI}
+	write := store.state.communityRecordWrites[key]
+	write.Completed = true
+	store.state.communityRecordWrites[key] = write
+}
+
+// updateCommunityRecordWrite changes a committed row in place, standing in for
+// attempts that already ran.
+func (store *inMemoryModerationStore) updateCommunityRecordWrite(communityDID, subjectURI string, change func(*moderation.CommunityRecordWrite)) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := moderation.CommunityRecordSubject{CommunityDID: communityDID, SubjectURI: subjectURI}
+	write := store.state.communityRecordWrites[key]
+	change(&write)
+	store.state.communityRecordWrites[key] = write
+}
+
+func (store *inMemoryModerationStore) ClaimDueCommunityRecordWrites(_ context.Context, claim moderation.CommunityRecordWriteClaim) ([]moderation.CommunityRecordWrite, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	now := store.outboxClock()
+	keys := make([]moderation.CommunityRecordSubject, 0, len(store.state.communityRecordWrites))
+	for key := range store.state.communityRecordWrites {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].CommunityDID != keys[j].CommunityDID {
+			return keys[i].CommunityDID < keys[j].CommunityDID
+		}
+		return keys[i].SubjectURI < keys[j].SubjectURI
+	})
+	var claimed []moderation.CommunityRecordWrite
+	for _, key := range keys {
+		if claim.Limit > 0 && len(claimed) >= claim.Limit {
+			break
+		}
+		write := store.state.communityRecordWrites[key]
+		switch {
+		case write.Completed,
+			write.NextAttemptAt.After(claim.DueAt),
+			store.communityRecordLeases[key].After(now),
+			claim.Subject != nil && *claim.Subject != key,
+			slices.Contains(claim.ExcludedSubjects(), key):
+			continue
+		}
+		store.nextCommunityRecordClaim++
+		write.Claim = store.nextCommunityRecordClaim
+		store.state.communityRecordWrites[key] = write
+		store.communityRecordLeases[key] = now.Add(claim.Lease)
+		claimed = append(claimed, copyCommunityRecordWrite(write))
+	}
+	return claimed, nil
+}
+
+// withTransactionFields keeps on progress the fields only a moderation
+// transaction or the store's own scheduling may change. Every other field of a
+// CommunityRecordWrite is attempt progress: persisted under the claim and kept
+// across a takeover or a restore request. A field added for the transaction to
+// own belongs in this list.
+func withTransactionFields(progress *moderation.CommunityRecordWrite, row moderation.CommunityRecordWrite) {
+	progress.CommunityDID, progress.SubjectURI = row.CommunityDID, row.SubjectURI
+	progress.SubjectCollection, progress.SubjectCID = row.SubjectCollection, row.SubjectCID
+	progress.RemovalActionID, progress.Code, progress.RemovalCreatedAt = row.RemovalActionID, row.Code, row.RemovalCreatedAt
+	progress.Desired, progress.RestoreAcceptanceCID = row.Desired, row.RestoreAcceptanceCID
+	progress.Completed, progress.Attempts = row.Completed, row.Attempts
+	progress.NextAttemptAt, progress.LastFailureCode = row.NextAttemptAt, row.LastFailureCode
+	progress.Generation, progress.Claim = row.Generation, row.Claim
+}
+
+// persistCommunityRecordProgress copies what an attempt learned about the repo
+// onto the row, if the attempt still holds its claim; otherwise it reports
+// moderation.ErrCommunityRecordClaimLost and changes nothing.
+func (store *inMemoryModerationStore) persistCommunityRecordProgress(write moderation.CommunityRecordWrite) (moderation.CommunityRecordWrite, error) {
+	key := moderation.CommunityRecordSubject{CommunityDID: write.CommunityDID, SubjectURI: write.SubjectURI}
+	row, exists := store.state.communityRecordWrites[key]
+	if !exists || row.Claim != write.Claim {
+		return row, fmt.Errorf("community %s subject %s claim %d: %w", write.CommunityDID, write.SubjectURI, write.Claim, moderation.ErrCommunityRecordClaimLost)
+	}
+	progress := copyCommunityRecordWrite(write)
+	withTransactionFields(&progress, row)
+	return progress, nil
+}
+
+// takeCommunityRecordOutcomeFailure consumes the injected outcome-write
+// failure for the subject, if any.
+func (store *inMemoryModerationStore) takeCommunityRecordOutcomeFailure(key moderation.CommunityRecordSubject) error {
+	err := store.failCommunityRecordOutcome[key]
+	delete(store.failCommunityRecordOutcome, key)
+	return err
+}
+
+// stealCommunityRecordClaim stands for the row's lease running out and
+// another worker claiming it: the attempt holding the old claim has lost it.
+func (store *inMemoryModerationStore) stealCommunityRecordClaim(communityDID, subjectURI string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := moderation.CommunityRecordSubject{CommunityDID: communityDID, SubjectURI: subjectURI}
+	write := store.state.communityRecordWrites[key]
+	store.nextCommunityRecordClaim++
+	write.Claim = store.nextCommunityRecordClaim
+	store.state.communityRecordWrites[key] = write
+	store.communityRecordLeases[key] = store.outboxClock().Add(2 * time.Minute)
+}
+
+func (store *inMemoryModerationStore) SaveCommunityRecordWriteProgress(_ context.Context, write moderation.CommunityRecordWrite) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	row, err := store.persistCommunityRecordProgress(write)
+	if err != nil {
+		return err
+	}
+	store.state.communityRecordWrites[moderation.CommunityRecordSubject{CommunityDID: write.CommunityDID, SubjectURI: write.SubjectURI}] = row
+	return nil
+}
+
+func (store *inMemoryModerationStore) CompleteCommunityRecordWrite(_ context.Context, write moderation.CommunityRecordWrite) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := moderation.CommunityRecordSubject{CommunityDID: write.CommunityDID, SubjectURI: write.SubjectURI}
+	if err := store.takeCommunityRecordOutcomeFailure(key); err != nil {
+		return err
+	}
+	row, err := store.persistCommunityRecordProgress(write)
+	if err != nil {
+		return err
+	}
+	if row.Generation == write.Generation {
+		row.Completed = true
+	}
+	store.state.communityRecordWrites[key] = row
+	delete(store.communityRecordLeases, key)
+	return nil
+}
+
+// RescheduleCommunityRecordWrite under a claim that still holds the row but an
+// older generation persists the progress and leaves the new generation's
+// schedule and failure count alone: the row stays due now.
+func (store *inMemoryModerationStore) RescheduleCommunityRecordWrite(_ context.Context, write moderation.CommunityRecordWrite, nextAttemptAt time.Time, failureCode string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	key := moderation.CommunityRecordSubject{CommunityDID: write.CommunityDID, SubjectURI: write.SubjectURI}
+	if err := store.takeCommunityRecordOutcomeFailure(key); err != nil {
+		return err
+	}
+	row, err := store.persistCommunityRecordProgress(write)
+	if err != nil {
+		return err
+	}
+	if row.Generation == write.Generation {
+		row.NextAttemptAt = nextAttemptAt
+		if failureCode != "" {
+			row.Attempts++
+			row.LastFailureCode = failureCode
+		}
+	}
+	store.state.communityRecordWrites[key] = row
+	delete(store.communityRecordLeases, key)
+	return nil
+}
+
 var (
-	_ moderation.Store       = (*inMemoryModerationStore)(nil)
-	_ moderation.Transaction = (*inMemoryModerationTransaction)(nil)
+	_ moderation.Store                     = (*inMemoryModerationStore)(nil)
+	_ moderation.Transaction               = (*inMemoryModerationTransaction)(nil)
+	_ moderation.CommunityRecordWriteStore = (*inMemoryModerationStore)(nil)
 )

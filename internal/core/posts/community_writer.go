@@ -70,6 +70,11 @@ type CommunityRepo interface {
 	// expects to be replacing.
 	PutRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error)
 
+	// PutRecordGuardedByCommit is PutRecordWithCommit additionally guarded by
+	// swapCommit: the put is refused with pds.ErrSwapConflict unless the repo
+	// is still at that commit.
+	PutRecordGuardedByCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string) (*pds.RecordCommit, error)
+
 	// ApplyWrites commits several operations together, so the firehose never
 	// carries a half-completed moderation action.
 	ApplyWrites(ctx context.Context, writes []pds.Write, swapCommit string) (*pds.ApplyWritesResult, error)
@@ -170,7 +175,9 @@ type CommunityRecordWriter interface {
 	// On a lost swap it re-reads: if the record another writer committed pins
 	// the CID we wanted, the work is done and the result is a skip; otherwise
 	// it retries against the new CID, at most twice, and then defers rather
-	// than spinning against a livelock.
+	// than spinning against a livelock. A conflict whose re-read shows the
+	// acceptance unchanged and no removal came from an unrelated commit moving
+	// the head, and is retried under the larger headOnlyConflictLimit instead.
 	WriteAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error)
 
 	// WriteRemoval commits the acceptance's deletion and the removal's write
@@ -283,9 +290,10 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 // ErrRemovalStands reports that an acceptance write met a standing removal
 // record for its subject.
 //
-// §5.5 makes removal terminal: the ONLY sanctioned exit is a moderator restore,
-// which deletes the removal in the same commit that writes the fresh acceptance
-// (RestoreAcceptance). An acceptance created OVER a standing removal would leave
+// §5.5 makes removal terminal: the ONLY sanctioned exits are a community
+// moderator's restore (RestoreAcceptance) and an instance admin's restore of a
+// removal the instance wrote (UndoInstanceRemoval). Each deletes the removal,
+// in the same commit that writes any fresh acceptance. An acceptance created OVER a standing removal would leave
 // both records live at once, and every consumer ordering by the §5.2 tuple
 // would see the acceptance outrank the older removal — a moderated post
 // laundered back into feeds by a retry. The writer therefore refuses, and the
@@ -297,12 +305,20 @@ var ErrRemovalStands = errors.New("a removal record stands for this subject")
 // an optimistic guard before it gives up and lets the caller try again later.
 //
 // It is bounded because a lost swap means somebody ELSE is writing this same
-// record, and the only writers that can be are the three acceptance writers of
-// §3.2 — all of which converge on the same rkey. Two retries is enough to
+// record or this community's repo: the three acceptance writers of §3.2, which
+// converge on the same rkey, a community moderator's removal or restore, or an
+// instance removal or its undo. Two retries is enough to
 // absorb a real race; an unbounded loop against a community whose repo is
 // genuinely churning would spin a queue worker against a PDS instead of
 // deferring the subject and moving on.
 const swapRetryLimit = 2
+
+// headOnlyConflictLimit is how many lost puts pinAcceptance absorbs when the
+// re-read shows no removal and the acceptance unchanged: the guarding head
+// moved because of a commit to some other record in the same community. These
+// are routine during an aggregator run, so they get their own larger budget;
+// it is still bounded so a repo that never stops moving defers the subject.
+const headOnlyConflictLimit = 8
 
 // swapRetryBaseDelay is the first retry's backoff ceiling. Each further retry
 // doubles it.
@@ -312,8 +328,8 @@ const swapRetryBaseDelay = 25 * time.Millisecond
 // duration in (0, base<<attempt].
 //
 // The jitter is the point, not a refinement: the writers that lose a swap to
-// each other are the three acceptance writers of §3.2 converging on the SAME
-// rkey, so retries that waited a fixed interval would collide again on
+// each other are mostly the three acceptance writers of §3.2 converging on the
+// SAME rkey, so retries that waited a fixed interval would collide again on
 // schedule. Full jitter decorrelates them cheaply. This is only a courtesy
 // between racing writers, though — actually serializing the work is the
 // per-community queue, which is task 5's job, not this backoff's.
@@ -326,7 +342,7 @@ func (w *communityRecordWriter) backoff(ctx context.Context, attempt int) error 
 }
 
 // standingRecord is what a pre-read found in the community's repo, reduced to
-// the four things a writer shapes its commit from.
+// the fields a writer shapes its commit from.
 //
 // It is read out of the decoded record rather than parsed into a typed struct
 // because the writer only ever compares these fields; a full decode would give
@@ -335,12 +351,17 @@ type standingRecord struct {
 	// CID is the RECORD's own CID — the swapRecord guard, not the subject.
 	CID string
 
+	// SubjectURI is the subject the record's strongRef names.
+	SubjectURI string
+
 	// SubjectCID is the content CID the record's strongRef pins. For an
 	// acceptance this is the whole point: an acceptance pinning the CID we want
 	// is one we must not rewrite.
 	SubjectCID string
 
-	// CreatedAt is carried forward onto every update. An acceptance's createdAt
+	// CreatedAt is carried forward onto every update. On a removal it is also
+	// how an instance-written record is recognised: WriteInstanceRemoval stamps
+	// the instance action's time. An acceptance's createdAt
 	// means "when this community accepted this post", so restamping it on a
 	// re-acceptance or a repin would rewrite history every time a bridge
 	// refreshed its vote counts — and would give two writers racing to the same
@@ -460,12 +481,15 @@ func (w *communityRecordWriter) DeleteAcceptance(ctx context.Context, cmd Commun
 // THE PRE-READ DECIDES EVERYTHING. Whether there is work to do at all, what the
 // put is guarded against, and what createdAt it carries are all read out of the
 // repo rather than assumed, because the same record has three independent
-// writers (§3.2) and every one of them retries.
+// writers (§3.2), besides the two restores, and every one of them retries.
 //
 // EVERY PUT IS GUARDED, including the first. A create is sent with an empty
 // swapRecord, which pds.PutRecordWithCommit spells on the wire as "there must be
 // no record here yet" — so a writer that lost the race between its pre-read and
-// its put is told, rather than silently clobbering the winner's record.
+// its put is told, rather than silently clobbering the winner's record. The put
+// is also guarded by swapCommit, the head read before the pre-reads, so a
+// removal committed in that window is caught even though it never touched the
+// acceptance rkey.
 func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd CommunityWriteCommand, mode acceptanceMode) (CommunityWriteResult, error) {
 	if err := validateWriteCommand(cmd); err != nil {
 		return CommunityWriteResult{}, err
@@ -479,7 +503,19 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 	rkey := SubjectRkey(cmd.PostURI)
 	uri := recordURI(repo.DID(), AcceptanceCollection, rkey)
 
-	for attempt := 0; ; attempt++ {
+	// A lost put is classified on the re-read that follows it. When the
+	// acceptance record is the one the put was aimed at and no removal stands,
+	// the conflict came from an unrelated commit moving the head (an aggregator
+	// accepting other posts), and it spends headOnlyConflictLimit rather than
+	// swapRetryLimit.
+	var (
+		lastErr         error
+		conflicted      bool
+		conflictedOnCID string
+		raceRetries     int
+		headOnlyRetries int
+	)
+	for conflicts := 0; ; conflicts++ {
 		// THE HEAD IS READ FIRST, before either record, for the same reason
 		// commitPair reads it first: it is the catch-up watermark a skip
 		// reports, and a head read AFTER the records could include a removal
@@ -498,8 +534,9 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 		}
 
 		// THE REMOVAL GUARD (§5.5). Removal is terminal, and its ONLY
-		// sanctioned exit is a moderator restore — which deletes the removal in
-		// the same commit that writes the fresh acceptance (RestoreAcceptance).
+		// sanctioned exits are a moderator restore (RestoreAcceptance) and an
+		// instance restore (UndoInstanceRemoval), each of which deletes the
+		// removal in the same commit that writes any fresh acceptance.
 		// An acceptance put over a standing removal would leave both records
 		// live, and its younger watermark would outrank the removal at every
 		// consumer: a moderated post laundered back into feeds by a retry. So
@@ -507,10 +544,12 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 		// re-read after a lost swap — checks the removal rkey and refuses.
 		//
 		// It is read AFTER the acceptance to keep the window between this check
-		// and the put as narrow as it can be; the removal commit deletes any
-		// standing acceptance, so a removal landing after this read still
-		// surfaces as ErrSwapConflict on the put, and the next iteration's
-		// re-read is where it is caught.
+		// and the put as narrow as it can be. A removal landing after this read
+		// need not touch the acceptance rkey at all (there may be no acceptance
+		// for it to delete), so swapRecord alone would not see it: the put is
+		// ALSO guarded by the head read above, any commit since then surfaces as
+		// ErrSwapConflict, and the next iteration's re-read is where it is
+		// caught.
 		removal, err := readStandingRecord(ctx, repo, RemovalCollection, rkey)
 		if err != nil {
 			return CommunityWriteResult{}, err
@@ -544,19 +583,34 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 			}
 		}
 
-		commit, err := repo.PutRecordWithCommit(ctx, AcceptanceCollection, rkey,
-			acceptanceRecord(cmd.PostURI, cmd.PostCID, createdAt), swapRecord)
+		if conflicted {
+			if swapRecord == conflictedOnCID {
+				headOnlyRetries++
+			} else {
+				raceRetries++
+			}
+			if raceRetries > swapRetryLimit || headOnlyRetries > headOnlyConflictLimit {
+				return CommunityWriteResult{}, fmt.Errorf("writing the acceptance of %s in %s: %w",
+					cmd.PostURI, cmd.CommunityDID, lastErr)
+			}
+		}
+
+		commit, err := repo.PutRecordGuardedByCommit(ctx, AcceptanceCollection, rkey,
+			acceptanceRecord(cmd.PostURI, cmd.PostCID, createdAt), swapRecord, head.CID)
 		if err == nil {
 			return CommunityWriteResult{URI: commit.URI, RKey: rkey, CID: commit.CID, Rev: commit.CommitRev}, nil
 		}
 
-		if !errors.Is(err, pds.ErrSwapConflict) || attempt >= swapRetryLimit {
+		if !errors.Is(err, pds.ErrSwapConflict) {
 			return CommunityWriteResult{}, fmt.Errorf("writing the acceptance of %s in %s: %w",
 				cmd.PostURI, cmd.CommunityDID, err)
 		}
+		lastErr, conflicted, conflictedOnCID = err, true, swapRecord
 		// Lost the race. Back off, then loop: re-read what the winner actually
 		// wrote, and either discover the work is done or aim at the new record.
-		if err := w.backoff(ctx, attempt); err != nil {
+		// The delay stops growing at swapRetryLimit so a run of head-only
+		// conflicts does not wait for seconds.
+		if err := w.backoff(ctx, min(conflicts, swapRetryLimit)); err != nil {
 			return CommunityWriteResult{}, fmt.Errorf("writing the acceptance of %s in %s: %w",
 				cmd.PostURI, cmd.CommunityDID, err)
 		}
@@ -607,7 +661,8 @@ func (w *communityRecordWriter) RestoreAcceptance(ctx context.Context, cmd Commu
 	})
 }
 
-// pairCommit is the shape both moderation commits have: one record is made to
+// pairCommit is the shape WriteRemoval and RestoreAcceptance share (the
+// instance-removal writes shape their own batches): one record is made to
 // stand and its opposite is cleared, TOGETHER, so the firehose never carries a
 // half-completed moderation action (§3.3).
 //
@@ -777,6 +832,7 @@ func readStandingRecord(ctx context.Context, repo CommunityRepo, collection, rke
 
 	standing := &standingRecord{CID: response.CID}
 	if subject, ok := response.Value["subject"].(map[string]any); ok {
+		standing.SubjectURI, _ = subject["uri"].(string)
 		standing.SubjectCID, _ = subject["cid"].(string)
 	}
 	standing.CreatedAt, _ = response.Value["createdAt"].(string)

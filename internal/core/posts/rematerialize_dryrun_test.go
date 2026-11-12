@@ -73,6 +73,11 @@ func (r *memCommunityRepo) GetRecord(_ context.Context, collection, rkey string)
 	return rec, nil
 }
 
+func (r *memCommunityRepo) PutRecordGuardedByCommit(context.Context, string, string, any, string, string) (*pds.RecordCommit, error) {
+	r.puts++
+	return &pds.RecordCommit{}, nil
+}
+
 func (r *memCommunityRepo) PutRecordWithCommit(context.Context, string, string, any, string) (*pds.RecordCommit, error) {
 	r.puts++
 	return &pds.RecordCommit{}, nil

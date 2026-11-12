@@ -40,7 +40,7 @@ The pinned CID is the contract. Edited content is never rendered under an accept
 
 ### 3.3 removal
 
-Same rkey scheme as the acceptance; both collections share `SubjectRkey`. A removal deletes the acceptance and writes the removal record in one `com.atproto.repo.applyWrites` commit, so the firehose never carries half a moderation action. A restore deletes the removal and writes a fresh acceptance in one commit.
+Same rkey scheme as the acceptance; both collections share `SubjectRkey`. A removal deletes the acceptance and writes the removal record in one `com.atproto.repo.applyWrites` commit, so the firehose never carries half a moderation action. A restore deletes the removal and writes a fresh acceptance in one commit. An instance restore whose removal withdrew no acceptance only deletes the removal.
 
 Removal is URI-scoped and terminal across author edits (§5.5). The pinned CID is audit metadata.
 
@@ -48,7 +48,7 @@ Removal is URI-scoped and terminal across author edits (§5.5). The pinned CID i
 
 Rejection at submission time writes no record, so spam cannot bloat the community repo. Rejection is AppView-local (§5.6) and readable through `post.getStatus`.
 
-Today the only production writer of removal records is the acceptance engine, on a failed re-acceptance. `RestoreAcceptance` has no production caller, and there is no community-moderator remove or restore endpoint. Server-admin removals are a separate AppView-local system; see [MODERATION.md](MODERATION.md).
+Today removal records have two production writers: the acceptance engine, on a failed re-acceptance, and server-admin removals in communities hosted on this instance, which write and undo their own removal records through `InstanceRemovalWriter` (see [MODERATION.md](MODERATION.md) § Scope). `RestoreAcceptance` has no production caller, and there is no community-moderator remove or restore endpoint.
 
 ### 3.4 XRPC surface
 
@@ -124,7 +124,7 @@ The design exempts `bridgedStats`-only edits from a trusted bridge author, so or
 
 ### 5.6 Acceptance engine
 
-`AcceptanceEngine` (engine.go) takes one admission row for a hosted community and makes the community repo agree with the policy answer: write or update the acceptance, record an AppView-local rejection, or commit acceptance-delete plus removal. `CommunityRecordWriter` is the only writer of community-repo records in the post system, and the engine is its decision point.
+`AcceptanceEngine` (engine.go) takes one admission row for a hosted community and makes the community repo agree with the policy answer: write or update the acceptance, record an AppView-local rejection, or commit acceptance-delete plus removal. `CommunityRecordWriter` and `InstanceRemovalWriter` (one implementation) are the only writers of community-repo records in the post system. The engine is the decision point for `CommunityRecordWriter`; server-admin removals and restores in hosted communities drive `InstanceRemovalWriter` (see [MODERATION.md](MODERATION.md) § Scope).
 
 Rejection is a pending-only CAS carrying the judged CID: a rejection of content the row no longer holds refuses, and accepted or removed rows are never rejected. A failed re-acceptance is a removal, not a rejection. Policy rejections set `redrivable = false`; undecided outcomes (credential failure, lookup failure) defer and are retried.
 

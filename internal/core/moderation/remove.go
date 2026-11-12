@@ -58,6 +58,7 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 	var result *MutationResult
 	var newlyBlocked []MediaBlock
 	var purgeBlobs []imageproxy.BlockedBlob
+	var recordWrite *CommunityRecordSubject
 	var ruleError error
 	err := s.store.InTransaction(ctx, func(ctx context.Context, tx Transaction) error {
 		fail := func(err error) error {
@@ -199,6 +200,10 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 					}
 				}
 			}
+			recordWrite, err = requireCommunityRecordRemoval(ctx, tx, subject, action)
+			if err != nil {
+				return unavailable(err)
+			}
 			state, err := newSubjectState(request.Subject.URI, version+1, recordState, current, action, activeLabels, s.config.InstanceDID)
 			if err != nil {
 				return err
@@ -219,6 +224,9 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 	purgeMediaBlocks(ctx, s.config.Purger, newlyBlocked)
 	if s.config.CDNPurgeTargets != nil && len(purgeBlobs) > 0 {
 		s.config.CDNPurgeTargets.PurgeAfterCommit(ctx, purgeBlobs)
+	}
+	if s.config.CommunityRecordWrites != nil && recordWrite != nil {
+		s.config.CommunityRecordWrites.WriteAfterCommit(ctx, *recordWrite)
 	}
 	return result, nil
 }

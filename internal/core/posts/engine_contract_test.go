@@ -598,6 +598,14 @@ func (r *racingRepo) PutRecordWithCommit(ctx context.Context, collection, rkey s
 	return r.CommunityRepo.PutRecordWithCommit(ctx, collection, rkey, record, swapRecord)
 }
 
+func (r *racingRepo) PutRecordGuardedByCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string) (*pds.RecordCommit, error) {
+	if !r.done {
+		r.done = true
+		r.race()
+	}
+	return r.CommunityRepo.PutRecordGuardedByCommit(ctx, collection, rkey, record, swapRecord, swapCommit)
+}
+
 // racingWriter returns a writer whose first put loses a swap race to fn.
 func (f *engineFixture) racingWriter(t *testing.T, fn func()) posts.CommunityRecordWriter {
 	t.Helper()

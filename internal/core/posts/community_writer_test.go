@@ -384,6 +384,39 @@ type fakeCommunityRepo struct {
 	// puts and batches record what was sent.
 	puts    []fakePut
 	batches []fakeBatch
+
+	// beforeFirstWrite, when set, runs once at the start of the first write
+	// call (any put or batch), before its guards are checked: a commit landing
+	// between the writer's pre-reads and its write.
+	beforeFirstWrite func(r *fakeCommunityRepo)
+	wroteOnce        bool
+
+	// beforeEachWrite, when set, runs at the start of every write call (any
+	// put or batch), before its guards are checked, with the zero-based index
+	// of that write: a stream of commits landing between pre-read and write.
+	beforeEachWrite func(r *fakeCommunityRepo, write int)
+	writeCount      int
+}
+
+// landCommit applies a competing commit: the change, then a new head, so any
+// write guarded by the old head's CID is a swap conflict.
+func (r *fakeCommunityRepo) landCommit(change func()) {
+	change()
+	r.head = pds.LatestCommit{CID: r.head.CID + "x", Rev: r.head.Rev + "x"}
+}
+
+func (r *fakeCommunityRepo) runBeforeFirstWrite() {
+	if r.beforeEachWrite != nil {
+		r.beforeEachWrite(r, r.writeCount)
+	}
+	r.writeCount++
+	if r.wroteOnce {
+		return
+	}
+	r.wroteOnce = true
+	if r.beforeFirstWrite != nil {
+		r.beforeFirstWrite(r)
+	}
 }
 
 type fakePut struct {
@@ -429,8 +462,26 @@ func (r *fakeCommunityRepo) GetRecord(_ context.Context, collection, rkey string
 	return record, nil
 }
 
-func (r *fakeCommunityRepo) PutRecordWithCommit(_ context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
+func (r *fakeCommunityRepo) PutRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
 	r.calls = append(r.calls, "PutRecordWithCommit:"+collection)
+	r.runBeforeFirstWrite()
+	return r.put(ctx, collection, rkey, record, swapRecord)
+}
+
+// PutRecordGuardedByCommit refuses the put with pds.ErrSwapConflict when the
+// head has moved past swapCommit, as the PDS does.
+func (r *fakeCommunityRepo) PutRecordGuardedByCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string) (*pds.RecordCommit, error) {
+	r.calls = append(r.calls, "PutRecordGuardedByCommit:"+collection)
+	r.runBeforeFirstWrite()
+	if swapCommit != "" && swapCommit != r.head.CID {
+		body, _ := record.(map[string]any)
+		r.puts = append(r.puts, fakePut{collection: collection, rkey: rkey, record: body, swapRecord: swapRecord})
+		return nil, pds.ErrSwapConflict
+	}
+	return r.put(ctx, collection, rkey, record, swapRecord)
+}
+
+func (r *fakeCommunityRepo) put(_ context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
 	body, _ := record.(map[string]any)
 	r.puts = append(r.puts, fakePut{collection: collection, rkey: rkey, record: body, swapRecord: swapRecord})
 
@@ -454,7 +505,13 @@ func (r *fakeCommunityRepo) PutRecordWithCommit(_ context.Context, collection, r
 
 func (r *fakeCommunityRepo) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit string) (*pds.ApplyWritesResult, error) {
 	r.calls = append(r.calls, "ApplyWrites")
+	r.runBeforeFirstWrite()
 	r.batches = append(r.batches, fakeBatch{writes: writes, swapCommit: swapCommit})
+
+	// The PDS refuses a batch whose swapCommit is no longer the head.
+	if swapCommit != "" && swapCommit != r.head.CID {
+		return nil, pds.ErrSwapConflict
+	}
 
 	if len(r.applyErrs) > 0 {
 		err := r.applyErrs[0]

@@ -558,6 +558,10 @@ func (r *fakeCommunityRepo) GetRecord(_ context.Context, collection, rkey string
 	return rec, nil
 }
 
+func (r *fakeCommunityRepo) PutRecordGuardedByCommit(context.Context, string, string, any, string, string) (*pds.RecordCommit, error) {
+	return nil, fmt.Errorf("the re-materialization tool must not write to the community repo through this seam")
+}
+
 func (r *fakeCommunityRepo) PutRecordWithCommit(context.Context, string, string, any, string) (*pds.RecordCommit, error) {
 	return nil, fmt.Errorf("the re-materialization tool must not write to the community repo through this seam")
 }

@@ -97,6 +97,10 @@ func (m *mockPDSClient) PutRecordWithCommit(_ context.Context, collection, rkey 
 	return &pds.RecordCommit{URI: m.putRecordURI, CID: m.putRecordCID}, nil
 }
 
+func (m *mockPDSClient) PutRecordGuardedByCommit(_ context.Context, _, _ string, _ any, _, _ string) (*pds.RecordCommit, error) {
+	panic("unexpected PutRecordGuardedByCommit call")
+}
+
 func (m *mockPDSClient) ApplyWrites(_ context.Context, _ []pds.Write, _ string) (*pds.ApplyWritesResult, error) {
 	panic("unexpected ApplyWrites call")
 }
@@ -1626,6 +1630,10 @@ func (m *mockPDSClientWithNilBannerRef) ApplyWrites(_ context.Context, _ []pds.W
 
 func (m *mockPDSClientWithNilBannerRef) PutRecordWithCommit(_ context.Context, _, _ string, _ any, _ string) (*pds.RecordCommit, error) {
 	panic("unexpected PutRecordWithCommit call")
+}
+
+func (m *mockPDSClientWithNilBannerRef) PutRecordGuardedByCommit(_ context.Context, _, _ string, _ any, _, _ string) (*pds.RecordCommit, error) {
+	panic("unexpected PutRecordGuardedByCommit call")
 }
 
 func (m *mockPDSClientWithNilBannerRef) CreateRecordWithCommit(_ context.Context, _, _ string, _ any) (*pds.RecordCommit, error) {

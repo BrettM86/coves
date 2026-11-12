@@ -94,6 +94,8 @@ func TestModerationMigration072_AccountSubjectShape(t *testing.T) {
 // action under 071 and reads it back unchanged after 072 applies.
 func TestModerationMigration072_KeepsRecordSubjectActions(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
+		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
 		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),

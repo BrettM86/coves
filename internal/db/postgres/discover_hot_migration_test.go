@@ -35,6 +35,10 @@ func TestMigration048DiscoverHotSnapshots(t *testing.T) {
 	_, err := db.ExecContext(ctx, `CREATE TABLE discover_hot_migration_sentinel (id BIGINT PRIMARY KEY)`)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
+
+		"080 (moderation community record writes) must be rolled back first")
+
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
 		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),

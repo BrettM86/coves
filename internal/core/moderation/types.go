@@ -219,11 +219,15 @@ type Config struct {
 	MaxLiveIdempotencyKeys int
 	Purger                 MediaPurger
 	CDNPurgeTargets        CDNPurgeTargets
-	Now                    func() time.Time
-	CursorSecret           string
-	CommunityResolver      CommunityResolver
-	HandleResolver         HandleResolver
-	Communities            CommunityChecker
+	// CommunityRecordWrites receives the community record writes a removal or
+	// restore recorded, after commit. The rows are recorded in the transaction
+	// either way; nil makes no immediate attempt, leaving them to the sweep.
+	CommunityRecordWrites CommunityRecordWrites
+	Now                   func() time.Time
+	CursorSecret          string
+	CommunityResolver     CommunityResolver
+	HandleResolver        HandleResolver
+	Communities           CommunityChecker
 	// BridgeTrust reports trusted bridge communities; nil trusts nothing.
 	BridgeTrust BridgeCommunityTrust
 	// LabelSigningKey signs the labels decisions publish; nil disables publication.

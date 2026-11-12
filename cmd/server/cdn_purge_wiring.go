@@ -28,6 +28,9 @@ type moderationDependencies struct {
 	handleResolver    moderation.HandleResolver
 	communities       moderation.CommunityChecker
 	cdnPurgeQueue     *moderation.CDNPurgeQueue
+	// communityRecords writes instance removals into hosted communities'
+	// repos after commit; nil writes none.
+	communityRecords *moderation.CommunityRecordWriteQueue
 }
 
 // buildModeration shares the durable purge queue with removal and reconciliation
@@ -44,6 +47,9 @@ func buildModeration(cfg *config.Config, dependencies moderationDependencies) (m
 		Communities:            dependencies.communities,
 		BridgeTrust:            jetstream.NewBridgeTrust(cfg.Instance.TrustedBridgePDSHosts),
 		LabelSigningKey:        cfg.Labels.SigningKey,
+	}
+	if dependencies.communityRecords != nil {
+		moderationConfig.CommunityRecordWrites = dependencies.communityRecords
 	}
 	var reconcilerOptions []moderation.MediaReconcilerOption
 	if dependencies.cdnPurgeQueue != nil {

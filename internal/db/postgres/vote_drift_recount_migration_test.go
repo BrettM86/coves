@@ -80,6 +80,8 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
 	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
+		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
 		"079 (community provisioning accounts) must be rolled back first")
 	require.EqualValues(t, 78, testkit.MigrateDownOne(t, db, 78),

@@ -141,6 +141,9 @@ func run() error {
 	if app.cdnPurgeQueue != nil {
 		startCDNPurgeSweepJob(backgroundCtx, &backgroundWG, app.cdnPurgeQueue, cdnPurgeSweepInterval)
 	}
+	if app.communityRecordWriteQueue != nil {
+		startCommunityRecordWriteSweepJob(backgroundCtx, &backgroundWG, app.communityRecordWriteQueue, communityRecordWriteSweepInterval)
+	}
 
 	// Nil when the driver is disabled, and passed as a typed nil would be a
 	// non-nil interface — so the guard is here rather than inside the job.
@@ -245,6 +248,11 @@ func serve(
 		// Commits from here on leave their CDN purge targets to the next sweep.
 		app.cdnPurgeQueue.Close()
 	}
+	if app.communityRecordWriteQueue != nil {
+		// Commits from here on leave their community record writes to the
+		// next boot's sweep.
+		app.communityRecordWriteQueue.Close()
+	}
 
 	// Drain background work concurrently with the listener drain, not after
 	// it. They are independent — background work runs on its own context,
@@ -274,10 +282,17 @@ func serve(
 
 	if app.cdnPurgeQueue != nil {
 		// Best effort: an attempt cut off here keeps its durable target, which
-		// the boot sweep retries once its lease expires.
+		// the first sweep after its lease expires retries, on a later boot.
 		if err := app.cdnPurgeQueue.Wait(shutdownCtx); err != nil {
 			slog.Warn("CDN purge attempts still in flight at shutdown",
 				"in_flight", app.cdnPurgeQueue.InFlight(), "error", err)
+		}
+	}
+	if app.communityRecordWriteQueue != nil {
+		// Best effort: an attempt cut off here keeps its pending row, which the
+		// first sweep after its lease expires retries, on a later boot.
+		if err := app.communityRecordWriteQueue.Wait(shutdownCtx); err != nil {
+			slog.Warn("community record writes still in flight at shutdown", "error", err)
 		}
 	}
 

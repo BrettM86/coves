@@ -578,3 +578,98 @@ func TestWrapAPIError_InvalidSwapIsNotAPlainBadRequest(t *testing.T) {
 		t.Error("a malformed request is not a lost race")
 	}
 }
+
+// TestClient_PutRecordGuardedByCommit_WireFormat pins the commit guard the
+// acceptance writer depends on: a non-empty swapCommit reaches the PDS, an
+// empty one is absent (not null, not ""), and swapRecord keeps the
+// PutRecordWithCommit meaning — a CID to replace, or explicit null for
+// create-only. Dropping swapCommit from the payload passes every writer test,
+// because their fakes never see the wire.
+func TestClient_PutRecordGuardedByCommit_WireFormat(t *testing.T) {
+	const (
+		headCID     = "bafyreiheadaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		previousCID = "bafyreipreviousaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+
+	tests := []struct {
+		name           string
+		swapRecord     string
+		swapCommit     string
+		wantSwapRecord any // nil means explicit JSON null
+		wantSwapCommit any // nil with wantCommitKey false means the key is absent
+		wantCommitKey  bool
+	}{
+		{
+			name: "update guarded by commit", swapRecord: previousCID, swapCommit: headCID,
+			wantSwapRecord: previousCID, wantSwapCommit: headCID, wantCommitKey: true,
+		},
+		{
+			name: "create guarded by commit", swapRecord: "", swapCommit: headCID,
+			wantSwapRecord: nil, wantSwapCommit: headCID, wantCommitKey: true,
+		},
+		{
+			name: "update without commit guard", swapRecord: previousCID, swapCommit: "",
+			wantSwapRecord: previousCID, wantCommitKey: false,
+		},
+		{
+			name: "create without commit guard", swapRecord: "", swapCommit: "",
+			wantSwapRecord: nil, wantCommitKey: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var payload map[string]any
+
+			c, closeServer := newCommitClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/xrpc/com.atproto.repo.putRecord" {
+					t.Errorf("path = %q, want /xrpc/com.atproto.repo.putRecord", r.URL.Path)
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"uri":    "at://did:plc:test/social.coves.community.acceptance/rk",
+					"cid":    "bafyreiacceptanceaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"commit": map[string]any{"cid": testCommitCID, "rev": testCommitRev},
+				})
+			})
+			defer closeServer()
+
+			result, err := c.PutRecordGuardedByCommit(context.Background(),
+				"social.coves.community.acceptance", "rk",
+				map[string]any{"$type": "social.coves.community.acceptance"},
+				tt.swapRecord, tt.swapCommit)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, testCommitRev, result.CommitRev)
+
+			swapRecord, present := payload["swapRecord"]
+			require.True(t, present, "swapRecord must always be sent; absent means an unguarded overwrite")
+			assert.Equal(t, tt.wantSwapRecord, swapRecord)
+
+			swapCommit, commitPresent := payload["swapCommit"]
+			assert.Equal(t, tt.wantCommitKey, commitPresent, "swapCommit key presence")
+			if tt.wantCommitKey {
+				assert.Equal(t, tt.wantSwapCommit, swapCommit)
+			}
+		})
+	}
+}
+
+func TestClient_PutRecordGuardedByCommit_MapsInvalidSwapToSwapConflict(t *testing.T) {
+	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   "InvalidSwap",
+			"message": "Commit was at bafyreiotheraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		})
+	})
+	defer closeServer()
+
+	_, err := c.PutRecordGuardedByCommit(context.Background(),
+		"social.coves.community.acceptance", "rk",
+		map[string]any{"$type": "social.coves.community.acceptance"},
+		"", "bafyreistaleheadaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	assert.ErrorIs(t, err, ErrSwapConflict)
+}

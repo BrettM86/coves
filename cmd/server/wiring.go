@@ -153,6 +153,10 @@ type application struct {
 	// writes verdicts, and the post consumer, which withdraws an acceptance
 	// when the author deletes the post it covers.
 	communityWriter posts.CommunityRecordWriter
+
+	// instanceRemovalWriter mirrors instance removals into hosted communities'
+	// repos, over the same repo factory as communityWriter.
+	instanceRemovalWriter posts.InstanceRemovalWriter
 	// acceptanceQueue walks the undecided backlog. nil when the driver is
 	// disabled (ACCEPTANCE_QUEUE_INTERVAL=0).
 	acceptanceQueue            *posts.QueueDriver
@@ -168,6 +172,7 @@ type application struct {
 	labelStream                *labels.Stream    // nil when LABEL_SIGNING_KEY is unset; Close ends its subscriptions
 	mediaReconciler            *moderation.MediaReconciler
 	cdnPurgeQueue              *moderation.CDNPurgeQueue
+	communityRecordWriteQueue  *moderation.CommunityRecordWriteQueue
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
@@ -263,6 +268,8 @@ func buildApplication(
 	if err != nil {
 		return nil, err
 	}
+	app.communityRecordWriteQueue = moderation.NewCommunityRecordWriteQueue(
+		moderationStore, app.instanceRemovalWriter, app.admissionRepo, moderation.CommunityRecordWriteQueueConfig{})
 	purger, err := app.buildImageProxy()
 	if err != nil {
 		return nil, err
@@ -276,6 +283,7 @@ func buildApplication(
 		handleResolver:    app.identityResolver,
 		communities:       app.communityRepo,
 		cdnPurgeQueue:     app.cdnPurgeQueue,
+		communityRecords:  app.communityRecordWriteQueue,
 	})
 	if err != nil {
 		return nil, err
@@ -764,6 +772,7 @@ func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
 	repoFactory := posts.NewCommunityRepoFactory(a.communityService,
 		pds.PrivateHostOptions(a.allowPrivateHosts())...)
 	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
+	a.instanceRemovalWriter = posts.NewInstanceRemovalWriter(repoFactory, time.Now)
 
 	decider := posts.NewAdmissionEngineDecider(a.buildDeciderDeps())
 
