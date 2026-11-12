@@ -150,6 +150,19 @@ services:
       # admin authority. Independent of COMMUNITY_CREATORS.
       MODERATION_ADMINS: ${MODERATION_ADMINS:-}
 
+      # Signed label publication (docs/MODERATION.md, "Labels"). The private
+      # LABEL_SIGNING_KEY lives only in .env; its public half is the
+      # #atproto_label key in static/.well-known/did.json, which Caddy serves.
+      # Once a label is stored, boot refuses to start without it. To rotate,
+      # set the new key here, LABEL_SIGNING_KEY_RETIRING to the old public
+      # multibase, and update did.json in the same deploy. Passed through
+      # explicitly: the container sees no env_file.
+      LABEL_SIGNING_KEY: ${LABEL_SIGNING_KEY:-}
+      LABEL_SIGNING_KEY_RETIRING: ${LABEL_SIGNING_KEY_RETIRING:-}
+      # Public #atproto key of did:web:coves.social, as listed in
+      # static/.well-known/did.json. Keep the two in step.
+      INSTANCE_ATPROTO_PUBLIC_KEY: zQ3shu1T3Y3MYoC1n7fCqkZqyrk8FiY3PV3BYM2JwyqcXFY6s
+
       # Trusted virtual bridge PDS hosts. Required for Tidepool-authored
       # profiles/posts to be indexed and for bridge-asserted bridgedStats to
       # be accepted. Example: https://tdpl.io
