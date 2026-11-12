@@ -11,6 +11,12 @@
       "type": "Multikey",
       "controller": "did:web:coves.social",
       "publicKeyMultibase": "zQ3shu1T3Y3MYoC1n7fCqkZqyrk8FiY3PV3BYM2JwyqcXFY6s"
+    },
+    {
+      "id": "did:web:coves.social#atproto_label",
+      "type": "Multikey",
+      "controller": "did:web:coves.social",
+      "publicKeyMultibase": "zQ3shTqc1vGFrfiCjgeAEGrK56mQA5gcgk7VNn6J6YubNTsja"
     }
   ],
   "service": [
@@ -18,6 +24,11 @@
       "id": "#atproto_pds",
       "type": "AtprotoPersonalDataServer",
       "serviceEndpoint": "https://pds.coves.me"
+    },
+    {
+      "id": "#atproto_labeler",
+      "type": "AtprotoLabeler",
+      "serviceEndpoint": "https://coves.social"
     }
   ]
 }
