@@ -2,7 +2,7 @@ module Coves
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/bluesky-social/indigo v0.0.0-20261106080107-a20146f0f81d
