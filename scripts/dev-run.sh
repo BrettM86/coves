@@ -15,4 +15,4 @@ echo "   PDS_URL: $PDS_URL"
 echo "   Build tags: dev"
 echo ""
 
-go run -tags dev ./cmd/server
+go run -tags dev,nodynamic ./cmd/server

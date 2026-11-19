@@ -29,8 +29,8 @@ func TestGetPreset(t *testing.T) {
 		{
 			name:        "avatar_small preset returns correct dimensions",
 			presetName:  "avatar_small",
-			wantWidth:   360,
-			wantHeight:  360,
+			wantWidth:   192,
+			wantHeight:  192,
 			wantFit:     FitCover,
 			wantQuality: 80,
 			wantErr:     nil,

@@ -186,7 +186,7 @@ func TestHandler_HandleImage_Success(t *testing.T) {
 
 	// Verify ETag format
 	etag := w.Header().Get("ETag")
-	expectedETag := `"r2-avatar-` + validTestCID + `"`
+	expectedETag := `"r3-avatar-` + validTestCID + `"`
 	if etag != expectedETag {
 		t.Errorf("Expected ETag %q, got %q", expectedETag, etag)
 	}
@@ -222,7 +222,7 @@ func TestHandler_HandleImage_ETagMatch_Returns304(t *testing.T) {
 		"cid":    validTestCID,
 	})
 	// Set If-None-Match header with matching ETag
-	req.Header.Set("If-None-Match", `"r2-avatar-`+validTestCID+`"`)
+	req.Header.Set("If-None-Match", `"r3-avatar-`+validTestCID+`"`)
 
 	w := httptest.NewRecorder()
 	handler.HandleImage(w, req)
@@ -597,7 +597,7 @@ func TestHandler_HandleImage_AllPresets(t *testing.T) {
 
 			// Verify ETag matches preset
 			etag := w.Header().Get("ETag")
-			expectedETag := `"r2-` + preset + `-` + validTestCID + `"`
+			expectedETag := `"r3-` + preset + `-` + validTestCID + `"`
 			if etag != expectedETag {
 				t.Errorf("Expected ETag %q, got %q", expectedETag, etag)
 			}
@@ -1046,10 +1046,10 @@ func TestHandler_HandleImage_SecurityLogging(t *testing.T) {
 }
 
 // TestHandler_HandleImage_PreRenderVersionETag_GetsFullImage pins the ETag
-// render version. PNG sources and EXIF-oriented JPEGs now render to different
-// bytes than they did under the unversioned "<preset>-<cid>" ETag, so a browser
-// still holding that old validator must get the new render, not a 304 that
-// keeps the old bytes alive forever.
+// render version. Every re-encoded image now renders to WebP, so a browser
+// still holding a validator from an earlier renderer (the unversioned
+// "<preset>-<cid>" form or the r2 prefix) must get the new render, not a 304
+// that keeps the old bytes alive forever.
 func TestHandler_HandleImage_PreRenderVersionETag_GetsFullImage(t *testing.T) {
 	expectedImage := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 
@@ -1086,26 +1086,32 @@ func TestHandler_HandleImage_PreRenderVersionETag_GetsFullImage(t *testing.T) {
 		return w
 	}
 
-	unversioned := request(`"avatar-` + validTestCID + `"`)
-	if unversioned.Code != http.StatusOK {
-		t.Fatalf("an unversioned validator from before the render change must not get a 304: want 200, got %d", unversioned.Code)
+	wantETag := `"r3-avatar-` + validTestCID + `"`
+	staleValidators := []string{
+		`"avatar-` + validTestCID + `"`,
+		`"r2-avatar-` + validTestCID + `"`,
 	}
-	if !bytes.Equal(unversioned.Body.Bytes(), expectedImage) {
-		t.Errorf("an unversioned validator must get the current render as the body, got %v", unversioned.Body.Bytes())
-	}
-	if serviceCalls != 1 {
-		t.Errorf("an unversioned validator must fetch the current render: want 1 service call, got %d", serviceCalls)
-	}
-	wantETag := `"r2-avatar-` + validTestCID + `"`
-	if got := unversioned.Header().Get("ETag"); got != wantETag {
-		t.Errorf("served ETag: want %q, got %q", wantETag, got)
+	for index, stale := range staleValidators {
+		response := request(stale)
+		if response.Code != http.StatusOK {
+			t.Fatalf("validator %s from before the render change must not get a 304: want 200, got %d", stale, response.Code)
+		}
+		if !bytes.Equal(response.Body.Bytes(), expectedImage) {
+			t.Errorf("validator %s must get the current render as the body, got %v", stale, response.Body.Bytes())
+		}
+		if serviceCalls != index+1 {
+			t.Errorf("validator %s must fetch the current render: want %d service calls, got %d", stale, index+1, serviceCalls)
+		}
+		if got := response.Header().Get("ETag"); got != wantETag {
+			t.Errorf("served ETag for validator %s: want %q, got %q", stale, wantETag, got)
+		}
 	}
 
 	versioned := request(wantETag)
 	if versioned.Code != http.StatusNotModified {
 		t.Errorf("the current versioned validator must get a 304, got %d", versioned.Code)
 	}
-	if serviceCalls != 1 {
-		t.Errorf("a matching versioned validator must not fetch: want 1 service call total, got %d", serviceCalls)
+	if serviceCalls != len(staleValidators) {
+		t.Errorf("a matching versioned validator must not fetch: want %d service calls total, got %d", len(staleValidators), serviceCalls)
 	}
 }

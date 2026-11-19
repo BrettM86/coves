@@ -118,8 +118,8 @@ func TestPipelineDecodeSlotsAndProxyIndependence(t *testing.T) {
 				if err != nil {
 					t.Fatalf("decode served image: %v", err)
 				}
-				if decoded.Bounds().Dx() != 360 || decoded.Bounds().Dy() != 360 {
-					t.Fatalf("served image = %v, want 360x360", decoded.Bounds())
+				if decoded.Bounds().Dx() != 192 || decoded.Bounds().Dy() != 192 {
+					t.Fatalf("served image = %v, want 192x192", decoded.Bounds())
 				}
 				if len(done) != 0 {
 					t.Fatal("upload finished before a decode slot was released")

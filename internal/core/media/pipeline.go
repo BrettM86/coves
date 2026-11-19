@@ -11,7 +11,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	_ "golang.org/x/image/webp"
+	"golang.org/x/image/webp"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -120,7 +120,7 @@ func (p *Pipeline) ingest(ctx context.Context, in Input, maxLongEdge int) (Resul
 		return Result{}, &Error{Code: ErrorCodeUnsupportedImageFormat}
 	}
 
-	header, _, err := image.DecodeConfig(bytes.NewReader(in.Data))
+	header, err := decodeConfig(format, in.Data)
 	if err != nil {
 		return Result{}, &Error{Code: ErrorCodeInvalidImage, Err: err}
 	}
@@ -170,7 +170,7 @@ func (p *Pipeline) ingest(ctx context.Context, in Input, maxLongEdge int) (Resul
 		}
 		return Result{Data: clean, Format: FormatGIF, Width: header.Width, Height: header.Height}, nil
 	}
-	decoded, _, err := image.Decode(bytes.NewReader(in.Data))
+	decoded, err := decodeImage(format, in.Data)
 	if err != nil {
 		return Result{}, &Error{Code: ErrorCodeInvalidImage, Err: err}
 	}
@@ -316,6 +316,29 @@ func (p *Pipeline) acquireDecodeSlot(ctx context.Context) (release func(), err e
 		return nil, err
 	}
 	return func() { p.decodeSlots.Release(1) }, nil
+}
+
+// decodeConfig reads the header of a sniffed source. WebP goes straight to
+// x/image/webp: another package in the binary (the image proxy's WebP encoder)
+// registers its own "webp" decoder, and the global registry would pick between
+// them by registration order. x/image/webp's Decode rejects animated WebP
+// (its DecodeConfig accepts the header), which the pipeline relies on.
+func decodeConfig(format Format, data []byte) (image.Config, error) {
+	if format == FormatWebP {
+		return webp.DecodeConfig(bytes.NewReader(data))
+	}
+	header, _, err := image.DecodeConfig(bytes.NewReader(data))
+	return header, err
+}
+
+// decodeImage decodes a sniffed source, with WebP pinned to x/image/webp for
+// the reason decodeConfig gives.
+func decodeImage(format Format, data []byte) (image.Image, error) {
+	if format == FormatWebP {
+		return webp.Decode(bytes.NewReader(data))
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(data))
+	return decoded, err
 }
 
 func sniffFormat(data []byte) Format {

@@ -1,23 +1,17 @@
 package imageproxy
 
 import (
-	"bytes"
 	"errors"
 	"image"
-	"image/jpeg"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func assertRedJPEG(t *testing.T, data []byte, width, height int) {
+func assertRedWebP(t *testing.T, data []byte, width, height int) {
 	t.Helper()
-	require.True(t, bytes.HasPrefix(data, []byte{0xFF, 0xD8}), "JPEG SOI missing")
-	picture, err := jpeg.Decode(bytes.NewReader(data))
-	require.NoError(t, err)
-	assert.Equal(t, width, picture.Bounds().Dx())
-	assert.Equal(t, height, picture.Bounds().Dy())
+	picture := assertLossyWebP(t, data, width, height)
 	red, green, blue, _ := picture.At(width/2, height/2).RGBA()
 	assert.Greater(t, red>>8, uint32(200))
 	assert.Less(t, green>>8, uint32(55))
@@ -32,7 +26,7 @@ func TestProcessor_AnimatedGIFPreviewUsesFirstFrame(t *testing.T) {
 		width, height int
 	}{
 		{"avatar", 1000, 1000},
-		{"avatar_small", 360, 360},
+		{"avatar_small", 192, 192},
 		{"banner", 640, 300},
 		{"content_preview", 800, 600},
 		{"embed_thumbnail", 720, 360},
@@ -42,7 +36,7 @@ func TestProcessor_AnimatedGIFPreviewUsesFirstFrame(t *testing.T) {
 			require.NoError(t, err)
 			output, err := processor.Process(data, preset)
 			require.NoError(t, err)
-			assertRedJPEG(t, output, test.width, test.height)
+			assertRedWebP(t, output, test.width, test.height)
 		})
 	}
 }
@@ -61,12 +55,12 @@ func TestProcessor_GIFBlockScanAndMalformedInput(t *testing.T) {
 	trailerWithoutFrames := []byte{'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0, 0, 0, 0x3B} // header/LSD (13), no global table
 	unrecognisedVersion := []byte{'G', 'I', 'F', '8', '0', 'a', 1, 0, 1, 0, 0, 0, 0, 0x3B}
 	for _, test := range []struct {
-		name, preset string
-		data         []byte
-		wantErr      error
-		jpegWidth    int
-		jpegHeight   int
-		unchanged    bool
+		name, preset  string
+		data          []byte
+		wantErr       error
+		previewWidth  int
+		previewHeight int
+		unchanged     bool
 	}{
 		{"local tables and comment over budget preview", "content_preview", large, ErrImageTooManyPixels, 0, 0, false},
 		{"local tables and comment over budget full", "content_full", large, ErrImageTooManyPixels, 0, 0, false},
@@ -100,7 +94,7 @@ func TestProcessor_GIFBlockScanAndMalformedInput(t *testing.T) {
 			if test.unchanged {
 				assert.Equal(t, test.data, output)
 			} else {
-				assertRedJPEG(t, output, test.jpegWidth, test.jpegHeight)
+				assertRedWebP(t, output, test.previewWidth, test.previewHeight)
 			}
 		})
 	}

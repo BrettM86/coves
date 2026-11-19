@@ -11,7 +11,8 @@ import (
 	"image/png"
 	"io"
 
-	_ "golang.org/x/image/webp" // Register WebP decoder
+	webpencoder "github.com/gen2brain/webp"
+	"golang.org/x/image/webp"
 
 	"Coves/internal/core/media"
 )
@@ -22,6 +23,13 @@ type Processor interface {
 	// Returns the processed image bytes, or an error if processing fails.
 	Process(data []byte, preset Preset) ([]byte, error)
 }
+
+// maxWebPSide is the largest width or height a WebP image can have.
+const maxWebPSide = 16383
+
+// webpEncodeMethod trades encode speed for size (0 fastest, 6 smallest). 2
+// keeps a large content_full render quick on a proxy request.
+const webpEncodeMethod = 2
 
 // DefaultMaxSourceMegapixels is the default upper bound on the pixel count
 // (width × height) of a source image the processor will agree to decode.
@@ -55,7 +63,15 @@ type ImageProcessor struct {
 // most maxSourceMegapixels. The budget must lie in 1..MaxSourceMegapixelsCeiling:
 // zero would reject every image, a negative value has no meaning as a cap, and
 // anything above the ceiling is a misconfiguration (see the const's comment).
+//
+// It also refuses a binary whose WebP encoder loaded a system libwebp: that
+// happens only when the build left out -tags nodynamic, and such a binary is
+// dynamically linked and encodes outside the memory bounds Process documents.
 func NewProcessor(maxSourceMegapixels int) (Processor, error) {
+	if webpencoder.Dynamic() == nil {
+		return nil, fmt.Errorf("%w: the WebP encoder loaded a system libwebp; build with -tags nodynamic",
+			ErrDynamicWebPEncoder)
+	}
 	if maxSourceMegapixels <= 0 || maxSourceMegapixels > MaxSourceMegapixelsCeiling {
 		return nil, fmt.Errorf("%w: got %d, want 1..%d",
 			ErrInvalidMaxSourceMegapixels, maxSourceMegapixels, MaxSourceMegapixelsCeiling)
@@ -68,8 +84,10 @@ func NewProcessor(maxSourceMegapixels int) (Processor, error) {
 
 // Process transforms the input image data according to the preset configuration.
 // It handles both cover fit (crops to exact dimensions) and contain fit (preserves
-// aspect ratio within bounds). PNG inputs produce PNG; GIF content_full retains
-// its original bytes; other inputs produce JPEG.
+// aspect ratio within bounds). GIF content_full retains its original bytes.
+// Every other render is lossy WebP, with alpha kept, unless a side exceeds
+// maxWebPSide, WebP's format limit; such a render is PNG for a PNG source and
+// JPEG otherwise.
 func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	// Check for empty or nil data
 	if len(data) == 0 {
@@ -83,7 +101,22 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	// declaring 12000×12000 costs ~576 MB inside the decoder itself, from a few
 	// dozen attacker-controlled bytes. The budget therefore has to be enforced
 	// on the header, never on the decoded result.
-	header, format, err := image.DecodeConfig(bytes.NewReader(data))
+	//
+	// WebP sources are pinned to x/image/webp. The encoder package registers
+	// its own "webp" decoder with the image package, and the registry would
+	// choose between the two by init order; x/image/webp is the one these
+	// guards were written against (its Decode rejects animated WebP, though
+	// its DecodeConfig accepts the header).
+	isWebP := len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP"))
+	var header image.Config
+	var format string
+	var err error
+	if isWebP {
+		header, err = webp.DecodeConfig(bytes.NewReader(data))
+		format = "webp"
+	} else {
+		header, format, err = image.DecodeConfig(bytes.NewReader(data))
+	}
 	if err != nil {
 		// image/gif registers the magic "GIF8?a", so any GIF8xa header reaches
 		// its DecodeConfig; its errors are malformed input, never our failure.
@@ -93,7 +126,7 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 		// Likewise any WebP container: x/image/webp and the riff, vp8 and vp8l
 		// packages under it report most bad input as plain errors, and the
 		// source is an in-memory reader, so every one of them describes the bytes.
-		if len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
+		if isWebP {
 			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
 		}
 		return nil, classifyDecodeError(err)
@@ -101,8 +134,9 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 
 	// Any package in the binary that imports image/gif (or another decoder)
 	// registers it process-wide, so this allowlist is what keeps the proxy to
-	// the four formats it budgets for. Decode below sees the same registry, so
-	// one check covers both calls.
+	// the four formats it budgets for. Decode below uses the same registry for
+	// JPEG and PNG, and the format-specific decoders otherwise, so one check
+	// covers both calls.
 	if format != "jpeg" && format != "png" && format != "webp" && format != "gif" {
 		return nil, fmt.Errorf("%w: format %s", ErrUnsupportedFormat, format)
 	}
@@ -129,8 +163,20 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	//     8 + 3 B/px plus the kernel cap (about 820 MB).
 	//   - Orientation (JPEG only, 3 B/px frame) adds one destination-sized
 	//     buffer to the scale phase.
-	// So one slot peaks under about 850 MB at 50 MP, and the 4 default slots
-	// under about 3.4 GB. int64 avoids header overflow.
+	//   - WebP encode runs in the same slot after scaling and dominates for
+	//     large renders. The pure-Go encoder's peak RSS for the largest
+	//     content_full output, 1600×16383 (26 MP), measured 1.6 GB opaque
+	//     and 3.7 GB for translucent noise: lossy WebP compresses the alpha
+	//     plane in a separate lossless pass, and each wasm memory.grow holds
+	//     the old and new linear memory at once. The decoded frame (≤ 400 MB
+	//     for a 16-bit PNG) and the destination (≤ 105 MB) can be live beside it.
+	// So one slot peaks near 4.2 GB, and the 4 default slots near 17 GB.
+	// Renders of a few megapixels stay under the 850 MB scale-phase peak. With
+	// the upload pipeline in the same process (internal/core/media, 4 slots,
+	// about 3.4 GB), the in-flight fetch cap (64 × 10 MB) and the ~200 MiB
+	// baseline, the AppView's worst case is about 21 GB; docker-compose.prod.yml
+	// sizes its memory limit and GOMEMLIMIT for it.
+	// int64 avoids header overflow.
 	declaredPixels := int64(header.Width) * int64(header.Height)
 	if declaredPixels > p.maxSourcePixels {
 		return nil, fmt.Errorf("%w: %dx%d exceeds the %d-megapixel budget",
@@ -158,9 +204,12 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 
 	// Decode the source image from a fresh reader; DecodeConfig consumed the header.
 	var img image.Image
-	if format == "gif" {
+	switch format {
+	case "gif":
 		img, err = gif.Decode(bytes.NewReader(data))
-	} else {
+	case "webp":
+		img, err = webp.Decode(bytes.NewReader(data))
+	default:
 		img, _, err = image.Decode(bytes.NewReader(data))
 	}
 	if err != nil {
@@ -207,6 +256,16 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
+	// WebP cannot hold a side over maxWebPSide; only such a render keeps the
+	// PNG or JPEG encoder.
+	outputWidth, outputHeight := processed.Bounds().Dx(), processed.Bounds().Dy()
+	if outputWidth <= maxWebPSide && outputHeight <= maxWebPSide {
+		options := webpencoder.Options{Quality: preset.Quality, Method: webpEncodeMethod}
+		if err := webpencoder.Encode(&buf, straightAlpha(processed), options); err != nil {
+			return nil, fmt.Errorf("%w: failed to encode WebP: %v", ErrProcessingFailed, err)
+		}
+		return buf.Bytes(), nil
+	}
 	if format == "png" {
 		if err := png.Encode(&buf, processed); err != nil {
 			return nil, fmt.Errorf("%w: failed to encode PNG: %v", ErrProcessingFailed, err)
@@ -218,6 +277,34 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// straightAlpha hands the encoder straight-alpha pixels. The encoder reads an
+// *image.RGBA's bytes as straight alpha, but media.ScaleImage and
+// media.OrientImage produce premultiplied RGBA, so translucent pixels would
+// come out darker. (A decoder returns *image.RGBA only for an opaque PNG.)
+// The conversion runs in place on the RGBA buffer, which Process owns, so it
+// adds no frame-sized copy; opaque pixels are already identical in both forms.
+// *image.NRGBA and *image.NYCbCrA are already straight alpha, and the encoder
+// converts other types through image/draw, which handles premultiplication.
+func straightAlpha(img image.Image) image.Image {
+	premultiplied, ok := img.(*image.RGBA)
+	if !ok {
+		return img
+	}
+	pixels := premultiplied.Pix
+	for offset := 0; offset+3 < len(pixels); offset += 4 {
+		alpha := uint32(pixels[offset+3])
+		if alpha == 0xff || alpha == 0 {
+			continue
+		}
+		// The same arithmetic as color.NRGBAModel, at 16 bits per channel.
+		alpha16 := alpha * 0x101
+		for channel := offset; channel < offset+3; channel++ {
+			pixels[channel] = uint8((uint32(pixels[channel]) * 0x101 * 0xffff / alpha16) >> 8)
+		}
+	}
+	return &image.NRGBA{Pix: pixels, Stride: premultiplied.Stride, Rect: premultiplied.Rect}
 }
 
 // countGIFFrames walks the entire GIF container without inflating its LZW

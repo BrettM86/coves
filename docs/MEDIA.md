@@ -28,7 +28,7 @@ Scanning is on serve, not on ingest, and matches only known hashes. Nothing hash
 
 ## Decode budget
 
-The proxy is unauthenticated and decodes blobs from any PDS, so an attacker can publish a small PNG that declares huge dimensions. `processor.go` reads the header with `image.DecodeConfig` and refuses an image whose declared pixel count exceeds `IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS` (default 50) before decoding. Decodes run in `IMAGE_PROXY_MAX_CONCURRENT_PROCESSES` slots (default 4). A request waits at most 5 seconds for a slot, then gets 503 with `Retry-After` derived from the same wait. `IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS` (default 64) caps cache-miss requests holding fetched bytes, and `IMAGE_PROXY_MAX_SOURCE_SIZE_MB` (default 10) caps the fetch.
+The proxy is unauthenticated and decodes blobs from any PDS, so an attacker can publish a small PNG that declares huge dimensions. `processor.go` reads the header (with x/image/webp's `DecodeConfig` for WebP, `image.DecodeConfig` otherwise) and refuses an image whose declared pixel count exceeds `IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS` (default 50) before decoding. Decodes run in `IMAGE_PROXY_MAX_CONCURRENT_PROCESSES` slots (default 4). A request waits at most 5 seconds for a slot, then gets 503 with `Retry-After` derived from the same wait. `IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS` (default 64) caps cache-miss requests holding fetched bytes, and `IMAGE_PROXY_MAX_SOURCE_SIZE_MB` (default 10) caps the fetch.
 
 ## Cache-Control
 

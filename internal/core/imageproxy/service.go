@@ -89,10 +89,12 @@ type ImageProxyService struct {
 	//   check at once, each holding up to MaxSourceSizeMB of fetched blob or,
 	//   once processed, its output until publication finishes;
 	//   processSlots bounds how many of those DECODE at once, each costing up
-	//   to the pixel budget × ~19 B/px (see the processor's cost model).
+	//   to the pixel budget × ~19 B/px plus the WebP encode of its output
+	//   (up to about 3.7 GB for a 26 MP render; see the processor's cost model).
 	//
 	// Total transient memory is therefore about
-	//   MaxInFlightRequests × MaxSourceSizeMB + MaxConcurrentProcesses × budget × 19 B/px
+	//   MaxInFlightRequests × MaxSourceSizeMB +
+	//   MaxConcurrentProcesses × (budget × 19 B/px + WebP encode peak)
 	// rather than either term × however many connections an attacker opens.
 	admissionSlots *semaphore.Weighted
 	processSlots   *semaphore.Weighted

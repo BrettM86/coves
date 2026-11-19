@@ -53,6 +53,7 @@ run:
     - integration
     - e2e
     - live
+    - nodynamic # lint the pure-Go WebP encoder build that production runs (see Dockerfile)
   tests: true
   go: "1.27"
 

@@ -8,7 +8,6 @@ import (
 	"image/color"
 	"image/draw"
 	"image/gif"
-	_ "image/jpeg"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multihash"
+	"golang.org/x/image/webp"
 
 	"Coves/internal/core/imageproxy"
 	"Coves/tests/testkit"
@@ -37,6 +37,19 @@ func transparentFormatPNG(t *testing.T) []byte {
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, img); err != nil {
 		t.Fatalf("encode transparent PNG: %v", err)
+	}
+	return encoded.Bytes()
+}
+
+// tallTransparentFormatPNG is a 2x17000 PNG with a transparent left column.
+// Its height is over WebP's 16383 side limit, so the proxy serves it as PNG.
+func tallTransparentFormatPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 17000))
+	draw.Draw(img, image.Rect(1, 0, 2, 17000), image.NewUniform(color.NRGBA{R: 255, A: 255}), image.Point{}, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatalf("encode tall transparent PNG: %v", err)
 	}
 	return encoded.Bytes()
 }
@@ -120,25 +133,54 @@ func serveFormatImage(handler *Handler, method, preset, requestedCID string) *ht
 	return recorder
 }
 
+// opaqueFormatPNG is a 1000x500 opaque PNG; content_preview contains it at
+// 800x400.
+func opaqueFormatPNG() []byte {
+	return testkit.TestPNG(1000, 500)
+}
+
+// assertServedWebP checks that a served body carries the WebP magic and decodes
+// at exactly width x height, and returns the decoded image.
+func assertServedWebP(t *testing.T, body []byte, width, height int) image.Image {
+	t.Helper()
+	if len(body) < 12 || string(body[0:4]) != "RIFF" || string(body[8:12]) != "WEBP" {
+		prefix := body[:min(len(body), 12)]
+		t.Fatalf("served body is not WebP: want RIFF....WEBP magic, got % x", prefix)
+	}
+	img, err := webp.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode served WebP: %v", err)
+	}
+	if got := img.Bounds().Dx(); got != width {
+		t.Errorf("decoded width = %d, want %d", got, width)
+	}
+	if got := img.Bounds().Dy(); got != height {
+		t.Errorf("decoded height = %d, want %d", got, height)
+	}
+	return img
+}
+
 func TestHandler_ServesSourceFormats(t *testing.T) {
-	pngSource := transparentFormatPNG(t)
+	transparentSource := transparentFormatPNG(t)
 	webpSource, err := os.ReadFile(filepath.Join("testdata", "source.webp"))
 	if err != nil {
 		t.Fatalf("read WebP fixture: %v", err)
 	}
 	cases := []struct {
-		name, preset, contentType, format string
-		source                            []byte
-		checkAlpha                        bool
+		name, preset  string
+		source        []byte
+		width, height int
+		checkAlpha    bool
 	}{
-		{"PNG/avatar", "avatar", "image/png", "png", pngSource, true},
-		{"PNG/avatar_small", "avatar_small", "image/png", "png", pngSource, true},
-		{"PNG/banner", "banner", "image/png", "png", pngSource, true},
-		{"PNG/content_preview", "content_preview", "image/png", "png", pngSource, true},
-		{"PNG/content_full", "content_full", "image/png", "png", pngSource, true},
-		{"PNG/embed_thumbnail", "embed_thumbnail", "image/png", "png", pngSource, true},
-		{"JPEG", "avatar_small", "image/jpeg", "jpeg", testkit.TestJPEGColor(120, 60, color.RGBA{R: 255, A: 255}), false},
-		{"WebP", "avatar_small", "image/jpeg", "jpeg", webpSource, false},
+		{"OpaquePNG/content_preview", "content_preview", opaqueFormatPNG(), 800, 400, false},
+		{"TransparentPNG/avatar", "avatar", transparentSource, 1000, 1000, true},
+		{"TransparentPNG/avatar_small", "avatar_small", transparentSource, 192, 192, true},
+		{"TransparentPNG/banner", "banner", transparentSource, 640, 300, true},
+		{"TransparentPNG/content_preview", "content_preview", transparentSource, 800, 800, true},
+		{"TransparentPNG/content_full", "content_full", transparentSource, 1200, 1200, true},
+		{"TransparentPNG/embed_thumbnail", "embed_thumbnail", transparentSource, 720, 360, true},
+		{"JPEG/avatar_small", "avatar_small", testkit.TestJPEGColor(120, 60, color.RGBA{R: 255, A: 255}), 192, 192, false},
+		{"WebP/avatar_small", "avatar_small", webpSource, 192, 192, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,19 +191,16 @@ func TestHandler_ServesSourceFormats(t *testing.T) {
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body: %s", response.Code, response.Body.String())
 			}
-			if got := response.Header().Get("Content-Type"); got != tc.contentType {
-				t.Errorf("Content-Type = %q, want %q", got, tc.contentType)
+			if got := response.Header().Get("Content-Type"); got != "image/webp" {
+				t.Errorf("Content-Type = %q, want %q", got, "image/webp")
 			}
 			if got := response.Header().Get("Content-Length"); got != strconv.Itoa(response.Body.Len()) {
 				t.Errorf("Content-Length = %q, want %d", got, response.Body.Len())
 			}
-			img, format, err := image.Decode(bytes.NewReader(response.Body.Bytes()))
-			if err != nil {
-				t.Fatalf("decode served image: %v", err)
+			if got := response.Header().Get("ETag"); got != `"r3-`+tc.preset+`-`+rawCIDForHandlerFixture(t, tc.source)+`"` {
+				t.Errorf("ETag = %q, want the r3 render version", got)
 			}
-			if format != tc.format {
-				t.Errorf("decoded format = %q, want %q", format, tc.format)
-			}
+			img := assertServedWebP(t, response.Body.Bytes(), tc.width, tc.height)
 			if tc.checkAlpha {
 				bounds := img.Bounds()
 				middle := bounds.Min.Y + bounds.Dy()/2
@@ -178,22 +217,25 @@ func TestHandler_ServesSourceFormats(t *testing.T) {
 	}
 }
 
-func TestHandler_PNGHeadMatchesGet(t *testing.T) {
-	source := transparentFormatPNG(t)
+func TestHandler_HeadMatchesGet(t *testing.T) {
+	source := opaqueFormatPNG()
 	requestedCID := rawCIDForHandlerFixture(t, source)
 	handler := newFormatServingHandler(t, t.TempDir(), formatFetcher(func(context.Context, string, string, string) ([]byte, error) {
 		return source, nil
 	}))
-	get := serveFormatImage(handler, http.MethodGet, "avatar_small", requestedCID)
+	get := serveFormatImage(handler, http.MethodGet, "content_preview", requestedCID)
 	if get.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, want 200; body: %s", get.Code, get.Body.String())
 	}
-	head := serveFormatImage(handler, http.MethodHead, "avatar_small", requestedCID)
+	head := serveFormatImage(handler, http.MethodHead, "content_preview", requestedCID)
 	if head.Code != http.StatusOK {
 		t.Fatalf("HEAD status = %d, want 200; body: %s", head.Code, head.Body.String())
 	}
-	if got := head.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("HEAD Content-Type = %q, want %q", got, "image/png")
+	if got := get.Header().Get("Content-Type"); got != "image/webp" {
+		t.Errorf("GET Content-Type = %q, want %q", got, "image/webp")
+	}
+	if got := head.Header().Get("Content-Type"); got != "image/webp" {
+		t.Errorf("HEAD Content-Type = %q, want %q", got, "image/webp")
 	}
 	if got := head.Header().Get("Content-Length"); got != strconv.Itoa(get.Body.Len()) {
 		t.Errorf("HEAD Content-Length = %q, want %d", got, get.Body.Len())
@@ -203,13 +245,14 @@ func TestHandler_PNGHeadMatchesGet(t *testing.T) {
 	}
 }
 
-func TestHandler_PNGTypeSurvivesDiskCacheRestart(t *testing.T) {
+func TestHandler_ContentTypeSurvivesDiskCacheRestart(t *testing.T) {
 	cases := []struct {
 		name, preset, contentType string
 		source                    []byte
 	}{
-		{"PNG/avatar_small", "avatar_small", "image/png", transparentFormatPNG(t)},
+		{"OpaquePNG/content_preview", "content_preview", "image/webp", opaqueFormatPNG()},
 		{"GIF/content_full", "content_full", "image/gif", formatGIF(t, true)},
+		{"TallTransparentPNG/content_full", "content_full", "image/png", tallTransparentFormatPNG(t)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

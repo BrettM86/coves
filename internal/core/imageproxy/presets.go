@@ -37,7 +37,7 @@ func (p Preset) Validate() error {
 	if p.Fit == FitCover && p.Height <= 0 {
 		return ErrInvalidPreset
 	}
-	// Quality must be in JPEG range (1-100)
+	// Quality must be in the encoder's range (1-100)
 	if p.Quality < 1 || p.Quality > 100 {
 		return ErrInvalidPreset
 	}
@@ -59,8 +59,8 @@ var presets = map[string]Preset{
 	},
 	"avatar_small": {
 		Name:    "avatar_small",
-		Width:   360,
-		Height:  360,
+		Width:   192,
+		Height:  192,
 		Fit:     FitCover,
 		Quality: 80,
 	},

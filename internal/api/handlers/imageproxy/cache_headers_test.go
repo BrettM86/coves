@@ -17,7 +17,7 @@ import (
 func TestHandler_RoutedImageCacheHeaders(t *testing.T) {
 	const path = "/img/avatar/plain/" + validTestDID + "/" + validTestCID
 	const cacheControl = "public, max-age=86400"
-	const etag = `"r2-avatar-` + validTestCID + `"`
+	const etag = `"r3-avatar-` + validTestCID + `"`
 
 	route := func(service Service) http.Handler {
 		router := chi.NewRouter()

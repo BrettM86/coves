@@ -194,13 +194,13 @@ trap 'kill "$progress_pid" 2>/dev/null || true' EXIT
 # TEST_FLAGS is deliberately unquoted: it carries two flags and two values.
 set +e
 # shellcheck disable=SC2086
-go test -json -tags integration $TEST_FLAGS -count=1 -timeout "$TEST_TIMEOUT" \
+go test -json -tags integration,nodynamic $TEST_FLAGS -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
 integration_status=$?
 # Keep this stream separate: ci-report keys by package/test, so a second
 # build of the same package must not overwrite an earlier test outcome.
-go test -json -tags dev -count=1 -timeout "$TEST_TIMEOUT" \
+go test -json -tags dev,nodynamic -count=1 -timeout "$TEST_TIMEOUT" \
     ./internal/atproto/oauth >"$DEV_RAW" 2>&1
 dev_status=$?
 run_pipeline_tier -json >>"$RAW" 2>&1

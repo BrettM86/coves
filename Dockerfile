@@ -27,10 +27,15 @@ COPY . .
 # architecture (an emulated amd64 binary on an arm64 dev machine makes every
 # test run drastically slower) and -tags dev, which is what `make run` uses and
 # what the localhost OAuth resolvers live behind.
+#
+# nodynamic is always set: without it the WebP encoder's purego loader makes
+# the CGO_ENABLED=0 binary dynamically linked against glibc and dlopens a
+# system libwebp, so it would not start on Alpine. An empty BUILD_TAGS leaves a
+# trailing comma, which go build accepts.
 ARG GOARCH=amd64
 ARG BUILD_TAGS=""
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build \
-    -tags "${BUILD_TAGS}" \
+    -tags "nodynamic,${BUILD_TAGS}" \
     -ldflags="-s -w" \
     -o /build/coves-server \
     ./cmd/server

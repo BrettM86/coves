@@ -66,6 +66,10 @@ var (
 
 	// ErrNilDependency is returned when a required dependency is nil.
 	ErrNilDependency = errors.New("required dependency is nil")
+
+	// ErrDynamicWebPEncoder is returned by NewProcessor when the binary was
+	// built without -tags nodynamic and the WebP encoder loaded a system libwebp.
+	ErrDynamicWebPEncoder = errors.New("WebP encoder is dynamically linked")
 )
 
 // ErrBlobBlocked is returned when moderation blocks serving a blob.

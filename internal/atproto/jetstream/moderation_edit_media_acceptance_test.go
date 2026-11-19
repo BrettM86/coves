@@ -212,7 +212,7 @@ func (h *editMediaHarness) imageStatus(t *testing.T, owner, blobCID string) int 
 	require.NoError(t, err)
 	if response.StatusCode == http.StatusOK {
 		require.NotEmpty(t, body, "the image proxy must serve image bytes")
-		require.Equal(t, "image/png", response.Header.Get("Content-Type"))
+		require.Equal(t, "image/webp", response.Header.Get("Content-Type"))
 	}
 	return response.StatusCode
 }

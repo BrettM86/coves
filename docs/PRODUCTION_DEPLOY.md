@@ -81,6 +81,21 @@ done
 
 To roll back a Caddyfile change, find its commit with `git log --oneline -1 -- Caddyfile`, run `git checkout <sha>^ -- Caddyfile`, validate, and force-recreate Caddy as above. That leaves `/opt/coves` dirty; before the next deploy, either `git checkout -- Caddyfile` or land a revert commit.
 
+## Image proxy render version r3
+
+The deploy that bumps the image proxy's `renderVersion` to `r3` serves WebP (unless a side exceeds 16383 px) and 192px `avatar_small`. The disk cache is not keyed by render version, so already-cached renders keep their old JPEG or PNG bytes and 360px avatars until the cache is cleared. Clear it while no AppView is running: an r3 container serving an old entry would give it an r3 ETag, and a browser holding that ETag gets 304 before the cache is read, so it keeps the old bytes. Build the new image, stop the AppView, clear the `coves-prod-imageproxy-cache` volume (mounted at `IMAGE_PROXY_CACHE_PATH`) with a one-off container, then start the new AppView:
+
+```sh
+cd /opt/coves
+export VERSION=$(git rev-parse --short HEAD)
+docker compose -f docker-compose.prod.yml build appview
+docker compose -f docker-compose.prod.yml stop appview
+docker run --rm -v coves-prod-imageproxy-cache:/cache alpine find /cache -mindepth 1 -delete
+docker compose -f docker-compose.prod.yml up -d --no-deps appview
+```
+
+Then run Purge Everything on the `coves.social` zone in Cloudflare; only `img.coves.social` is proxied, so this drops only cached images (see [MEDIA.md](MEDIA.md#edge-purge)). Images are served with `public, max-age=86400` (and `s-maxage=31536000` on purgeable URLs when CDN purge is configured), so without the purge edges keep the old renders for up to a day, or a year for those URLs. Browsers holding an `r2` ETag fetch the new render on their next revalidation.
+
 ## Bridged handle reconciliation
 
 `cmd/reconcile-handles` is rollout steps 6 and 6a of the Tidepool handle rename (Tidepool `docs/PRD_HANDLE_RENAME.md` §6). It selects every `users` and `communities` row whose `pds_url` is a trusted bridge host, resolves each DID fresh against PLC, and writes changed handles through the same per-DID locked refresh the identity-event consumers run: users' OAuth session handles are updated too, and a community handle must pass handle validation and the hostedBy check first. It loads the AppView's configuration, so it needs the environment the AppView container gets.

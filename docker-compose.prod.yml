@@ -243,6 +243,12 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_ALERT_REASONS: ${TELEGRAM_ALERT_REASONS:-}
       TELEGRAM_TIMEOUT_SECONDS: ${TELEGRAM_TIMEOUT_SECONDS:-5}
+      # Soft heap limit under the 24G cap, at the AppView's measured worst case
+      # of about 21 GB: four image proxy slots each encoding a 26 MP
+      # translucent WebP (about 4.2 GB each), the upload pipeline (about
+      # 3.4 GB), the fetch cap and the baseline. See the cost model in
+      # internal/core/imageproxy/processor.go.
+      GOMEMLIMIT: 20GiB
     volumes:
       # Image proxy cache (persistent across container restarts)
       - imageproxy-cache:/var/cache/coves/images
@@ -257,11 +263,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    # Go is memory-efficient, but give it room for connection pools
     deploy:
       resources:
         limits:
-          memory: 8G
+          # Above the ~21 GB worst case (image proxy and upload pipeline
+          # included) that GOMEMLIMIT is set against.
+          memory: 24G
         reservations:
           memory: 512M
 

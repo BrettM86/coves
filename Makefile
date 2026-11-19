@@ -128,9 +128,11 @@ db-reset: ## Reset database (delete all data and re-run migrations)
 ##@ Testing
 
 test: ## T0 unit tier - no Docker, no database, no public network. The inner loop.
-	@# Untagged `go test` is the unit tier by construction: every test that
-	@# needs something out of process carries a build tag (integration/e2e/live)
-	@# and is therefore not in this build at all. That is what lets this target
+	@# `go test` without a tier tag is the unit tier by construction: every
+	@# test that needs something out of process carries a tier tag
+	@# (integration/e2e/live) and is therefore not in this build at all.
+	@# nodynamic is not a tier: it keeps the WebP encoder pure Go, as in
+	@# production (see docs/TEST_ARCHITECTURE.md). That is what lets this target
 	@# start no containers and wait for nothing — and it is checked, not hoped
 	@# for: the tier is verified by running this selection with the network
 	@# switched off entirely.
@@ -139,7 +141,7 @@ test: ## T0 unit tier - no Docker, no database, no public network. The inner loo
 	@# loopback are used freely here, and they are why `--network none` is the
 	@# honest check rather than an unreachable ideal.
 	@echo "$(GREEN)Running the unit tier (untagged)...$(RESET)"
-	@go test ./cmd/... ./internal/... ./tests/...
+	@go test -tags nodynamic ./cmd/... ./internal/... ./tests/...
 	@echo "$(GREEN)✓ Unit tier complete$(RESET)"
 
 test-integration: ## T1 integration tier - needs Postgres; starts postgres-test itself
@@ -196,7 +198,7 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 	FLAGS=$$(./scripts/test-db-prepare.sh --print-flags) || exit 1; \
 	[ -n "$$FLAGS" ] || { echo "$(RED)✗ test-db-prepare printed no concurrency flags$(RESET)"; exit 1; }; \
 	echo "  concurrency budget: $$FLAGS"; \
-	go test -tags integration $$FLAGS ./cmd/... ./internal/... ./tests/...
+	go test -tags integration,nodynamic $$FLAGS ./cmd/... ./internal/... ./tests/...
 	@echo ""
 	@echo "$(YELLOW)Note: some packages need a PDS as well as Postgres, and each one's$(RESET)"
 	@echo "$(YELLOW)TestMain says so up front — without 'make dev-up' the package fails$(RESET)"
@@ -322,7 +324,7 @@ test-live: ## Run the opt-in tests that deliberately hit the public internet (NO
 	@echo ""
 	@echo "$(CYAN)Requires: the test database on port 5434 ('make dev-up').$(RESET)"
 	@echo ""
-	@go test -tags live -count=1 -timeout 600s ./tests/live/... -v
+	@go test -tags live,nodynamic -count=1 -timeout 600s ./tests/live/... -v
 
 ci: ## Hermetic merge gate - builds its own stack from scratch, runs everything, enforces the skip allowlist
 	@./scripts/ci.sh
@@ -360,12 +362,12 @@ lint-fix: ## Run golangci-lint and auto-fix issues
 
 build: ## Build the Coves server (production - no dev code)
 	@echo "$(GREEN)Building Coves server (production)...$(RESET)"
-	@go build -o server ./cmd/server
+	@go build -tags nodynamic -o server ./cmd/server
 	@echo "$(GREEN)✓ Build complete: ./server$(RESET)"
 
 build-dev: ## Build the Coves server with dev mode (includes localhost OAuth resolvers)
 	@echo "$(GREEN)Building Coves server (dev mode)...$(RESET)"
-	@go build -tags dev -o server ./cmd/server
+	@go build -tags dev,nodynamic -o server ./cmd/server
 	@echo "$(GREEN)✓ Build complete: ./server (with dev tags)$(RESET)"
 
 run: ## Run the Coves server with dev environment (requires database running)

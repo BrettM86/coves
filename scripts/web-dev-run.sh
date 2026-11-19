@@ -71,7 +71,7 @@ echo "   Press Ctrl+C to stop both services"
 echo ""
 
 # Run Go server (foreground - will block)
-go run -tags dev ./cmd/server
+go run -tags dev,nodynamic ./cmd/server
 
 # If Go server exits, clean up Vite
 cleanup

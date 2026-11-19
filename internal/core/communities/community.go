@@ -412,7 +412,7 @@ func (c *Community) GetPDSAccessToken() string {
 }
 
 // ToCommunityView converts a Community to a CommunityView for API responses
-// Uses avatar_small preset (24px) for list views
+// Uses the avatar_small preset (192px) for list views
 func (c *Community) ToCommunityView() *CommunityView {
 	view := &CommunityView{
 		DID:             c.DID,

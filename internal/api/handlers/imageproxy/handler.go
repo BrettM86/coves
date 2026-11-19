@@ -29,9 +29,12 @@ var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQ
 // renderVersion prefixes every image ETag. The If-None-Match check answers 304
 // before the cache is consulted, so a browser holding a validator from an
 // earlier renderer would keep its old bytes forever. Bump it whenever the
-// rendered bytes for the same preset and CID change. r2: PNG sources stay PNG
-// and EXIF orientation is applied.
-const renderVersion = "r2"
+// rendered bytes for the same preset and CID change. The disk cache is not
+// keyed by render version, so a bump reaches already-cached renders only once
+// the cache directory is cleared, which is a deploy step. r2: PNG sources stay PNG
+// and EXIF orientation is applied. r3: output is WebP unless a side exceeds
+// 16383 px; avatar_small is 192px.
+const renderVersion = "r3"
 
 // successCacheControl is the cache policy of a served image and of its 304
 // when the request has no query string and does not qualify for
@@ -195,11 +198,15 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The cached bytes carry their own format, including across restarts.
+	// Renders with a side over 16383 px, and entries written before r3, are
+	// JPEG or PNG.
 	contentType := "image/jpeg"
 	if bytes.HasPrefix(imageData, []byte("\x89PNG\r\n\x1a\n")) {
 		contentType = "image/png"
 	} else if bytes.HasPrefix(imageData, []byte("GIF87a")) || bytes.HasPrefix(imageData, []byte("GIF89a")) {
 		contentType = "image/gif"
+	} else if len(imageData) >= 12 && bytes.HasPrefix(imageData, []byte("RIFF")) && bytes.Equal(imageData[8:12], []byte("WEBP")) {
+		contentType = "image/webp"
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(imageData)))

@@ -1,7 +1,6 @@
 package imageproxy
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 
@@ -102,5 +101,7 @@ func TestImageProxyService_AcceptsLiteralRawSHA256CID(t *testing.T) {
 	service := mustNewService(t, cache, newTestProcessor(t), NewMockFetcher(data, nil), DefaultConfig())
 	output, err := service.GetImageResolvingPDS(t.Context(), "content_preview", "did:plc:test123", "bafkreigeuexa7agavc2emh3jirquiqqub3idxyr2tjvxotlaorm62ao44a", resolvedPDS("https://pds.example.com"))
 	require.NoError(t, err)
-	assert.True(t, bytes.HasPrefix(output, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}))
+	require.Greater(t, len(output), 12)
+	assert.Equal(t, "RIFF", string(output[:4]))
+	assert.Equal(t, "WEBP", string(output[8:12]))
 }

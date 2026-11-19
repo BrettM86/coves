@@ -4,16 +4,16 @@ An image URL has the shape `<base>/img/<preset>/plain/<did>/<cid>`. `blobs.Hydra
 
 The supported presets and their maximum or target dimensions are:
 
-| Preset | Dimensions (px) | Fit | JPEG quality |
+| Preset | Dimensions (px) | Fit | Quality |
 | --- | --- | --- | --- |
 | `avatar` | 1000 × 1000 | cover | 85 |
-| `avatar_small` | 360 × 360 | cover | 80 |
+| `avatar_small` | 192 × 192 | cover | 80 |
 | `banner` | 640 × 300 | cover | 85 |
 | `content_preview` | width up to 800, proportional height | contain | 80 |
 | `content_full` | width up to 1600, proportional height | contain | 90 |
 | `embed_thumbnail` | 720 × 360 | cover | 80 |
 
-Output format depends on the source: PNG remains PNG; JPEG and WebP produce JPEG; GIF `content_full` serves the original GIF, while other GIF presets produce a JPEG of its first frame. The JPEG quality column applies only to JPEG output.
+A render is lossy WebP, with alpha kept, when both sides are at most 16383 px, WebP's limit. A render with a longer side is PNG for a PNG source and JPEG otherwise. GIF `content_full` serves the original GIF; other GIF presets render its first frame by the same rule. The quality column applies to WebP and JPEG output; PNG output is lossless.
 
 ## AppView ownership and serving
 

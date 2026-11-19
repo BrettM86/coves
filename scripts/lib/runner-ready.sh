@@ -146,6 +146,6 @@ check_contract_manifest() {
 #
 # Extra arguments are appended, which is how the caller adds -json or -v.
 run_pipeline_tier() {
-    go test -tags e2e -p 1 -parallel 1 -count=1 \
+    go test -tags e2e,nodynamic -p 1 -parallel 1 -count=1 \
         -timeout "${COVES_CI_TEST_TIMEOUT:-1800s}" "$@" ./tests/e2e/...
 }

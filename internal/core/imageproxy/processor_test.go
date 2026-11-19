@@ -2,19 +2,79 @@ package imageproxy
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"math/rand"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/image/webp"
 )
+
+// webpImagePayloadFourCC returns the FourCC of the chunk holding the image
+// bitstream: the first chunk of a simple file, or the first "VP8 " or "VP8L"
+// chunk after a VP8X extended header.
+func webpImagePayloadFourCC(t *testing.T, data []byte) string {
+	t.Helper()
+	offset := 12
+	for offset+8 <= len(data) {
+		fourCC := string(data[offset : offset+4])
+		if fourCC == "VP8 " || fourCC == "VP8L" {
+			return fourCC
+		}
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		offset += 8 + size + size%2
+	}
+	t.Fatalf("no VP8 or VP8L image chunk in %d-byte WebP", len(data))
+	return ""
+}
+
+// assertLossyWebP checks that data is a lossy WebP of exactly width x height
+// and returns the decoded image.
+func assertLossyWebP(t *testing.T, data []byte, width, height int) image.Image {
+	t.Helper()
+	require.GreaterOrEqual(t, len(data), 12, "output too short to be WebP")
+	require.True(t, string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP",
+		"expected WebP magic (RIFF....WEBP), got % x", data[:12])
+	require.Equal(t, "VP8 ", webpImagePayloadFourCC(t, data), "expected a lossy VP8 image chunk, not lossless VP8L")
+	img, err := webp.Decode(bytes.NewReader(data))
+	require.NoError(t, err)
+	require.Equal(t, width, img.Bounds().Dx(), "decoded width")
+	require.Equal(t, height, img.Bounds().Dy(), "decoded height")
+	return img
+}
+
+// texturedTestPNG is a deterministic photographic-style opaque PNG: diagonal
+// colour gradients overlaid with seeded noise, which PNG compresses poorly.
+func texturedTestPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	random := rand.New(rand.NewSource(20261117))
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	clamp := func(value int) uint8 { return uint8(max(0, min(255, value))) }
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			noise := random.Intn(41) - 20
+			img.SetNRGBA(x, y, color.NRGBA{
+				R: clamp(x*255/width + noise),
+				G: clamp(y*255/height + random.Intn(41) - 20),
+				B: clamp((x+y)*255/(width+height) + noise/2),
+				A: 255,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	return buf.Bytes()
+}
 
 // createTestJPEG creates a test JPEG image with the specified dimensions.
 func createTestJPEG(t *testing.T, width, height int) []byte {
@@ -90,9 +150,9 @@ func TestProcessor_Process_CoverFit(t *testing.T) {
 			name:        "square image to smaller square",
 			srcWidth:    500,
 			srcHeight:   500,
-			preset:      Preset{Name: "avatar_small", Width: 360, Height: 360, Fit: FitCover, Quality: 80},
-			wantWidth:   360,
-			wantHeight:  360,
+			preset:      Preset{Name: "avatar_small", Width: 192, Height: 192, Fit: FitCover, Quality: 80},
+			wantWidth:   192,
+			wantHeight:  192,
 			description: "square scaled down",
 		},
 		{
@@ -123,13 +183,7 @@ func TestProcessor_Process_CoverFit(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 
-			// Decode the result to verify dimensions
-			img, _, err := image.Decode(bytes.NewReader(result))
-			require.NoError(t, err)
-
-			bounds := img.Bounds()
-			assert.Equal(t, tt.wantWidth, bounds.Dx(), "width mismatch for %s", tt.description)
-			assert.Equal(t, tt.wantHeight, bounds.Dy(), "height mismatch for %s", tt.description)
+			assertLossyWebP(t, result, tt.wantWidth, tt.wantHeight)
 		})
 	}
 }
@@ -192,15 +246,7 @@ func TestProcessor_Process_ContainFit(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 
-			// Decode the result to verify dimensions
-			img, _, err := image.Decode(bytes.NewReader(result))
-			require.NoError(t, err)
-
-			bounds := img.Bounds()
-			// For contain fit, verify width doesn't exceed max and aspect ratio is preserved
-			assert.LessOrEqual(t, bounds.Dx(), tt.wantMaxWidth, "width should not exceed max for %s", tt.description)
-			assert.Equal(t, tt.wantMaxWidth, bounds.Dx(), "width mismatch for %s", tt.description)
-			assert.Equal(t, tt.wantMaxHeight, bounds.Dy(), "height mismatch for %s", tt.description)
+			assertLossyWebP(t, result, tt.wantMaxWidth, tt.wantMaxHeight)
 		})
 	}
 }
@@ -261,38 +307,59 @@ func TestProcessor_Process_InvalidImageData(t *testing.T) {
 	}
 }
 
-func TestProcessor_Process_SupportsJPEG(t *testing.T) {
+// TestProcessor_Process_EncodesLossyWebP covers every re-encoded source
+// format: each comes out as lossy WebP at the preset's size, for both fits.
+func TestProcessor_Process_EncodesLossyWebP(t *testing.T) {
+	stillWebP, err := os.ReadFile("testdata/still-lossless-1600x1200.webp")
+	require.NoError(t, err)
+	sources := []struct {
+		name string
+		data []byte
+	}{
+		{name: "jpeg", data: createTestJPEG(t, 1600, 1200)},
+		{name: "opaque png", data: createTestPNG(t, 1600, 1200)},
+		{name: "still lossless webp", data: stillWebP},
+		{name: "still gif", data: animatedGIF(t, 1600, 1200, 1)},
+	}
+	fits := []struct {
+		presetName    string
+		width, height int
+	}{
+		{presetName: "avatar", width: 1000, height: 1000},
+		{presetName: "content_preview", width: 800, height: 600},
+	}
 	proc := newTestProcessor(t)
-	srcData := createTestJPEG(t, 500, 500)
-	preset, _ := GetPreset("avatar")
-
-	result, err := proc.Process(srcData, preset)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Verify output is valid JPEG
-	img, format, err := image.Decode(bytes.NewReader(result))
-	require.NoError(t, err)
-	assert.Equal(t, "jpeg", format)
-	assert.Equal(t, 1000, img.Bounds().Dx())
-	assert.Equal(t, 1000, img.Bounds().Dy())
+	for _, source := range sources {
+		for _, fit := range fits {
+			t.Run(source.name+" "+fit.presetName, func(t *testing.T) {
+				preset, err := GetPreset(fit.presetName)
+				require.NoError(t, err)
+				result, err := proc.Process(source.data, preset)
+				require.NoError(t, err)
+				assertLossyWebP(t, result, fit.width, fit.height)
+			})
+		}
+	}
 }
 
-func TestProcessor_Process_SupportsPNG(t *testing.T) {
+// TestProcessor_Process_TexturedPNGShrinks re-encodes a photographic-style PNG
+// at its own size, so any saving comes from the output format alone.
+func TestProcessor_Process_TexturedPNGShrinks(t *testing.T) {
+	source := texturedTestPNG(t, 512, 384)
+	preset := Preset{Name: "texture", Width: 512, Height: 384, Fit: FitContain, Quality: 80}
+	result, err := newTestProcessor(t).Process(source, preset)
+	require.NoError(t, err)
+	assert.Less(t, len(result), len(source), "output must be smaller than the source PNG")
+}
+
+func TestProcessor_Process_QualityControlsSize(t *testing.T) {
+	source := texturedTestPNG(t, 512, 384)
 	proc := newTestProcessor(t)
-	srcData := createTestPNG(t, 500, 500)
-	preset, _ := GetPreset("avatar")
-
-	result, err := proc.Process(srcData, preset)
+	low, err := proc.Process(source, Preset{Name: "texture", Width: 512, Height: 384, Fit: FitContain, Quality: 30})
 	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Verify PNG input produces PNG output.
-	img, format, err := image.Decode(bytes.NewReader(result))
+	high, err := proc.Process(source, Preset{Name: "texture", Width: 512, Height: 384, Fit: FitContain, Quality: 95})
 	require.NoError(t, err)
-	assert.Equal(t, "png", format)
-	assert.Equal(t, 1000, img.Bounds().Dx())
-	assert.Equal(t, 1000, img.Bounds().Dy())
+	assert.Less(t, len(low), len(high), "quality 30 must produce a smaller file than quality 95")
 }
 
 func TestProcessor_Interface(t *testing.T) {
@@ -434,7 +501,7 @@ func TestProcessor_Process_BudgetBoundary(t *testing.T) {
 			require.NoError(t, err)
 			_, format, decodeErr := image.DecodeConfig(bytes.NewReader(result))
 			require.NoError(t, decodeErr)
-			assert.Equal(t, "jpeg", format)
+			assert.Equal(t, "webp", format)
 		})
 	}
 }
@@ -654,6 +721,53 @@ func TestProcessor_Process_WebPWithoutDecodableFrameIsClientError(t *testing.T) 
 				"an undecodable WebP is the client's bytes, not a failure of ours")
 		})
 	}
+}
+
+// webpAnimatedDecodableFrame builds a 1x1 animated WebP whose single ANMF frame
+// holds a decodable VP8L image, so a first-frame decoder can read it.
+func webpAnimatedDecodableFrame(t *testing.T) []byte {
+	t.Helper()
+	const animationFlag = 0x02
+
+	lossless, err := base64.StdEncoding.DecodeString("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==")
+	require.NoError(t, err)
+	require.Equal(t, "VP8L", string(lossless[12:16]), "fixture image chunk")
+
+	// Background colour (4 bytes) and loop count (2 bytes, 0 = forever).
+	anim := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0, 0}
+	// Frame X and Y (3 bytes each), width-1 and height-1 (3 bytes each),
+	// duration (3 bytes) and flags (1 byte), then the frame's image chunk.
+	anmf := []byte{
+		0, 0, 0,
+		0, 0, 0,
+		0, 0, 0,
+		0, 0, 0,
+		60, 0, 0,
+		0x02,
+	}
+	anmf = append(anmf, lossless[12:]...)
+
+	return webpExtended(animationFlag, 1, 1, webpChunk("ANIM", anim), webpChunk("ANMF", anmf))
+}
+
+// TestProcessor_Process_AnimatedWebPWithDecodableFrameIsRejected pins WebP
+// decoding to x/image/webp. The encoder package registers a "webp" decoder
+// that reads an animated file's first frame, so a processor using the global
+// registry would accept this file.
+func TestProcessor_Process_AnimatedWebPWithDecodableFrameIsRejected(t *testing.T) {
+	data := webpAnimatedDecodableFrame(t)
+	frame, format, err := image.Decode(bytes.NewReader(data))
+	require.NoError(t, err, "the global registry must decode the fixture so the rejection comes from the pinned decoder")
+	require.Equal(t, "webp", format)
+	require.Equal(t, 1, frame.Bounds().Dx())
+	require.Equal(t, 1, frame.Bounds().Dy())
+
+	preset, err := GetPreset("avatar")
+	require.NoError(t, err)
+	result, err := newTestProcessor(t).Process(data, preset)
+
+	assert.Nil(t, result)
+	assert.ErrorIs(t, err, ErrUnsupportedFormat)
 }
 
 // TestProcessor_Process_WebPWithMalformedHeaderIsClientError pins WebP files

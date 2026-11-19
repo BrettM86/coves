@@ -18,7 +18,7 @@ import (
 
 const (
 	imagePath = "/img/avatar/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
-	imageETag = `"r2-avatar-bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"`
+	imageETag = `"r3-avatar-bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"`
 )
 
 type headRouteService struct {

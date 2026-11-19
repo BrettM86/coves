@@ -10,7 +10,7 @@
 // network: a PDS that is an httptest server rather than a PDS.
 //
 // That is what lets them assert the things the unit tests cannot — that the
-// bytes coming out are a decodable JPEG of the preset's exact dimensions, that
+// bytes coming out are a decodable WebP of the preset's exact dimensions, that
 // a preset which preserves aspect ratio really does, that an upstream returning
 // HTML or a truncated PNG turns into a 4xx/5xx rather than a corrupt image, and
 // that a proxy error is served as plain text so a browser's <img> tag does not
@@ -33,10 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"image"
 	"image/color"
-	_ "image/jpeg"
-	_ "image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +53,7 @@ import (
 	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/image/webp"
 )
 
 // defaultFetchTimeout is what the proxy is given for a fetch it is expected to
@@ -262,12 +260,16 @@ func fetch(t *testing.T, url string, header http.Header) (*http.Response, []byte
 	return resp, body.Bytes()
 }
 
-// assertImageSize decodes body and asserts its dimensions.
+// assertImageSize decodes body as WebP, the format every re-encoded image is
+// served in, and asserts its dimensions.
 func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 	t.Helper()
 
-	img, _, err := image.Decode(bytes.NewReader(body))
-	require.NoError(t, err, "the proxy must return decodable image data")
+	require.GreaterOrEqual(t, len(body), 12, "the proxy must return a WebP body")
+	require.True(t, string(body[0:4]) == "RIFF" && string(body[8:12]) == "WEBP",
+		"expected WebP magic (RIFF....WEBP), got % x", body[:12])
+	img, err := webp.Decode(bytes.NewReader(body))
+	require.NoError(t, err, "the proxy must return decodable WebP data")
 
 	bounds := img.Bounds()
 	assert.Equal(t, wantWidth, bounds.Dx(), "width")
@@ -275,7 +277,7 @@ func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 }
 
 // TestImageProxy_ServesProcessedBlob covers the success path end to end: a PNG
-// on the upstream comes back as a JPEG at the preset's dimensions, and a CID
+// on the upstream comes back as a WebP at the preset's dimensions, and a CID
 // the upstream does not hold comes back as a 404 rather than as an empty 200.
 func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	t.Parallel()
@@ -293,8 +295,8 @@ func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 		resp, body := fetch(t, proxyURL(server, "avatar", did, cid), nil)
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		// A PNG source is re-encoded as PNG at the preset's dimensions.
-		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
+		// A PNG source is re-encoded as WebP at the preset's dimensions.
+		assert.Equal(t, "image/webp", resp.Header.Get("Content-Type"))
 		// The avatar preset upscales a 100x100 source to its full 1000x1000.
 		assertImageSize(t, body, 1000, 1000)
 	})
@@ -462,7 +464,7 @@ func TestImageProxy_PresetGeometry(t *testing.T) {
 		width, height int
 	}{
 		{"avatar", 1000, 1000},
-		{"avatar_small", 360, 360},
+		{"avatar_small", 192, 192},
 		{"banner", 640, 300},
 		{"embed_thumbnail", 720, 360},
 	} {

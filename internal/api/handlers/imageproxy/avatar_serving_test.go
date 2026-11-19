@@ -138,8 +138,8 @@ func TestImageProxy_ServesRealPDSAvatar(t *testing.T) {
 		resp, body := fetch(t, url, nil)
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
-		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
-		assertImageSize(t, body, 360, 360)
+		assert.Equal(t, "image/webp", resp.Header.Get("Content-Type"))
+		assertImageSize(t, body, 192, 192)
 	})
 
 	t.Run("the response is cacheable for one day", func(t *testing.T) {
@@ -148,7 +148,7 @@ func TestImageProxy_ServesRealPDSAvatar(t *testing.T) {
 		// The CID identifies stable bytes, but moderation can later block their
 		// serving. Without a purge, a browser or CDN must revalidate within a day.
 		assert.Equal(t, "public, max-age=86400", resp.Header.Get("Cache-Control"))
-		assert.Equal(t, fmt.Sprintf(`"r2-avatar_small-%s"`, avatar.avatarCID), resp.Header.Get("ETag"))
+		assert.Equal(t, fmt.Sprintf(`"r3-avatar_small-%s"`, avatar.avatarCID), resp.Header.Get("ETag"))
 	})
 
 	t.Run("a matching ETag is answered with 304 and no body", func(t *testing.T) {

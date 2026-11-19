@@ -77,10 +77,8 @@ func TestProcessor_Process_CoverCropsFromCentre(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			result, err := proc.Process(decodeTestJPEG(t, row.width, row.height, row.pixel), preset)
 			require.NoError(t, err)
-			img, _, err := image.Decode(bytes.NewReader(result))
-			require.NoError(t, err)
-			require.Equal(t, image.Rect(0, 0, 360, 360), img.Bounds())
-			for _, point := range []image.Point{{20, 20}, {340, 20}, {180, 180}, {20, 340}, {340, 340}} {
+			img := assertLossyWebP(t, result, 192, 192)
+			for _, point := range []image.Point{{10, 10}, {182, 10}, {96, 96}, {10, 182}, {182, 182}} {
 				assertDecodeTestColor(t, img, point.X, point.Y, decodeGreen)
 			}
 		})
@@ -268,10 +266,7 @@ func TestProcessor_Process_EXIFOrientation(t *testing.T) {
 			require.NoError(t, err)
 			output, err := proc.Process(decodeTestWithAPP1(rowSource, segments...), preset)
 			require.NoError(t, err)
-			img, _, err := image.Decode(bytes.NewReader(output))
-			require.NoError(t, err)
-			require.Equal(t, row.width, img.Bounds().Dx())
-			require.Equal(t, row.height, img.Bounds().Dy())
+			img := assertLossyWebP(t, output, row.width, row.height)
 			assertDecodeTestQuadrants(t, img, row.quadrants)
 		})
 	}
@@ -283,9 +278,7 @@ func TestProcessor_Process_ExtremeAspectCoverAllocation(t *testing.T) {
 	require.NoError(t, err)
 	output, allocated, err := measureProcessAlloc(newTestProcessor(t), source, preset)
 	require.NoError(t, err)
-	img, _, err := image.Decode(bytes.NewReader(output))
-	require.NoError(t, err)
-	assert.Equal(t, image.Rect(0, 0, 360, 360), img.Bounds())
+	assertLossyWebP(t, output, 192, 192)
 	assert.Less(t, allocated, uint64(16<<20))
 }
 
@@ -295,16 +288,23 @@ func TestProcessor_Process_ExtremeAspectCoverAllocation(t *testing.T) {
 // and the photo row 248 MB (its buffer is 1600×4000×32 B = 205 MB). With them
 // the rows measure 173 MB and 170 MB. The tall bound (537 MB) is 2.2× under the
 // old figure and 3.1× over the new; the photo bound (210 MB) is 18% under the
-// old figure and 23% over the new.
+// old figure and 23% over the new. The tall row's output is taller than 16383,
+// WebP's side limit, so it is encoded as JPEG. The large-webp row's output
+// (1600x16376, 26 MP) fits the side limit and is encoded as lossy WebP; its
+// 1800 MiB bound is the accepted cost of large WebP encodes (a 1393x16383
+// encode measured about 1 GB of RSS and 916 MB allocated for the encode alone,
+// on top of decode and scale).
 func TestProcessor_Process_ContainScaleAllocation(t *testing.T) {
 	rows := []struct {
 		name                      string
 		sourceWidth, sourceHeight int
 		wantWidth, wantHeight     int
+		wantFormat                string
 		maxAllocated              uint64
 	}{
-		{name: "tall 1700x20000", sourceWidth: 1700, sourceHeight: 20000, wantWidth: 1600, wantHeight: 18824, maxAllocated: 512 << 20},
-		{name: "photo 6000x4000", sourceWidth: 6000, sourceHeight: 4000, wantWidth: 1600, wantHeight: 1067, maxAllocated: 200 << 20},
+		{name: "tall 1700x20000", sourceWidth: 1700, sourceHeight: 20000, wantWidth: 1600, wantHeight: 18824, wantFormat: "jpeg", maxAllocated: 512 << 20},
+		{name: "photo 6000x4000", sourceWidth: 6000, sourceHeight: 4000, wantWidth: 1600, wantHeight: 1067, wantFormat: "webp", maxAllocated: 200 << 20},
+		{name: "large webp 1700x17400", sourceWidth: 1700, sourceHeight: 17400, wantWidth: 1600, wantHeight: 16376, wantFormat: "webp", maxAllocated: 1800 << 20},
 	}
 	preset, err := GetPreset("content_full")
 	require.NoError(t, err)
@@ -316,10 +316,93 @@ func TestProcessor_Process_ContainScaleAllocation(t *testing.T) {
 			output, allocated, err := measureProcessAlloc(proc, source, preset)
 			t.Logf("allocated %d bytes in %s", allocated, time.Since(started))
 			require.NoError(t, err)
-			img, _, err := image.Decode(bytes.NewReader(output))
-			require.NoError(t, err)
-			assert.Equal(t, image.Rect(0, 0, row.wantWidth, row.wantHeight), img.Bounds())
+			assertEncodedImage(t, output, row.wantFormat, row.wantWidth, row.wantHeight)
 			assert.Less(t, allocated, row.maxAllocated)
+		})
+	}
+}
+
+// assertEncodedImage checks that data is an image in format ("webp" for lossy
+// WebP, "jpeg" or "png") of exactly width x height and returns it decoded.
+func assertEncodedImage(t *testing.T, data []byte, format string, width, height int) image.Image {
+	t.Helper()
+	switch format {
+	case "webp":
+		return assertLossyWebP(t, data, width, height)
+	case "jpeg":
+		require.GreaterOrEqual(t, len(data), 2, "output too short to be JPEG")
+		require.Equal(t, []byte{0xFF, 0xD8}, data[:2], "expected JPEG SOI marker, got % x", data[:min(len(data), 12)])
+		img, err := jpeg.Decode(bytes.NewReader(data))
+		require.NoError(t, err)
+		require.Equal(t, width, img.Bounds().Dx(), "decoded width")
+		require.Equal(t, height, img.Bounds().Dy(), "decoded height")
+		return img
+	case "png":
+		require.GreaterOrEqual(t, len(data), 8, "output too short to be PNG")
+		require.Equal(t, []byte("\x89PNG\r\n\x1a\n"), data[:8], "expected PNG signature, got % x", data[:min(len(data), 12)])
+		img, err := png.Decode(bytes.NewReader(data))
+		require.NoError(t, err)
+		require.Equal(t, width, img.Bounds().Dx(), "decoded width")
+		require.Equal(t, height, img.Bounds().Dy(), "decoded height")
+		return img
+	}
+	t.Fatalf("unknown expected format %q", format)
+	return nil
+}
+
+// halfTransparentTestPNG is an opaque red PNG whose left half is fully
+// transparent.
+func halfTransparentTestPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			if x < width/2 {
+				img.SetNRGBA(x, y, color.NRGBA{R: 255, A: 0})
+			} else {
+				img.SetNRGBA(x, y, color.NRGBA{R: 255, A: 255})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	return buf.Bytes()
+}
+
+// WebP is used for any output with both sides at most 16383, WebP's format
+// maximum, whatever its pixel count; output with a side over 16383 keeps the
+// pre-WebP encoder: PNG for a PNG source, JPEG otherwise.
+func TestProcessor_Process_WebPSideLimit(t *testing.T) {
+	rows := []struct {
+		name                  string
+		source                func(t *testing.T) []byte
+		wantFormat            string
+		wantWidth, wantHeight int
+		wantTransparentAt     *image.Point
+		wantOpaqueAt          *image.Point
+	}{
+		{name: "jpeg 1600x2501 is webp", source: func(t *testing.T) []byte { return createTestJPEG(t, 1600, 2501) }, wantFormat: "webp", wantWidth: 1600, wantHeight: 2501},
+		{name: "opaque png 1600x2501 is webp", source: func(t *testing.T) []byte { return createTestPNG(t, 1600, 2501) }, wantFormat: "webp", wantWidth: 1600, wantHeight: 2501},
+		{name: "transparent png 1600x2600 is webp and keeps alpha", source: func(t *testing.T) []byte { return halfTransparentTestPNG(t, 1600, 2600) }, wantFormat: "webp", wantWidth: 1600, wantHeight: 2600, wantTransparentAt: &image.Point{X: 200, Y: 1300}, wantOpaqueAt: &image.Point{X: 1400, Y: 1300}},
+		{name: "transparent png taller than 16383 is png and keeps alpha", source: func(t *testing.T) []byte { return halfTransparentTestPNG(t, 200, 17000) }, wantFormat: "png", wantWidth: 200, wantHeight: 17000, wantTransparentAt: &image.Point{X: 50, Y: 8500}, wantOpaqueAt: &image.Point{X: 150, Y: 8500}},
+		{name: "jpeg taller than 16383 is jpeg", source: func(t *testing.T) []byte { return createTestJPEG(t, 200, 17000) }, wantFormat: "jpeg", wantWidth: 200, wantHeight: 17000},
+		{name: "jpeg 16383 tall is webp", source: func(t *testing.T) []byte { return createTestJPEG(t, 200, 16383) }, wantFormat: "webp", wantWidth: 200, wantHeight: 16383},
+		{name: "jpeg 16384 tall is jpeg", source: func(t *testing.T) []byte { return createTestJPEG(t, 200, 16384) }, wantFormat: "jpeg", wantWidth: 200, wantHeight: 16384},
+	}
+	preset, err := GetPreset("content_full")
+	require.NoError(t, err)
+	proc := newTestProcessor(t)
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			output, err := proc.Process(row.source(t), preset)
+			require.NoError(t, err)
+			img := assertEncodedImage(t, output, row.wantFormat, row.wantWidth, row.wantHeight)
+			if row.wantTransparentAt != nil {
+				pixel := color.NRGBAModel.Convert(img.At(row.wantTransparentAt.X, row.wantTransparentAt.Y)).(color.NRGBA)
+				assert.Equal(t, uint8(0), pixel.A, "transparent region alpha")
+				opaque := color.NRGBAModel.Convert(img.At(row.wantOpaqueAt.X, row.wantOpaqueAt.Y)).(color.NRGBA)
+				assert.Equal(t, uint8(255), opaque.A, "opaque region alpha")
+			}
 		})
 	}
 }
@@ -346,10 +429,7 @@ func TestProcessor_Process_ContainEdgeDimensions(t *testing.T) {
 			}
 			output, err := proc.Process(createTestJPEG(t, row.width, row.height), preset)
 			require.NoError(t, err)
-			img, _, err := image.Decode(bytes.NewReader(output))
-			require.NoError(t, err)
-			assert.Equal(t, row.wantWidth, img.Bounds().Dx())
-			assert.Equal(t, row.wantHeight, img.Bounds().Dy())
+			assertLossyWebP(t, output, row.wantWidth, row.wantHeight)
 		})
 	}
 }
@@ -391,11 +471,7 @@ func TestProcessor_Process_PNGPreservesAlphaAndColor(t *testing.T) {
 			require.NoError(t, err)
 			output, err := proc.Process(source.Bytes(), preset)
 			require.NoError(t, err)
-			result, format, err := image.Decode(bytes.NewReader(output))
-			require.NoError(t, err)
-			require.Equal(t, "png", format)
-			require.Equal(t, row.width, result.Bounds().Dx())
-			require.Equal(t, row.height, result.Bounds().Dy())
+			result := assertLossyWebP(t, output, row.width, row.height)
 			transparent := color.NRGBAModel.Convert(result.At(row.transparentX, row.sampleY)).(color.NRGBA)
 			red := color.NRGBAModel.Convert(result.At(row.redX, row.sampleY)).(color.NRGBA)
 			blue := color.NRGBAModel.Convert(result.At(row.blueX, row.sampleY)).(color.NRGBA)
