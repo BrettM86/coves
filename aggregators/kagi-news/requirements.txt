@@ -13,3 +13,8 @@ idna>=3.7
 # Trust store for requests and the anthropic client. 2026.10.18 drops the
 # roots behind the compromised eMudhra intermediates (CVE-2026-111943).
 certifi>=2026.10.18
+# HTTP client under the anthropic SDK (transitive, no floor upstream). 2.12.0
+# fixes CVE-2026-84381 (WebSocket without TLS via SOCKS) and CVE-2026-84382
+# (streaming decompression amplification) plus three moderate advisories.
+httpx2>=2.12.0
+httpcore2>=2.12.0
