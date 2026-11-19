@@ -42,9 +42,11 @@ func SetImageURLConfig(config ImageURLConfig) {
 				"existing_proxy_enabled", imageURLConfig.ProxyEnabled,
 				"existing_proxy_base_url", imageURLConfig.ProxyBaseURL,
 				"existing_cdn_url", imageURLConfig.CDNURL,
+				"existing_allow_private_blob_hosts", imageURLConfig.AllowPrivateBlobHosts,
 				"ignored_proxy_enabled", config.ProxyEnabled,
 				"ignored_proxy_base_url", config.ProxyBaseURL,
 				"ignored_cdn_url", config.CDNURL,
+				"ignored_allow_private_blob_hosts", config.AllowPrivateBlobHosts,
 			)
 		}
 		return

@@ -997,9 +997,10 @@ func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 	// is off.
 	publishURLConfig := func() {
 		blobs.SetImageURLConfig(blobs.ImageURLConfig{
-			ProxyEnabled: cfg.Enabled,
-			ProxyBaseURL: cfg.BaseURL,
-			CDNURL:       cfg.CDNURL,
+			ProxyEnabled:          cfg.Enabled,
+			ProxyBaseURL:          cfg.BaseURL,
+			CDNURL:                cfg.CDNURL,
+			AllowPrivateBlobHosts: a.allowPrivateHosts(),
 		})
 	}
 

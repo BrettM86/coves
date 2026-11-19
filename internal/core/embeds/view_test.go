@@ -35,6 +35,16 @@ func withProxyDisabled(t *testing.T) {
 	t.Cleanup(blobs.ResetImageURLConfigForTesting)
 }
 
+// withProxyAllowingPrivateBlobHosts is withProxy plus the dev allowance that
+// lets direct PDS blob URLs (video) address http or private hosts, as the dev
+// stack's http://localhost:3001 PDS requires. Process-wide; see withProxy.
+func withProxyAllowingPrivateBlobHosts(t *testing.T, baseURL string) {
+	t.Helper()
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{ProxyEnabled: true, ProxyBaseURL: baseURL, AllowPrivateBlobHosts: true})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
+}
+
 func blobRef(cid string) map[string]interface{} {
 	return map[string]interface{}{
 		"$type":    "blob",
@@ -530,7 +540,9 @@ func TestHydrateCommentView_RestrictsToTheCommentUnion(t *testing.T) {
 
 func TestHydrateView_Video(t *testing.T) {
 	t.Run("the still goes through the proxy and the video goes to the PDS", func(t *testing.T) {
-		withProxy(t, "https://img.coves.social")
+		// testPDS is the dev stack's http://localhost:3001, which only the dev
+		// allowance lets a video URL address.
+		withProxyAllowingPrivateBlobHosts(t, "https://img.coves.social")
 
 		videoCID := "bafyreivideoqvvlyzhgqmvhkzqvmtcwrgrqzxbxnwqxqvvvxqxqvvxqxqv"
 		embed := map[string]interface{}{
@@ -569,6 +581,120 @@ func TestHydrateView_Video(t *testing.T) {
 		assert.IsType(t, map[string]interface{}{}, embed["video"],
 			"without a PDS URL there is no video URL to emit, so the ref must survive")
 	})
+}
+
+// The video URL is the one piece of served media that addresses the owner's
+// PDS directly, taken from its DID document. In production a cleartext or
+// internal endpoint there must not reach clients as a URL they load, so the
+// embed stays in record shape instead; dev keeps its http://localhost PDS.
+func TestHydrateView_VideoPDSEndpointMustBePublicHTTPS(t *testing.T) {
+	tests := []struct {
+		name                  string
+		allowPrivateBlobHosts bool
+		pdsURL                string
+		wantVideo             string // "" means the embed must not be projected
+	}{
+		{
+			name:   "production refuses a cleartext http PDS",
+			pdsURL: "http://pds.example.com", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a localhost PDS even over https",
+			pdsURL: "https://localhost", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a private IP literal PDS",
+			pdsURL: "https://10.0.0.5", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a loopback IPv4 PDS",
+			pdsURL: "https://127.0.0.1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a loopback IPv6 PDS",
+			pdsURL: "https://[::1]", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a cloud metadata link-local PDS",
+			pdsURL: "https://169.254.169.254", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a carrier-grade NAT PDS",
+			pdsURL: "https://100.64.0.1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a shortened numeric IPv4 PDS",
+			pdsURL: "https://127.1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a single-number IPv4 PDS",
+			pdsURL: "https://2130706433", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a hex-octet IPv4 PDS",
+			pdsURL: "https://0x7f.1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a fullwidth-digit IPv4 PDS",
+			pdsURL: "https://１２７.０.０.１", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses a localhost PDS with an ideographic full stop",
+			pdsURL: "https://localhost。", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses an IPv4 PDS with fullwidth full stops",
+			pdsURL: "https://127．0．0．1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:   "production refuses an IPv4 PDS with halfwidth ideographic full stops",
+			pdsURL: "https://127｡0｡0｡1", // coves:allow-host-literal: input to a pure URL projection; never dialled
+		},
+		{
+			name:      "production projects an ASCII punycode PDS host",
+			pdsURL:    "https://xn--nxasmq6b.example",                                                                                                                             // coves:allow-host-literal: input to a pure URL projection; never dialled
+			wantVideo: "https://xn--nxasmq6b.example/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Atestcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", // coves:allow-host-literal: expected-output fixture; never dialled
+		},
+		{
+			name:      "production projects a public https PDS",
+			pdsURL:    "https://pds.example.com",                                                                                                                             // coves:allow-host-literal: input to a pure URL projection; never dialled
+			wantVideo: "https://pds.example.com/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Atestcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", // coves:allow-host-literal: expected-output fixture; never dialled
+		},
+		{
+			name:                  "dev allowance projects the local http PDS",
+			allowPrivateBlobHosts: true,
+			pdsURL:                "http://localhost:3001",                                                                                                                             // coves:allow-host-literal: input to a pure URL projection; never dialled
+			wantVideo:             "http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Atestcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm", // coves:allow-host-literal: expected-output fixture; never dialled
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.allowPrivateBlobHosts {
+				withProxyAllowingPrivateBlobHosts(t, "https://img.coves.social")
+			} else {
+				withProxy(t, "https://img.coves.social")
+			}
+
+			embed := map[string]interface{}{
+				"$type": TypeVideo,
+				"video": blobRef(testCID),
+			}
+
+			HydrateView(embed, testDID, tt.pdsURL)
+
+			if tt.wantVideo != "" {
+				assert.Equal(t, TypeVideo+viewSuffix, embed["$type"])
+				assert.Equal(t, tt.wantVideo, embed["video"])
+				return
+			}
+			assert.Equal(t, TypeVideo, embed["$type"],
+				"a refused PDS endpoint must leave the embed in record shape")
+			video, isBlob := embed["video"].(map[string]interface{})
+			require.True(t, isBlob, "video must still be the blob reference, got %#v", embed["video"])
+			assert.Equal(t, testCID, video["ref"].(map[string]interface{})["$link"])
+		})
+	}
 }
 
 func TestHydrateView_ProxyDisabled(t *testing.T) {

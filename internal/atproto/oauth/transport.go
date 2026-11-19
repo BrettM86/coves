@@ -287,6 +287,12 @@ func mustParseCIDR(cidr string) *net.IPNet {
 	return network
 }
 
+// IsPrivateIP is the shared SSRF classifier for callers that judge a host
+// without dialling it; it applies the same policy as this transport's dialer.
+func IsPrivateIP(ip net.IP) bool {
+	return isPrivateIP(ip)
+}
+
 // isPrivateIP reports whether an address reaches this host, the operator's own
 // network, special-purpose space, or a range that is not globally reachable.
 //

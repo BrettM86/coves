@@ -1232,6 +1232,69 @@ func TestLoad_ProductionRejectsUnusableImageProxyBaseURL(t *testing.T) {
 	}
 }
 
+// Every image URL the AppView serves is built on IMAGE_PROXY_CDN_URL (or
+// IMAGE_PROXY_BASE_URL) and handed to clients verbatim, so in production a
+// cleartext http origin there means cleartext media on every page.
+func TestLoad_ProductionRequiresHTTPSImageProxyURLs(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		wantName string // "" means Load must succeed
+	}{
+		{
+			name:     "production refuses an http base URL",
+			env:      map[string]string{"IMAGE_PROXY_BASE_URL": "http://img.example.com"},
+			wantName: "IMAGE_PROXY_BASE_URL",
+		},
+		{
+			name: "production refuses an http CDN override",
+			env: map[string]string{
+				"IMAGE_PROXY_BASE_URL": "https://img.example.com",
+				"IMAGE_PROXY_CDN_URL":  "http://cdn.example.com",
+			},
+			wantName: "IMAGE_PROXY_CDN_URL",
+		},
+		{
+			name: "production accepts https for both",
+			env: map[string]string{
+				"IMAGE_PROXY_BASE_URL": "https://img.example.com",
+				"IMAGE_PROXY_CDN_URL":  "https://cdn.example.com",
+			},
+		},
+		{
+			name: "dev accepts the local http base URL",
+			env: map[string]string{
+				"IS_DEV_ENV":           "true",
+				"IMAGE_PROXY_BASE_URL": "http://localhost:8080",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			prodEnv(t)
+			for name, value := range tt.env {
+				t.Setenv(name, value)
+			}
+
+			_, err := Load()
+			if tt.wantName == "" {
+				if err != nil {
+					t.Fatalf("Load() returned error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Load() accepted %v", tt.env)
+			}
+			if !strings.Contains(err.Error(), tt.wantName) {
+				t.Errorf("error = %q, want it to name %s", err.Error(), tt.wantName)
+			}
+		})
+	}
+}
+
 // The CDN override takes precedence over the base URL, so a valid one is
 // enough on its own.
 func TestLoad_ImageProxyCDNURLSatisfiesTheBaseURLRequirement(t *testing.T) {

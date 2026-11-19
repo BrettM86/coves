@@ -27,8 +27,13 @@ package embeds
 
 import (
 	"log/slog"
+	"net"
+	"net/netip"
+	"net/url"
+	"strings"
 
 	"Coves/internal/atproto/embedblobs"
+	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/blobs"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -517,11 +522,19 @@ func projectImages(images []interface{}, ownerDID, ownerPDSURL string) ([]mutati
 // recorded in docs/MEDIA.md, Accepted exceptions, closed later by
 // ingest-time hash matching rather than by scan-on-serve.
 //
+// Because clients load that URL as given, the video projects only when the
+// owner's PDS is an https URL on a public host (see isPublicHTTPSURL); a
+// cleartext, localhost or private-address PDS degrades the embed instead. Dev
+// (AllowPrivateBlobHosts) lifts that rule for the local http PDS.
+//
 // video is required on the view; thumbnail is optional, so a video with no
 // still still projects.
 func projectVideo(embed map[string]interface{}, ownerDID, ownerPDSURL string) ([]mutation, bool) {
 	videoCID := blobCID(embed["video"])
 	if videoCID == "" {
+		return nil, false
+	}
+	if !blobs.GetImageURLConfig().AllowPrivateBlobHosts && !isPublicHTTPSURL(ownerPDSURL) {
 		return nil, false
 	}
 	videoURL := blobs.HydrateBlobURL(ownerPDSURL, ownerDID, videoCID)
@@ -541,6 +554,63 @@ func projectVideo(embed map[string]interface{}, ownerDID, ownerPDSURL string) ([
 	}
 
 	return commits, true
+}
+
+// isPublicHTTPSURL reports whether rawURL is an https URL whose host is a
+// public name or a public IP literal. Video blob URLs reach clients directly
+// (the image proxy cannot stream video), so a cleartext or private-network PDS
+// URL would have clients fetch media over http or from their own network.
+// Hostnames are not resolved. IP literals are judged by the outbound SSRF
+// classifier (oauth.IsPrivateIP). A host whose last label is all digits or
+// starts with 0x is refused: browsers parse such a host as IPv4 (the WHATWG
+// ends-in-a-number rule), so 127.1 or 2130706433 would reach loopback. A
+// non-ASCII host is refused before those checks: browsers apply UTS-46
+// mapping, so fullwidth digits or ideographic full stops (１２７.０.０.１,
+// localhost。) would map to loopback. Real PDS hosts are ASCII or punycode.
+func isPublicHTTPSURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" {
+		return false
+	}
+	if !isASCII(parsed.Hostname()) {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return !oauth.IsPrivateIP(net.IP(addr.AsSlice()))
+	}
+	return !endsInNumber(host)
+}
+
+// isASCII reports whether text contains only ASCII bytes.
+func isASCII(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// endsInNumber reports whether host's last label is all ASCII digits or starts
+// with 0x, which WHATWG URL parsing treats as an IPv4 address.
+func endsInNumber(host string) bool {
+	lastLabel := host[strings.LastIndex(host, ".")+1:]
+	if strings.HasPrefix(lastLabel, "0x") {
+		return true
+	}
+	if lastLabel == "" {
+		return false
+	}
+	for _, character := range lastLabel {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // imageURL renders a proxy URL for a blob under the given preset, reading the

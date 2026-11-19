@@ -43,6 +43,9 @@ type ImageURLConfig struct {
 	ProxyEnabled bool   // Whether the image proxy is enabled
 	ProxyBaseURL string // Base URL for the image proxy (e.g., "https://img.coves.social")
 	CDNURL       string // Optional CDN override URL
+	// AllowPrivateBlobHosts lets direct PDS blob URLs (video) address an http,
+	// localhost or private-network PDS. Set only in dev, for the local PDS.
+	AllowPrivateBlobHosts bool
 }
 
 // HydrateImageURL generates the appropriate image URL based on config.

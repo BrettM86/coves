@@ -1580,6 +1580,24 @@ func (c *Config) mediaProblems() []string {
 		problems = append(problems, err.Error())
 	}
 
+	// Clients load these image URLs directly, so a cleartext scheme would serve
+	// media over http to every client. Checked for each variable that is set,
+	// including a base URL shadowed by the CDN override. A scheme-less value is
+	// left alone here: requirePublicHost already rejects one in effect, and a
+	// relative base shadowed by the CDN override is never emitted.
+	for _, setting := range []struct{ name, value string }{
+		{"IMAGE_PROXY_BASE_URL", c.Media.ImageProxy.BaseURL},
+		{"IMAGE_PROXY_CDN_URL", c.Media.ImageProxy.CDNURL},
+	} {
+		if setting.value == "" {
+			continue
+		}
+		if parsed, err := url.Parse(setting.value); err != nil || (parsed.Scheme != "" && parsed.Scheme != "https") {
+			problems = append(problems, fmt.Sprintf("%s must use https in production (got %q)",
+				setting.name, setting.value))
+		}
+	}
+
 	if err := c.Media.ImageProxy.Validate(); err != nil {
 		problems = append(problems, "image proxy configuration: "+err.Error())
 	}
