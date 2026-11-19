@@ -2,7 +2,9 @@ package config
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,6 +57,35 @@ const placeholderPrefix = "CHANGE_ME"
 // isPlaceholder reports whether value is one of the documented placeholders.
 func isPlaceholder(value string) bool {
 	return strings.HasPrefix(value, placeholderPrefix)
+}
+
+// committedSecretDigests holds hex SHA-256 digests of the base64-decoded
+// ENCRYPTION_KEY and OAUTH_SEAL_SECRET values committed in .env.dev, .env.ci
+// and .env.dev.example. Digesting the decoded bytes catches every spelling
+// base64.StdEncoding accepts for the same key (embedded newlines, non-zero
+// unused trailing bits). Those values are public, so production must refuse them.
+// Digests rather than the values keep the secrets out of the binary's source.
+// Update this list whenever those files' values change;
+// TestLoad_ProductionRejectsCommittedSecrets fails until it is.
+var committedSecretDigests = map[string]bool{
+	"05b0a07d4ae3720faaa01284642f6ddb9cd7c15394770e66af63af43ac8ad5e2": true, // ENCRYPTION_KEY
+	"05483bca0ffd6b0b5cf2c65d55335f9a7653c0062463353af198bc4b9fbd4961": true, // OAUTH_SEAL_SECRET
+}
+
+// isCommittedSecret reports whether decoded is the decoded form of a secret
+// committed in the repository's env files.
+func isCommittedSecret(decoded []byte) bool {
+	digest := sha256.Sum256(decoded)
+	return committedSecretDigests[hex.EncodeToString(digest[:])]
+}
+
+// turnstileTestSecrets are Cloudflare's published Turnstile test secret keys
+// (always passes, always fails, token already spent). In production one makes
+// the sign-up captcha meaningless.
+var turnstileTestSecrets = map[string]bool{
+	"1x0000000000000000000000000000000AA": true,
+	"2x0000000000000000000000000000000AA": true,
+	"3x0000000000000000000000000000000AA": true,
 }
 
 // requirePublicHost rejects a URL that is empty, not absolute, or points at the
@@ -1449,6 +1480,9 @@ func (c *Config) Validate() error {
 					"generate one with: openssl rand -base64 %d",
 				encryptionKeyBytes, len(decoded), encryptionKeyBytes,
 			))
+		} else if !c.IsDevEnv && isCommittedSecret(decoded) {
+			problems = append(problems, "ENCRYPTION_KEY is set to a value published in the "+
+				"repository's env files; generate one with: openssl rand -base64 32")
 		}
 	}
 
@@ -1473,6 +1507,9 @@ func (c *Config) Validate() error {
 						"generate one with: openssl rand -base64 %d",
 					sealSecretBytes, len(decoded), sealSecretBytes,
 				))
+			} else if isCommittedSecret(decoded) {
+				problems = append(problems, "OAUTH_SEAL_SECRET is set to a value published in the "+
+					"repository's env files; generate one with: openssl rand -base64 32")
 			}
 		}
 
@@ -1491,6 +1528,12 @@ func (c *Config) Validate() error {
 				"CURSOR_SECRET must be at least %d characters to be a usable HMAC key",
 				minSecretLength,
 			))
+		}
+
+		if turnstileTestSecrets[c.Signup.TurnstileSecretKey] {
+			problems = append(problems, "TURNSTILE_SECRET_KEY is set to one of Cloudflare's "+
+				"published test secrets, which make the sign-up captcha always pass or always fail; "+
+				"use the secret key from the Turnstile dashboard, or leave it unset to disable sign-up")
 		}
 
 		if c.Jetstream.FeedsSpec == "" {
