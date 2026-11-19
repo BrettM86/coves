@@ -22,6 +22,8 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -114,12 +116,11 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 
 	withRelationships := seedCommunity(testkit.UniqueIDWithPrefix(t, "relationships"))
 	for i, subscriberDID := range []string{"did:plc:m45subscriberone", "did:plc:m45subscribertwo"} {
-		_, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
-			UserDID:           subscriberDID,
-			CommunityDID:      withRelationships.DID,
-			SubscribedAt:      time.Now().Add(time.Duration(i) * time.Second),
-			ContentVisibility: 3,
-		})
+		// Raw SQL: the repository writes columns added after migration 044.
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, content_visibility)
+			VALUES ($1, $2, $3, 3)
+		`, subscriberDID, withRelationships.DID, time.Now().Add(time.Duration(i)*time.Second))
 		require.NoError(t, err)
 	}
 

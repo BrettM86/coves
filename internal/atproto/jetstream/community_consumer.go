@@ -1856,7 +1856,7 @@ func extractDomainFromHandle(handle string) string {
 // handleSubscription processes subscription create/update/delete events
 // CREATE operation = user subscribed to community
 // UPDATE operation = user rewrote the record in place (subscribe with a new
-// contentVisibility rewrites the existing record with putRecord)
+// contentVisibility or favorite rewrites the existing record with putRecord)
 // DELETE operation = user unsubscribed from community
 func (c *CommunityEventConsumer) handleSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	switch commit.Operation {
@@ -1899,6 +1899,8 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 
 	// Extract contentVisibility with clamping and default value
 	contentVisibility := extractContentVisibility(commit.Record)
+	// An absent or non-boolean favorite indexes as not a favorite.
+	favorite, _ := commit.Record["favorite"].(bool)
 
 	// Build AT-URI for subscription record
 	// IMPORTANT: Collection is social.coves.community.subscription (record type), not the XRPC endpoint
@@ -1911,6 +1913,7 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		UserDID:           userDID,
 		CommunityDID:      communityDID,
 		ContentVisibility: contentVisibility,
+		Favorite:          favorite,
 		SubscribedAt:      utils.ParseCreatedAt(commit.Record, uri),
 		RecordURI:         uri,
 		RecordCID:         commit.CID,
@@ -1923,7 +1926,7 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 	}
 
 	// Idempotent for Jetstream replays: a conflict on (user, community) updates
-	// the stored record pointer and contentVisibility instead of erroring. subscriber_count is
+	// the stored record pointer, contentVisibility and favorite instead of erroring. subscriber_count is
 	// maintained by a database trigger on community_subscriptions, not here.
 	_, err := c.repo.SubscribeWithCount(ctx, subscription)
 	if err != nil {
@@ -2201,45 +2204,10 @@ func constructHandleFromProfile(profile *CommunityProfile) string {
 	return fmt.Sprintf("c-%s.%s", profile.Name, instanceDomain)
 }
 
-// extractContentVisibility extracts contentVisibility from subscription record with clamping
-// Returns default value of 3 if missing or invalid
+// extractContentVisibility extracts contentVisibility from a subscription
+// record using the shared indexing rule (truncate, clamp to 1-5, default 3).
 func extractContentVisibility(record map[string]interface{}) int {
-	const defaultVisibility = 3
-
-	cv, ok := record["contentVisibility"]
-	if !ok {
-		// Field missing - use default
-		return defaultVisibility
-	}
-
-	// JSON numbers decode as float64
-	cvFloat, ok := cv.(float64)
-	if !ok {
-		// Try int (shouldn't happen but handle gracefully)
-		if cvInt, isInt := cv.(int); isInt {
-			return clampContentVisibility(cvInt)
-		}
-		log.Printf("WARNING: contentVisibility has unexpected type %T, using default", cv)
-		return defaultVisibility
-	}
-
-	// Convert and clamp
-	clamped := clampContentVisibility(int(cvFloat))
-	if clamped != int(cvFloat) {
-		log.Printf("WARNING: Clamped contentVisibility from %d to %d", int(cvFloat), clamped)
-	}
-	return clamped
-}
-
-// clampContentVisibility ensures value is within valid range (1-5)
-func clampContentVisibility(value int) int {
-	if value < 1 {
-		return 1
-	}
-	if value > 5 {
-		return 5
-	}
-	return value
+	return communities.ContentVisibilityFromRecord(record["contentVisibility"])
 }
 
 // extractBlobCID extracts the CID from a blob reference

@@ -56,8 +56,8 @@ func (r *failingBlockStateRepo) GetSubscribedCommunityDIDs(
 	context.Context,
 	string,
 	[]string,
-) (map[string]int, error) {
-	return map[string]int{}, nil
+) (map[string]communities.SubscriptionViewerState, error) {
+	return map[string]communities.SubscriptionViewerState{}, nil
 }
 
 func (r *failingBlockStateRepo) IsBlocked(context.Context, string, string) (bool, error) {

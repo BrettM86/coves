@@ -65,8 +65,8 @@ type Repository interface {
 	GetSubscriptionByURI(ctx context.Context, recordURI string) (*Subscription, error) // For Jetstream delete operations
 	ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*Subscription, error)
-	// GetSubscribedCommunityDIDs maps each subscribed community DID to its stored contentVisibility; unsubscribed DIDs are absent.
-	GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]int, error)
+	// GetSubscribedCommunityDIDs maps each subscribed community DID to its stored subscription state; unsubscribed DIDs are absent.
+	GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]SubscriptionViewerState, error)
 
 	// Community Blocks
 	BlockCommunity(ctx context.Context, block *CommunityBlock) (*CommunityBlock, error)
@@ -104,7 +104,7 @@ type Service interface {
 
 	// Subscription operations (write-forward: creates record in user's PDS)
 	// OAuth session is passed for DPoP authentication to the user's PDS
-	SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*Subscription, error)
+	SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*Subscription, error)
 	UnsubscribeFromCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
 	GetUserSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	GetCommunitySubscribers(ctx context.Context, communityIdentifier string, limit, offset int) ([]*Subscription, error)

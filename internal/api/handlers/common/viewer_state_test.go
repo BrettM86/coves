@@ -17,7 +17,7 @@ import (
 
 type viewerStateRepository struct {
 	communities.Repository
-	subscribed map[string]int
+	subscribed map[string]communities.SubscriptionViewerState
 	blocked    bool
 	blockErr   error
 }
@@ -26,7 +26,7 @@ func (r *viewerStateRepository) GetSubscribedCommunityDIDs(
 	context.Context,
 	string,
 	[]string,
-) (map[string]int, error) {
+) (map[string]communities.SubscriptionViewerState, error) {
 	return r.subscribed, nil
 }
 
@@ -50,7 +50,7 @@ func TestPopulateCommunityViewerState_MergesExistingFields(t *testing.T) {
 			Member:  &member,
 		},
 	}
-	repo := &viewerStateRepository{subscribed: map[string]int{}}
+	repo := &viewerStateRepository{subscribed: map[string]communities.SubscriptionViewerState{}}
 
 	PopulateCommunityViewerState(
 		context.Background(),
@@ -87,9 +87,9 @@ func TestPopulateCommunityViewerState_ReportsContentVisibility(t *testing.T) {
 	communityA := &communities.Community{DID: "did:plc:communitya"}
 	communityB := &communities.Community{DID: "did:plc:communityb"}
 	communityC := &communities.Community{DID: "did:plc:communityc"}
-	repo := &viewerStateRepository{subscribed: map[string]int{
-		"did:plc:communitya": 4,
-		"did:plc:communityb": 1,
+	repo := &viewerStateRepository{subscribed: map[string]communities.SubscriptionViewerState{
+		"did:plc:communitya": {ContentVisibility: 4},
+		"did:plc:communityb": {ContentVisibility: 1},
 	}}
 
 	PopulateCommunityViewerState(
@@ -119,4 +119,32 @@ func TestPopulateCommunityViewerState_ReportsContentVisibility(t *testing.T) {
 	assert.Equal(t, float64(1), b["contentVisibility"], "community B contentVisibility")
 	assert.Equal(t, false, c["subscribed"], "community C subscribed")
 	assert.NotContains(t, c, "contentVisibility", "unsubscribed community C must omit contentVisibility")
+}
+
+func TestPopulateCommunityViewerState_ReportsFavorite(t *testing.T) {
+	favoriteCommunity := &communities.Community{DID: "did:plc:favorite"}
+	plainCommunity := &communities.Community{DID: "did:plc:plain"}
+	unsubscribedCommunity := &communities.Community{DID: "did:plc:unsubscribed"}
+	repo := &viewerStateRepository{subscribed: map[string]communities.SubscriptionViewerState{
+		"did:plc:favorite": {ContentVisibility: 3, Favorite: true},
+		"did:plc:plain":    {ContentVisibility: 3, Favorite: false},
+	}}
+
+	PopulateCommunityViewerState(
+		context.Background(),
+		authenticatedRequest(),
+		repo,
+		[]*communities.Community{favoriteCommunity, plainCommunity, unsubscribedCommunity},
+	)
+
+	require.NotNil(t, favoriteCommunity.Viewer)
+	require.NotNil(t, favoriteCommunity.Viewer.Favorite, "a subscribed community reports favorite")
+	assert.True(t, *favoriteCommunity.Viewer.Favorite)
+
+	require.NotNil(t, plainCommunity.Viewer)
+	require.NotNil(t, plainCommunity.Viewer.Favorite, "a subscribed non-favorite reports favorite false, not omitted")
+	assert.False(t, *plainCommunity.Viewer.Favorite)
+
+	require.NotNil(t, unsubscribedCommunity.Viewer)
+	assert.Nil(t, unsubscribedCommunity.Viewer.Favorite, "an unsubscribed community omits favorite")
 }

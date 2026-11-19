@@ -569,6 +569,84 @@ func TestCommunityRepository_SubscribeWithCount_StoresIncomingContentVisibility(
 	}
 }
 
+// TestCommunityRepository_SubscriptionFavorite pins the favorite column's SQL
+// semantics: a row written without it (every subscription indexed before the
+// column existed) reads back false from the column default, and the subscribe
+// upsert's conflict branch stores the incoming favorite, so a record update that
+// clears the favorite actually clears it in the index.
+func TestCommunityRepository_SubscriptionFavorite(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
+	ctx := context.Background()
+
+	id := testkit.UniqueID(t)
+	communityDID := "did:plc:favorite" + id
+	if _, err := repo.Create(ctx, &communities.Community{
+		DID:          communityDID,
+		Handle:       fmt.Sprintf("!favorite-test-%s@coves.local", id),
+		Name:         "favorite-test",
+		OwnerDID:     "did:web:coves.local",
+		CreatedByDID: "did:plc:user123",
+		HostedByDID:  "did:web:coves.local",
+		Visibility:   "public",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("Failed to create community: %v", err)
+	}
+
+	storedFavorite := func(t *testing.T, userDID string) bool {
+		t.Helper()
+		var favorite bool
+		if err := db.QueryRowContext(ctx,
+			`SELECT favorite FROM community_subscriptions WHERE user_did = $1 AND community_did = $2`,
+			userDID, communityDID,
+		).Scan(&favorite); err != nil {
+			t.Fatalf("Failed to read stored favorite: %v", err)
+		}
+		return favorite
+	}
+
+	t.Run("row inserted without favorite defaults to false", func(t *testing.T) {
+		userDID := "did:plc:favdefault" + id
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO community_subscriptions (user_did, community_did, content_visibility) VALUES ($1, $2, 3)`,
+			userDID, communityDID,
+		); err != nil {
+			t.Fatalf("Failed to insert subscription row: %v", err)
+		}
+		if storedFavorite(t, userDID) {
+			t.Error("favorite = true, want false (column default)")
+		}
+	})
+
+	t.Run("upsert stores favorite and a conflicting upsert clears it", func(t *testing.T) {
+		userDID := "did:plc:favupsert" + id
+		recordURI := "at://" + userDID + "/social.coves.community.subscription/3kfavupsert"
+		if _, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
+			UserDID: userDID, CommunityDID: communityDID, ContentVisibility: 3, Favorite: true,
+			SubscribedAt: time.Now(), RecordURI: recordURI, RecordCID: "bafyfavoritefirst",
+		}); err != nil {
+			t.Fatalf("First SubscribeWithCount failed: %v", err)
+		}
+		if !storedFavorite(t, userDID) {
+			t.Fatal("favorite = false after first upsert, want true")
+		}
+
+		if _, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
+			UserDID: userDID, CommunityDID: communityDID, ContentVisibility: 3, Favorite: false,
+			SubscribedAt: time.Now(), RecordURI: recordURI, RecordCID: "bafyfavoritesecond",
+		}); err != nil {
+			t.Fatalf("Second SubscribeWithCount failed: %v", err)
+		}
+		if storedFavorite(t, userDID) {
+			t.Error("favorite = true after conflicting upsert with false, want false")
+		}
+	})
+}
+
 // TestCommunityRepository_GetSubscribedCommunityDIDs covers the batched
 // membership lookup the list and feed views use to stamp viewer state on many
 // communities at once. The interesting cases are the ones a naive IN (...) query
@@ -616,28 +694,18 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 		}
 	})
 
-	t.Run("returns each subscribed community's stored content visibility", func(t *testing.T) {
-		// Subscribe to the first at 4 and the second at 1, leaving the third
-		// unsubscribed, so a query that returned everything it was asked about,
-		// or a single constant value, would fail.
-		sub1 := &communities.Subscription{
-			UserDID:           userDID,
-			CommunityDID:      communityDIDs[0],
-			ContentVisibility: 4,
-			SubscribedAt:      time.Now(),
+	t.Run("returns each subscribed community's stored content visibility and favorite", func(t *testing.T) {
+		// Subscribe to the first at 4 as a favorite and the second at 1 not a
+		// favorite, leaving the third unsubscribed, so a query that returned
+		// everything it was asked about, or a single constant value, would fail.
+		subscriptions := []*communities.Subscription{
+			{UserDID: userDID, CommunityDID: communityDIDs[0], ContentVisibility: 4, Favorite: true, SubscribedAt: time.Now()},
+			{UserDID: userDID, CommunityDID: communityDIDs[1], ContentVisibility: 1, Favorite: false, SubscribedAt: time.Now()},
 		}
-		if _, err := repo.Subscribe(ctx, sub1); err != nil {
-			t.Fatalf("Failed to subscribe to community 0: %v", err)
-		}
-
-		sub2 := &communities.Subscription{
-			UserDID:           userDID,
-			CommunityDID:      communityDIDs[1],
-			ContentVisibility: 1,
-			SubscribedAt:      time.Now(),
-		}
-		if _, err := repo.Subscribe(ctx, sub2); err != nil {
-			t.Fatalf("Failed to subscribe to community 1: %v", err)
+		for i, sub := range subscriptions {
+			if _, err := repo.SubscribeWithCount(ctx, sub); err != nil {
+				t.Fatalf("Failed to subscribe to community %d: %v", i, err)
+			}
 		}
 
 		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
@@ -645,22 +713,44 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
 		}
 
-		want := map[string]int{communityDIDs[0]: 4, communityDIDs[1]: 1}
+		want := map[string]communities.SubscriptionViewerState{
+			communityDIDs[0]: {ContentVisibility: 4, Favorite: true},
+			communityDIDs[1]: {ContentVisibility: 1, Favorite: false},
+		}
 		if len(result) != len(want) {
 			t.Errorf("Expected exactly %v, got %v", want, result)
 		}
-		for did, visibility := range want {
+		for did, wantState := range want {
 			got, ok := result[did]
 			if !ok {
 				t.Errorf("Expected %s to be subscribed, got %v", did, result)
 				continue
 			}
-			if got != visibility {
-				t.Errorf("Expected %s contentVisibility %d, got %d", did, visibility, got)
+			if got != wantState {
+				t.Errorf("Expected %s viewer state %+v, got %+v", did, wantState, got)
 			}
 		}
 		if _, ok := result[communityDIDs[2]]; ok {
 			t.Errorf("Expected community 2 to be absent, got %v", result)
+		}
+	})
+
+	t.Run("unsubscribing removes the favorite with the subscription", func(t *testing.T) {
+		// Depends on the previous subtest's favorite subscription to community 0.
+		if err := repo.Unsubscribe(ctx, userDID, communityDIDs[0]); err != nil {
+			t.Fatalf("Failed to unsubscribe from community 0: %v", err)
+		}
+
+		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
+		if err != nil {
+			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
+		}
+		if got, ok := result[communityDIDs[0]]; ok {
+			t.Errorf("Expected unsubscribed community 0 to be absent, got %+v", got)
+		}
+		want := communities.SubscriptionViewerState{ContentVisibility: 1, Favorite: false}
+		if got := result[communityDIDs[1]]; got != want {
+			t.Errorf("Expected community 1 viewer state %+v, got %+v", want, got)
 		}
 	})
 

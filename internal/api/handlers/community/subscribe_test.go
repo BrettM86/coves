@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -42,7 +44,7 @@ func createTestOAuthSession(did string) *oauth.ClientSessionData {
 
 // subscribeTestService implements communities.Service for subscribe handler tests
 type subscribeTestService struct {
-	subscribeFunc   func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error)
+	subscribeFunc   func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error)
 	unsubscribeFunc func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
 }
 
@@ -66,9 +68,9 @@ func (m *subscribeTestService) SearchCommunities(ctx context.Context, req commun
 	return nil, 0, nil
 }
 
-func (m *subscribeTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *subscribeTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 	if m.subscribeFunc != nil {
-		return m.subscribeFunc(ctx, session, communityIdentifier, contentVisibility)
+		return m.subscribeFunc(ctx, session, communityIdentifier, contentVisibility, favorite)
 	}
 	userDID := ""
 	if session != nil {
@@ -175,7 +177,7 @@ func TestSubscribeHandler_Subscribe_Success(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var receivedIdentifier string
 			mockService := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 					receivedIdentifier = communityIdentifier
 					userDID := ""
 					if session != nil {
@@ -322,12 +324,18 @@ func TestSubscribeHandler_Subscribe_ServiceErrors(t *testing.T) {
 			expectedStatus: http.StatusForbidden,
 			expectedError:  "CommunityRemoved",
 		},
+		{
+			name:           "subscription record kept changing under the rewrite",
+			serviceErr:     fmt.Errorf("subscribe: %w: rewrite lost the swap 3 times: %w", communities.ErrSubscriptionConflict, pds.ErrSwapConflict),
+			expectedStatus: http.StatusConflict,
+			expectedError:  "SubscriptionConflict",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			mockService := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 					return nil, tc.serviceErr
 				},
 			}
@@ -590,7 +598,7 @@ func TestSubscribeHandler_Subscribe_ReportsExisting(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			service := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 					return &communities.Subscription{
 						RecordURI: "at://did:plc:testuser/social.coves.community.subscription/3kexisting",
 						RecordCID: "bafyexisting",
@@ -641,7 +649,7 @@ func TestSubscribeHandler_Subscribe_ContentVisibilityInput(t *testing.T) {
 			called := false
 			received := -100
 			service := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 					called = true
 					received = contentVisibility
 					return &communities.Subscription{
@@ -677,6 +685,136 @@ func TestSubscribeHandler_Subscribe_ContentVisibilityInput(t *testing.T) {
 			}
 			if received != tc.wantReceived {
 				t.Errorf("service received contentVisibility %d, want %d", received, tc.wantReceived)
+			}
+		})
+	}
+}
+
+func TestSubscribeHandler_Subscribe_FavoriteInput(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantStatus   int
+		wantReceived *bool // value the service receives when it is called; nil = omitted
+	}{
+		{name: "omitted reaches the service as nil", body: `{"community":"did:plc:community123"}`, wantStatus: http.StatusOK, wantReceived: nil},
+		{name: "true passes through", body: `{"community":"did:plc:community123","favorite":true}`, wantStatus: http.StatusOK, wantReceived: boolPointer(true)},
+		{name: "false passes through", body: `{"community":"did:plc:community123","favorite":false}`, wantStatus: http.StatusOK, wantReceived: boolPointer(false)},
+		{name: "string rejected", body: `{"community":"did:plc:community123","favorite":"yes"}`, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			var received *bool
+			service := &subscribeTestService{
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
+					called = true
+					received = favorite
+					return &communities.Subscription{
+						RecordURI: "at://did:plc:testuser/social.coves.community.subscription/3knew",
+						RecordCID: "bafynew",
+					}, nil
+				},
+			}
+
+			w := subscribeRequest(t, service, tc.body)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body %s", w.Code, tc.wantStatus, w.Body.String())
+			}
+
+			if tc.wantStatus == http.StatusBadRequest {
+				var errResp struct {
+					Error string `json:"error"`
+				}
+				if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if errResp.Error != "InvalidRequest" {
+					t.Errorf("error = %q, want InvalidRequest", errResp.Error)
+				}
+				if called {
+					t.Error("service was called for a rejected request")
+				}
+				return
+			}
+
+			if !called {
+				t.Fatal("service was not called")
+			}
+			switch {
+			case tc.wantReceived == nil && received != nil:
+				t.Errorf("service received favorite %v, want nil (omitted)", *received)
+			case tc.wantReceived != nil && received == nil:
+				t.Errorf("service received nil favorite, want %v", *tc.wantReceived)
+			case tc.wantReceived != nil && *received != *tc.wantReceived:
+				t.Errorf("service received favorite %v, want %v", *received, *tc.wantReceived)
+			}
+		})
+	}
+}
+func boolPointer(v bool) *bool { return &v }
+
+// The subscribe response reports the settings the subscription holds after
+// the call, taken from the service result, not echoed from the request.
+func TestSubscribeHandler_Subscribe_ReportsStoredSettings(t *testing.T) {
+	tests := []struct {
+		name                  string
+		body                  string
+		storedFavorite        bool
+		storedVisibility      int
+		wantFavorite          bool
+		wantContentVisibility int64
+	}{
+		{
+			name:           "stored favorite and visibility differ from the request",
+			body:           `{"community":"did:plc:community123","contentVisibility":2,"favorite":false}`,
+			storedFavorite: true, storedVisibility: 4,
+			wantFavorite: true, wantContentVisibility: 4,
+		},
+		{
+			name:           "nothing supplied reports the listed settings",
+			body:           `{"community":"did:plc:community123"}`,
+			storedFavorite: false, storedVisibility: 3,
+			wantFavorite: false, wantContentVisibility: 3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &subscribeTestService{
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
+					return &communities.Subscription{
+						RecordURI:         "at://did:plc:testuser/social.coves.community.subscription/3kexisting",
+						RecordCID:         "bafyexisting",
+						Existing:          true,
+						ContentVisibility: tc.storedVisibility,
+						Favorite:          tc.storedFavorite,
+					}, nil
+				},
+			}
+
+			w := subscribeRequest(t, service, tc.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body %s", w.Code, w.Body.String())
+			}
+
+			var resp struct {
+				Favorite          *bool  `json:"favorite"`
+				ContentVisibility *int64 `json:"contentVisibility"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Favorite == nil {
+				t.Errorf("response has no favorite; it must always be present")
+			} else if *resp.Favorite != tc.wantFavorite {
+				t.Errorf("favorite = %v, want %v", *resp.Favorite, tc.wantFavorite)
+			}
+			if resp.ContentVisibility == nil {
+				t.Errorf("response has no contentVisibility; it must always be present")
+			} else if *resp.ContentVisibility != tc.wantContentVisibility {
+				t.Errorf("contentVisibility = %d, want %d", *resp.ContentVisibility, tc.wantContentVisibility)
 			}
 		})
 	}

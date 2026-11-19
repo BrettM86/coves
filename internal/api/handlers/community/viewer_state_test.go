@@ -79,7 +79,7 @@ func (s *repositoryBackedService) SearchCommunities(ctx context.Context, req com
 	return s.repo.Search(ctx, req)
 }
 
-func (s *repositoryBackedService) SubscribeToCommunity(context.Context, *oauth.ClientSessionData, string, int) (*communities.Subscription, error) {
+func (s *repositoryBackedService) SubscribeToCommunity(context.Context, *oauth.ClientSessionData, string, int, *bool) (*communities.Subscription, error) {
 	return nil, fmt.Errorf("repositoryBackedService: SubscribeToCommunity is not part of the viewer-state seam")
 }
 

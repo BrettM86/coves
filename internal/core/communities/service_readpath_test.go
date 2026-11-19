@@ -531,7 +531,7 @@ func TestService_WriteForwardMethodsRejectASessionlessCaller(t *testing.T) {
 	t.Run("SubscribeToCommunity", func(t *testing.T) {
 		t.Parallel()
 		service, repo, _ := seededService(t)
-		_, err := service.SubscribeToCommunity(ctx, noSession, seededCommunityDID, 3)
+		_, err := service.SubscribeToCommunity(ctx, noSession, seededCommunityDID, 3, nil)
 		requireSessionRequired(t, err)
 		assert.Empty(t, repo.calls)
 	})

@@ -53,7 +53,7 @@ func (m *mockCommunityService) SearchCommunities(ctx context.Context, req commun
 	return nil, 0, nil
 }
 
-func (m *mockCommunityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *mockCommunityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 	return nil, nil
 }
 

@@ -44,7 +44,7 @@ func (m *listTestService) SearchCommunities(ctx context.Context, req communities
 	return nil, 0, nil
 }
 
-func (m *listTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *listTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 	return nil, nil
 }
 
@@ -101,7 +101,9 @@ func (m *listTestService) GetByDID(ctx context.Context, did string) (*communitie
 }
 
 // listTestRepo implements communities.Repository for list handler tests
-type listTestRepo struct{}
+type listTestRepo struct {
+	subscribed map[string]communities.SubscriptionViewerState
+}
 
 func (r *listTestRepo) Create(ctx context.Context, community *communities.Community, _ ...communities.CreateOption) (*communities.Community, error) {
 	return nil, nil
@@ -185,8 +187,8 @@ func (r *listTestRepo) ListSubscribers(ctx context.Context, communityDID string,
 	return nil, nil
 }
 
-func (r *listTestRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]int, error) {
-	return nil, nil
+func (r *listTestRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]communities.SubscriptionViewerState, error) {
+	return r.subscribed, nil
 }
 
 func (r *listTestRepo) BlockCommunity(ctx context.Context, block *communities.CommunityBlock) (*communities.CommunityBlock, error) {
@@ -720,4 +722,61 @@ func (*listTestRepo) DeleteProvisioningAccount(context.Context, string) error { 
 
 func (*listTestRepo) AttachHostedCredentials(context.Context, *communities.Community) error {
 	return communities.ErrCommunityNotFound
+}
+
+func TestListHandler_SubscribedListReportsViewerFavorite(t *testing.T) {
+	userDID := "did:plc:testuser123"
+	mockService := &listTestService{
+		listFunc: func(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
+			return []*communities.Community{
+				{DID: "did:plc:favorite1", Handle: "c-favorite1.coves.social", Name: "favorite1", CreatedAt: time.Now()},
+				{DID: "did:plc:plain1", Handle: "c-plain1.coves.social", Name: "plain1", CreatedAt: time.Now()},
+			}, nil
+		},
+	}
+	mockRepo := &listTestRepo{subscribed: map[string]communities.SubscriptionViewerState{
+		"did:plc:favorite1": {ContentVisibility: 3, Favorite: true},
+		"did:plc:plain1":    {ContentVisibility: 3, Favorite: false},
+	}}
+	handler := NewListHandler(mockService, mockRepo)
+
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.list?subscribed=true", nil)
+	req = req.WithContext(middleware.SetTestUserDID(req.Context(), userDID))
+	w := httptest.NewRecorder()
+	handler.HandleList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Communities []struct {
+			DID    string `json:"did"`
+			Viewer *struct {
+				Favorite *bool `json:"favorite"`
+			} `json:"viewer"`
+		} `json:"communities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	want := map[string]bool{"did:plc:favorite1": true, "did:plc:plain1": false}
+	if len(resp.Communities) != len(want) {
+		t.Fatalf("Expected %d communities, got %d", len(want), len(resp.Communities))
+	}
+	for _, c := range resp.Communities {
+		wantFavorite, ok := want[c.DID]
+		if !ok {
+			t.Errorf("unexpected community %s", c.DID)
+			continue
+		}
+		if c.Viewer == nil || c.Viewer.Favorite == nil {
+			t.Errorf("%s: viewer.favorite missing from the list response", c.DID)
+			continue
+		}
+		if *c.Viewer.Favorite != wantFavorite {
+			t.Errorf("%s: viewer.favorite = %v, want %v", c.DID, *c.Viewer.Favorite, wantFavorite)
+		}
+	}
 }

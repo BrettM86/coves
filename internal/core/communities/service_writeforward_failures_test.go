@@ -49,6 +49,10 @@ type fakeUserPDS struct {
 	createErr error
 	deleteErr error
 	putErr    error
+	// beforePut, when set, runs on every PutRecord attempt with its
+	// zero-based index, before the write lands. It may change records (another
+	// writer getting there first) and a non-nil return fails that attempt.
+	beforePut func(attempt int) error
 	// listErr fails every ListRecords call; listErrOnCall fails only the call
 	// with that zero-based index, so a later page can fail after an earlier
 	// page was served.
@@ -111,6 +115,11 @@ func (f *fakeUserPDS) PutRecord(_ context.Context, collection, rkey string, reco
 	require.Truef(f.t, ok, "the service passed a %T rather than a record map", record)
 	write := fakeWrite{collection: collection, rkey: rkey, record: asMap, swapRecord: swapRecord}
 	f.putAttempts = append(f.putAttempts, write)
+	if f.beforePut != nil {
+		if err := f.beforePut(len(f.putAttempts) - 1); err != nil {
+			return "", "", err
+		}
+	}
 	if f.putErr != nil {
 		return "", "", f.putErr
 	}
@@ -301,7 +310,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 			Visibility: "private",
 		})
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), "did:plc:privatecommunity00000", 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), "did:plc:privatecommunity00000", 3, nil)
 		require.ErrorIs(t, err, communities.ErrUnauthorized,
 			"a private community is invitation-only, and the check has to happen before the write: "+
 				"the record lands in the USER's repo, so once it is written the AppView has no way to "+
@@ -320,7 +329,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 			Status:     "removed",
 		})
 
-		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), "did:plc:removedcommunity00000", 3)
+		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), "did:plc:removedcommunity00000", 3, nil)
 		require.ErrorIs(t, err, communities.ErrCommunityRemoved,
 			"a removed community takes no new subscriptions, and the refusal has to come before the write to the user's repo")
 		assert.Nil(t, subscription)
@@ -331,7 +340,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		t.Parallel()
 		service, _, userPDS := writeForwardService(t)
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), "!nosuchthing@"+fakeInstanceDomain, 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), "!nosuchthing@"+fakeInstanceDomain, 3, nil)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "subscribe:",
 			"the error must say which operation failed; three call sites resolve identifiers the same "+
@@ -344,7 +353,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		service, repo, userPDS := writeForwardService(t)
 		repo.err = errRepositoryUnavailable
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3, nil)
 		require.ErrorIs(t, err, errRepositoryUnavailable)
 		assert.Empty(t, userPDS.created)
 	})
@@ -353,7 +362,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		t.Parallel()
 		service, _ := unbuildableClientService(t, errors.New("dpop key rotated"))
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3, nil)
 		require.ErrorContains(t, err, "dpop key rotated")
 	})
 
@@ -362,7 +371,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		service, _, userPDS := writeForwardService(t)
 		userPDS.createErr = pds.ErrSessionExpired
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3, nil)
 		require.ErrorIs(t, err, communities.ErrUnauthorized,
 			"the handler turns this into a 401 so the client re-authenticates; anything else is a 500 "+
 				"and the client retries a request that cannot succeed until the user signs in")
@@ -373,7 +382,7 @@ func TestSubscribeToCommunity_Failures(t *testing.T) {
 		service, _, userPDS := writeForwardService(t)
 		userPDS.createErr = errors.New("pds is down")
 
-		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3)
+		_, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 3, nil)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, communities.ErrUnauthorized,
 			"an outage told to the user as 'sign in again' sends them through a login flow that will "+
@@ -632,7 +641,7 @@ func TestWriteForward_RecordsNameTheirCollectionAndSubject(t *testing.T) {
 		t.Parallel()
 		service, _, userPDS := writeForwardService(t)
 
-		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityHandle, 4)
+		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityHandle, 4, nil)
 		require.NoError(t, err)
 		require.Len(t, userPDS.created, 1)
 		write := userPDS.created[0]

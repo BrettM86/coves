@@ -229,6 +229,8 @@ func TestNestedBlobReferencesBackfill065_InsertOnlyDownAndRerun(t *testing.T) {
 			assert.Equal(t, before, nestedBackfillSnapshot(t, db, table, ""), "%s changed on Down or rerun", table)
 		}
 	}
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),

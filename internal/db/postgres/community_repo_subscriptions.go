@@ -14,8 +14,8 @@ import (
 // Subscribe creates a new subscription record
 func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	query := `
-		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, subscribed_at`
 
 	err := r.db.QueryRowContext(ctx, query,
@@ -25,6 +25,7 @@ func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *com
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
 		subscription.ContentVisibility,
+		subscription.Favorite,
 	).Scan(&subscription.ID, &subscription.SubscribedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -60,17 +61,17 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 	// to the newest record means the redriven delete of the OLD record URI no
 	// longer matches the row (the consumer looks it up by record_uri) and is
 	// skipped, instead of tearing down a valid newer subscription.
-	// content_visibility also takes the incoming value, so a subscription
-	// record rewritten in place (an update event) stores its new setting. The
-	// conflict path is an UPDATE, so the subscriber_count trigger does not
-	// count it again.
+	// content_visibility and favorite also take the incoming values, so a
+	// subscription record rewritten in place (an update event) stores its new
+	// settings. The conflict path is an UPDATE, so the subscriber_count trigger
+	// does not count it again.
 	query := `
-		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (user_did, community_did) DO UPDATE
 		SET record_uri = EXCLUDED.record_uri, record_cid = EXCLUDED.record_cid,
-		    content_visibility = EXCLUDED.content_visibility
-		RETURNING id, subscribed_at, content_visibility`
+		    content_visibility = EXCLUDED.content_visibility, favorite = EXCLUDED.favorite
+		RETURNING id, subscribed_at, content_visibility, favorite`
 
 	err = tx.QueryRowContext(ctx, query,
 		subscription.UserDID,
@@ -79,7 +80,8 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
 		subscription.ContentVisibility,
-	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
+		subscription.Favorite,
+	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility, &subscription.Favorite)
 	if err != nil {
 		if strings.Contains(err.Error(), "foreign key") {
 			return nil, communities.ErrCommunityNotFound
@@ -160,7 +162,7 @@ func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDI
 func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, communityDID string) (*communities.Subscription, error) {
 	subscription := &communities.Subscription{}
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite
 		FROM community_subscriptions
 		WHERE user_did = $1 AND community_did = $2`
 
@@ -174,6 +176,7 @@ func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, co
 		&recordURI,
 		&recordCID,
 		&subscription.ContentVisibility,
+		&subscription.Favorite,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -194,7 +197,7 @@ func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, co
 func (r *postgresCommunityRepo) GetSubscriptionByURI(ctx context.Context, recordURI string) (*communities.Subscription, error) {
 	subscription := &communities.Subscription{}
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite
 		FROM community_subscriptions
 		WHERE record_uri = $1`
 
@@ -208,6 +211,7 @@ func (r *postgresCommunityRepo) GetSubscriptionByURI(ctx context.Context, record
 		&uri,
 		&cid,
 		&subscription.ContentVisibility,
+		&subscription.Favorite,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -226,7 +230,7 @@ func (r *postgresCommunityRepo) GetSubscriptionByURI(ctx context.Context, record
 // ListSubscriptions retrieves all subscriptions for a user
 func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*communities.Subscription, error) {
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite
 		FROM community_subscriptions
 		WHERE user_did = $1
 		ORDER BY subscribed_at DESC
@@ -255,6 +259,7 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 			&recordURI,
 			&recordCID,
 			&subscription.ContentVisibility,
+			&subscription.Favorite,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan subscription: %w", scanErr)
@@ -276,7 +281,7 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 // ListSubscribers retrieves all subscribers for a community
 func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*communities.Subscription, error) {
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility, favorite
 		FROM community_subscriptions
 		WHERE community_did = $1
 		ORDER BY subscribed_at DESC
@@ -305,6 +310,7 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 			&recordURI,
 			&recordCID,
 			&subscription.ContentVisibility,
+			&subscription.Favorite,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan subscriber: %w", scanErr)
@@ -324,11 +330,11 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 }
 
 // GetSubscribedCommunityDIDs returns, for the given communities the user is
-// subscribed to, each one's stored content_visibility; unsubscribed DIDs are
+// subscribed to, each one's stored content_visibility and favorite; unsubscribed DIDs are
 // absent. This is optimized for batch lookups when populating viewer state.
-func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]int, error) {
+func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]communities.SubscriptionViewerState, error) {
 	if len(communityDIDs) == 0 {
-		return map[string]int{}, nil
+		return map[string]communities.SubscriptionViewerState{}, nil
 	}
 
 	// Build query with placeholders for IN clause
@@ -341,7 +347,7 @@ func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, 
 	}
 
 	query := fmt.Sprintf(`
-		SELECT community_did, content_visibility
+		SELECT community_did, content_visibility, favorite
 		FROM community_subscriptions
 		WHERE user_did = $1 AND community_did IN (%s)`,
 		strings.Join(placeholders, ", "))
@@ -356,14 +362,14 @@ func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, 
 		}
 	}()
 
-	result := make(map[string]int)
+	result := make(map[string]communities.SubscriptionViewerState)
 	for rows.Next() {
 		var communityDID string
-		var contentVisibility int
-		if err := rows.Scan(&communityDID, &contentVisibility); err != nil {
+		var state communities.SubscriptionViewerState
+		if err := rows.Scan(&communityDID, &state.ContentVisibility, &state.Favorite); err != nil {
 			return nil, fmt.Errorf("failed to scan subscribed community: %w", err)
 		}
-		result[communityDID] = contentVisibility
+		result[communityDID] = state
 	}
 
 	if err = rows.Err(); err != nil {

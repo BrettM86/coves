@@ -89,6 +89,8 @@ func TestMigration060_PreservesProfileTextAcrossDownAndUp(t *testing.T) {
 		strings.Repeat("🇺🇸", 256), strings.Repeat("🇺🇸", 64), longDID)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 
 		"080 (moderation community record writes) must be rolled back first")

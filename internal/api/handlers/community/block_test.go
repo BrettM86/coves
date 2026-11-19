@@ -47,7 +47,7 @@ func (m *blockTestService) SearchCommunities(ctx context.Context, req communitie
 	return nil, 0, nil
 }
 
-func (m *blockTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *blockTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*communities.Subscription, error) {
 	return nil, nil
 }
 

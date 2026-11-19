@@ -53,6 +53,13 @@ var (
 	// ErrSubscriptionAlreadyExists is returned when user is already subscribed
 	ErrSubscriptionAlreadyExists = errors.New("already subscribed to this community")
 
+	// ErrSubscriptionConflict is returned when a subscribe rewrite loses its
+	// swapRecord guard maxSubscriptionRewriteAttempts times in a row, or the
+	// re-list after a lost guard finds the record gone (a concurrent
+	// unsubscribe) or replaced by a record with a different rkey. Nothing was
+	// written; the client may retry.
+	ErrSubscriptionConflict = errors.New("subscription record changed concurrently")
+
 	// ErrSubscriptionNotFound is returned when subscription doesn't exist
 	ErrSubscriptionNotFound = errors.New("subscription not found")
 

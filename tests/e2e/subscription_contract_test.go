@@ -251,6 +251,10 @@ type subscribeResponse struct {
 	URI      string `json:"uri"`
 	CID      string `json:"cid"`
 	Existing bool   `json:"existing"`
+	// Favorite and ContentVisibility are the settings the subscription holds
+	// after the call; pointers so an absent field is visible.
+	Favorite          *bool `json:"favorite"`
+	ContentVisibility *int  `json:"contentVisibility"`
 }
 
 // subscriptionRecordSubjects lists every social.coves.community.subscription
@@ -350,5 +354,96 @@ func TestCommunitySubscribeContentVisibilityRewritesOneRecord(t *testing.T) {
 		}
 		return view.SubscriberCount == 1 && view.Viewer != nil &&
 			view.Viewer.ContentVisibility != nil && *view.Viewer.ContentVisibility == 3, nil
+	})
+}
+
+// TestCommunitySubscribeFavoriteReachesSubscribedList is the end-to-end
+// acceptance test for favorite communities. It carries no ingestion marker:
+// TestCommunitySubscriptionIngestion owns the collection.
+//
+// A signed-in account subscribes through the AppView with favorite true, then
+// re-subscribes with only contentVisibility 4 (the favorite must survive), then
+// with favorite false, then unsubscribes. Each step is observed on
+// social.coves.community.list?subscribed=true as that account, so the favorite
+// travels the whole path: subscribe input, PDS record, firehose, index, list
+// viewer state. Each wait also checks contentVisibility, so a wait cannot pass on
+// a step the index has not seen yet.
+func TestCommunitySubscribeFavoriteReachesSubscribedList(t *testing.T) {
+	p := newPipeline(t)
+
+	creator := p.IndexedAccount(t, "fvc")
+	subscriberAccount := p.IndexedAccount(t, "fvs")
+	community := indexedCommunity(t, p, "fv", creator.DID)
+	subscriber := p.AppView.As(p.AppView.SignIn(t, subscriberAccount))
+
+	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
+	defer cancel()
+
+	// subscribe calls the procedure and requires its response to report the
+	// settings the subscription holds after the call.
+	subscribe := func(input map[string]any, wantContentVisibility int, wantFavorite bool) {
+		t.Helper()
+		input["community"] = community.DID
+		var response subscribeResponse
+		require.NoError(t, subscriber.Procedure(ctx, "social.coves.community.subscribe", input, &response),
+			"social.coves.community.subscribe with %v", input)
+		require.NotNil(t, response.Favorite, "subscribe with %v: response has no favorite", input)
+		require.Equal(t, wantFavorite, *response.Favorite, "subscribe with %v: response favorite", input)
+		require.NotNil(t, response.ContentVisibility, "subscribe with %v: response has no contentVisibility", input)
+		require.Equal(t, wantContentVisibility, *response.ContentVisibility,
+			"subscribe with %v: response contentVisibility", input)
+	}
+
+	type listedViewer struct {
+		ContentVisibility *int  `json:"contentVisibility"`
+		Favorite          *bool `json:"favorite"`
+	}
+	// listed reports whether the community is in the subscriber's subscribed
+	// list, and its viewer state when it is. The subscriber is a fresh account
+	// subscribed to nothing else, so one page holds every subscription.
+	listed := func() (bool, *listedViewer, error) {
+		var page struct {
+			Communities []struct {
+				DID    string        `json:"did"`
+				Viewer *listedViewer `json:"viewer"`
+			} `json:"communities"`
+		}
+		if err := subscriber.Query(context.Background(), "social.coves.community.list",
+			url.Values{"subscribed": {"true"}, "limit": {"100"}}, &page); err != nil {
+			return false, nil, err
+		}
+		for _, c := range page.Communities {
+			if c.DID == community.DID {
+				return true, c.Viewer, nil
+			}
+		}
+		return false, nil, nil
+	}
+	awaitViewer := func(description string, contentVisibility int, favorite bool) {
+		t.Helper()
+		p.Await(t, description, func() (bool, error) {
+			found, viewer, err := listed()
+			if err != nil || !found || viewer == nil {
+				return false, err
+			}
+			return viewer.ContentVisibility != nil && *viewer.ContentVisibility == contentVisibility &&
+				viewer.Favorite != nil && *viewer.Favorite == favorite, nil
+		})
+	}
+
+	subscribe(map[string]any{"contentVisibility": 2, "favorite": true}, 2, true)
+	awaitViewer("list?subscribed=true to show the community with contentVisibility 2 and favorite true", 2, true)
+
+	subscribe(map[string]any{"contentVisibility": 4}, 4, true)
+	awaitViewer("a re-subscribe without favorite to keep favorite true at contentVisibility 4", 4, true)
+
+	subscribe(map[string]any{"favorite": false}, 4, false)
+	awaitViewer("a re-subscribe with favorite false to show favorite false, keeping contentVisibility 4", 4, false)
+
+	require.NoError(t, subscriber.Procedure(ctx, "social.coves.community.unsubscribe",
+		map[string]any{"community": community.DID}, nil), "social.coves.community.unsubscribe")
+	p.Await(t, "the unsubscribed community to leave list?subscribed=true", func() (bool, error) {
+		found, _, err := listed()
+		return err == nil && !found, err
 	})
 }

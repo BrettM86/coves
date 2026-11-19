@@ -112,14 +112,18 @@ func PopulateCommunityViewerState(
 
 	// Populate viewer state on each community
 	for _, c := range communityList {
-		contentVisibility, isSubscribed := subscribed[c.DID]
+		state, isSubscribed := subscribed[c.DID]
+		contentVisibility := state.ContentVisibility
+		favorite := state.Favorite
 		if c.Viewer == nil {
 			c.Viewer = &communities.CommunityViewerState{}
 		}
 		c.Viewer.Subscribed = &isSubscribed
 		c.Viewer.ContentVisibility = nil
+		c.Viewer.Favorite = nil
 		if isSubscribed {
 			c.Viewer.ContentVisibility = &contentVisibility
+			c.Viewer.Favorite = &favorite
 		}
 	}
 }

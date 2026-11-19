@@ -127,7 +127,7 @@ func TestService_SubscribeWritesASubscriptionRecord(t *testing.T) {
 	f := newWriteForwardFixture(t)
 	ctx := context.Background()
 
-	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.DID, 5)
+	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.DID, 5, nil)
 	require.NoError(t, err)
 	require.Equal(t, f.community.DID, subscription.CommunityDID)
 	require.Equal(t, f.user.DID, subscription.UserDID)
@@ -175,7 +175,7 @@ func TestService_SubscribeClampsContentVisibility(t *testing.T) {
 
 			f := newWriteForwardFixture(t)
 			subscription, err := f.service.SubscribeToCommunity(
-				context.Background(), f.session, f.community.DID, tc.requested)
+				context.Background(), f.session, f.community.DID, tc.requested, nil)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.stored, subscription.ContentVisibility)
@@ -192,7 +192,7 @@ func TestService_UnsubscribeDeletesTheSubscriptionRecord(t *testing.T) {
 	f := newWriteForwardFixture(t)
 	ctx := context.Background()
 
-	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.DID, 3)
+	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.DID, 3, nil)
 	require.NoError(t, err)
 	rkey := rkeyOf(t, subscription.RecordURI)
 
@@ -260,7 +260,7 @@ func TestService_WriteForwardResolvesEveryIdentifierForm(t *testing.T) {
 	f := newWriteForwardFixture(t)
 	ctx := context.Background()
 
-	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.Handle, 3)
+	subscription, err := f.service.SubscribeToCommunity(ctx, f.session, f.community.Handle, 3, nil)
 	require.NoError(t, err)
 
 	record := f.user.GetRecord(t, "social.coves.community.subscription", rkeyOf(t, subscription.RecordURI))
@@ -305,7 +305,7 @@ func TestService_SubscribeToARemovedCommunityIsRefusedUntilRestored(t *testing.T
 	moderator := communityremovalfixture.New(db)
 	moderator.Remove(t, communityDID)
 
-	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3)
+	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3, nil)
 	require.ErrorIs(t, err, communities.ErrCommunityRemoved)
 	assert.Nil(t, subscription)
 	assert.Empty(t, userPDS.created, "a refused subscribe must not write to the PDS")
@@ -314,7 +314,7 @@ func TestService_SubscribeToARemovedCommunityIsRefusedUntilRestored(t *testing.T
 	assert.Equal(t, communityDID, existing.CommunityDID)
 
 	moderator.Restore(t, communityDID)
-	subscription, err = service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3)
+	subscription, err = service.SubscribeToCommunity(ctx, userSession(t), communityDID, 3, nil)
 	require.NoError(t, err)
 	require.NotNil(t, subscription)
 	require.Len(t, userPDS.created, 1, "the subscribe accepted after restore is written to the subscriber's PDS")

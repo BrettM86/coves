@@ -142,8 +142,10 @@ type RemovalReader interface {
 type CommunityViewerState struct {
 	Subscribed *bool `json:"subscribed,omitempty"`
 	// ContentVisibility is the subscription's 1-5 setting, set only when subscribed.
-	ContentVisibility *int  `json:"contentVisibility,omitempty"`
-	Member            *bool `json:"member,omitempty"`
+	ContentVisibility *int `json:"contentVisibility,omitempty"`
+	// Favorite is the subscription's favorite flag, set only when subscribed.
+	Favorite *bool `json:"favorite,omitempty"`
+	Member   *bool `json:"member,omitempty"`
 	// Blocked reports whether the viewer hides this community from aggregate feeds.
 	Blocked *bool `json:"blocked,omitempty"`
 	// Banned and the ban fields are set only when the viewer has an active
@@ -210,8 +212,15 @@ type Subscription struct {
 	RecordCID         string    `json:"recordCid,omitempty" db:"record_cid"`
 	ContentVisibility int       `json:"contentVisibility" db:"content_visibility"` // Feed slider: 1-5 (1=best content only, 5=all content)
 	ID                int       `json:"id" db:"id"`
+	Favorite          bool      `json:"favorite" db:"favorite"`
 	// Existing is true when the viewer already had a subscription record on its PDS.
 	Existing bool `json:"-" db:"-"`
+}
+
+// SubscriptionViewerState is the viewer's stored state for one subscribed community.
+type SubscriptionViewerState struct {
+	ContentVisibility int
+	Favorite          bool
 }
 
 // CommunityBlock represents a user blocking a community
@@ -477,4 +486,32 @@ type ProvisioningAccount struct {
 	PDSURL       string
 	PDSEmail     string
 	PDSPassword  string
+}
+
+// DefaultContentVisibility is the feed slider value used when a subscription
+// record carries no usable contentVisibility.
+const DefaultContentVisibility = 3
+
+// ContentVisibilityFromRecord reads a subscription record's contentVisibility
+// value the way the AppView indexes it: a number is truncated to an integer
+// and clamped to 1-5; an absent (nil) or non-number value is
+// DefaultContentVisibility.
+func ContentVisibilityFromRecord(value any) int {
+	var visibility int
+	switch v := value.(type) {
+	case nil:
+		return DefaultContentVisibility
+	case float64:
+		visibility = int(v)
+	case int:
+		visibility = v
+	default:
+		log.Printf("WARNING: contentVisibility has unexpected type %T, using default", value)
+		return DefaultContentVisibility
+	}
+	clamped := min(max(visibility, 1), 5)
+	if clamped != visibility {
+		log.Printf("WARNING: Clamped contentVisibility from %d to %d", visibility, clamped)
+	}
+	return clamped
 }

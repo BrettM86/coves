@@ -23,6 +23,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	var existingCommunities int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM communities`).Scan(&existingCommunities))
 	require.Zero(t, existingCommunities, "the cloned database must contain no communities")
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -142,6 +144,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	require.Equal(t, oldUpdated, updated.UTC().Format(time.RFC3339))
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -180,6 +184,8 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 
 func TestCommunityBlobReferencesBackfill064_PagesPastCommunitiesWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),

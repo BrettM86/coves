@@ -1139,7 +1139,7 @@ func (s *communityService) SearchCommunities(ctx context.Context, req SearchComm
 
 // SubscribeToCommunity creates a subscription via write-forward to PDS
 // Uses OAuth session with DPoP authentication for secure PDS communication
-func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*Subscription, error) {
+func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int, favorite *bool) (*Subscription, error) {
 	if session == nil {
 		return nil, NewValidationError("session", "required")
 	}
@@ -1150,7 +1150,7 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 	// that reach the service anyway are treated as the default.
 	supplied := contentVisibility != 0
 	if contentVisibility <= 0 || contentVisibility > 5 {
-		contentVisibility = 3
+		contentVisibility = DefaultContentVisibility
 	}
 
 	// Resolve community identifier to DID
@@ -1194,7 +1194,7 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 	}
 
 	if existing != nil {
-		return subscribeExisting(ctx, pdsClient, existing, userDID, communityDID, contentVisibility, supplied)
+		return subscribeExisting(ctx, pdsClient, existing, userDID, communityDID, contentVisibility, supplied, favorite)
 	}
 
 	// Generate TID for record key
@@ -1209,6 +1209,9 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 		"subject":           communityDID, // atProto convention: "subject" for entity references
 		"createdAt":         time.Now().Format(time.RFC3339),
 		"contentVisibility": contentVisibility,
+	}
+	if favorite != nil {
+		subRecord["favorite"] = *favorite
 	}
 
 	// Write-forward: create subscription record in user's repo using DPoP-authenticated client
@@ -1228,6 +1231,7 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 		SubscribedAt:      time.Now(),
 		RecordURI:         recordURI,
 		RecordCID:         recordCID,
+		Favorite:          favorite != nil && *favorite,
 	}
 
 	return subscription, nil
@@ -1278,47 +1282,91 @@ func findSubscriptionRecord(ctx context.Context, pdsClient pds.Client, community
 	return nil, fmt.Errorf("subscription listing did not end within %d pages", maxSubscriptionListPages)
 }
 
+// maxSubscriptionRewriteAttempts bounds how many swap-guarded putRecord calls
+// one subscribe makes when another writer keeps changing the record between
+// our listing and our write. Past it the call reports ErrSubscriptionConflict.
+const maxSubscriptionRewriteAttempts = 3
+
 // subscribeExisting handles subscribe when the viewer's PDS already holds a
-// subscription record for the community. A supplied value always rewrites the
-// record in place; an omitted one writes nothing and reports the listed record.
-func subscribeExisting(ctx context.Context, pdsClient pds.Client, existing *subscriptionRecord, userDID, communityDID string, contentVisibility int, supplied bool) (*Subscription, error) {
-	subscription := &Subscription{
-		UserDID:      userDID,
-		CommunityDID: communityDID,
-		SubscribedAt: time.Now(),
-		RecordURI:    existing.entry.URI,
-		RecordCID:    existing.entry.CID,
-		Existing:     true,
-	}
-
-	if !supplied {
-		subscription.ContentVisibility = 3
-		if listed, ok := existing.entry.Value["contentVisibility"].(float64); ok && listed >= 1 && listed <= 5 && listed == float64(int(listed)) {
-			subscription.ContentVisibility = int(listed)
+// subscription record for the community. Any supplied setting (contentVisibility
+// when contentVisibilitySupplied, favorite when non-nil) rewrites the record in
+// place; each omitted setting is carried over from the listed record. With
+// nothing supplied it writes nothing and reports the listed record.
+//
+// The rewrite is guarded by the listed record's CID (swapRecord). When another
+// writer changed the record first, it re-lists and rebuilds from the fresh
+// record with the same rkey, up to maxSubscriptionRewriteAttempts; a record
+// gone or replaced by a different rkey on re-list, or attempts exhausted, is
+// ErrSubscriptionConflict.
+func subscribeExisting(ctx context.Context, pdsClient pds.Client, existing *subscriptionRecord, userDID, communityDID string, contentVisibility int, contentVisibilitySupplied bool, favorite *bool) (*Subscription, error) {
+	for attempt := 1; ; attempt++ {
+		effectiveVisibility := contentVisibility
+		if !contentVisibilitySupplied {
+			effectiveVisibility = ContentVisibilityFromRecord(existing.entry.Value["contentVisibility"])
 		}
-		return subscription, nil
-	}
+		listedFavorite, listedHasFavorite := existing.entry.Value["favorite"].(bool)
+		effectiveFavorite := listedFavorite
+		if favorite != nil {
+			effectiveFavorite = *favorite
+		}
 
-	createdAt, ok := existing.entry.Value["createdAt"].(string)
-	if !ok {
-		createdAt = time.Now().Format(time.RFC3339)
-	}
-	record := map[string]interface{}{
-		"$type":             "social.coves.community.subscription",
-		"subject":           communityDID,
-		"createdAt":         createdAt,
-		"contentVisibility": contentVisibility,
-	}
-	_, recordCID, err := pdsClient.PutRecord(ctx, "social.coves.community.subscription", existing.rkey, record, "")
-	if err != nil {
+		subscription := &Subscription{
+			UserDID:           userDID,
+			CommunityDID:      communityDID,
+			SubscribedAt:      time.Now(),
+			RecordURI:         existing.entry.URI,
+			RecordCID:         existing.entry.CID,
+			Existing:          true,
+			ContentVisibility: effectiveVisibility,
+			Favorite:          effectiveFavorite,
+		}
+		if !contentVisibilitySupplied && favorite == nil {
+			return subscription, nil
+		}
+
+		createdAt, ok := existing.entry.Value["createdAt"].(string)
+		if !ok {
+			createdAt = time.Now().Format(time.RFC3339)
+		}
+		record := map[string]interface{}{
+			"$type":             "social.coves.community.subscription",
+			"subject":           communityDID,
+			"createdAt":         createdAt,
+			"contentVisibility": effectiveVisibility,
+		}
+		if favorite != nil || listedHasFavorite {
+			record["favorite"] = effectiveFavorite
+		}
+		_, recordCID, err := pdsClient.PutRecord(ctx, "social.coves.community.subscription", existing.rkey, record, existing.entry.CID)
+		if err == nil {
+			subscription.RecordCID = recordCID
+			return subscription, nil
+		}
 		if pds.IsAuthError(err) {
 			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
-		return nil, fmt.Errorf("failed to update subscription on PDS: %w", err)
+		if !errors.Is(err, pds.ErrSwapConflict) {
+			return nil, fmt.Errorf("failed to update subscription on PDS: %w", err)
+		}
+		if attempt == maxSubscriptionRewriteAttempts {
+			return nil, fmt.Errorf("%w: rewrite lost the swap %d times: %w", ErrSubscriptionConflict, attempt, err)
+		}
+
+		targetRkey := existing.rkey
+		existing, err = findSubscriptionRecord(ctx, pdsClient, communityDID)
+		if err != nil {
+			if pds.IsAuthError(err) {
+				return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
+			}
+			return nil, fmt.Errorf("failed to re-list subscriptions on PDS: %w", err)
+		}
+		if existing == nil {
+			return nil, fmt.Errorf("%w: subscription record removed during rewrite", ErrSubscriptionConflict)
+		}
+		if existing.rkey != targetRkey {
+			return nil, fmt.Errorf("%w: subscription record replaced during rewrite", ErrSubscriptionConflict)
+		}
 	}
-	subscription.RecordCID = recordCID
-	subscription.ContentVisibility = contentVisibility
-	return subscription, nil
 }
 
 // UnsubscribeFromCommunity removes a subscription via PDS delete

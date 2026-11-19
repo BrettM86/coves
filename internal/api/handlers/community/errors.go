@@ -19,6 +19,9 @@ var errorMapper = xrpc.NewMapper("community",
 	xrpc.Sentinel(communities.ErrHandleTaken, http.StatusConflict,
 		"NameTaken", "Community handle is already taken"),
 
+	xrpc.Sentinel(communities.ErrSubscriptionConflict, http.StatusConflict,
+		"SubscriptionConflict", "The subscription changed while it was being updated; try again"),
+
 	xrpc.Sentinel(communities.ErrUnauthorized, http.StatusForbidden,
 		"Forbidden", "You do not have permission to perform this action"),
 	xrpc.Sentinel(communities.ErrCommunityBlockScopeRequired, http.StatusForbidden,

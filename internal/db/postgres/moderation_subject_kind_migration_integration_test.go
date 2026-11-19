@@ -107,6 +107,8 @@ func (r *migrationFailureRecorder) Errorf(format string, args ...any) {
 
 func TestModerationMigration075_BackfillsSubjectKind(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -212,6 +214,8 @@ func TestModerationMigration075_DownRequiresBackfillAgreement(t *testing.T) {
 			require.NoError(t, insertSubjectKindAction(t, db, row))
 		}
 
+		require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+			"081 (community subscription favorite) must be rolled back first")
 		require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 
 			"080 (moderation community record writes) must be rolled back first")
@@ -287,6 +291,8 @@ func TestModerationMigration075_DownRequiresBackfillAgreement(t *testing.T) {
 				wantKinds[row.id] = sql.NullString{String: row.subjectKind, Valid: true}
 			}
 
+			require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+				"081 (community subscription favorite) must be rolled back first")
 			require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 
 				"080 (moderation community record writes) must be rolled back first")
@@ -314,6 +320,8 @@ func TestModerationMigration075_DownRequiresBackfillAgreement(t *testing.T) {
 // stays account activity: communityRepo.Create refuses its DID.
 func TestModerationMigration075_BackfillsUsersIndexSourceAsAccount(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -359,6 +367,8 @@ func usersIndexSourceColumnCount(t *testing.T, db *sql.DB) int {
 // the backfill does not reopen ban evasion). Down drops the column (guard).
 func TestModerationMigration075_BackfillsUsersIndexSourceForCommunityDIDs(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -404,6 +414,8 @@ func TestModerationMigration075_BackfillsUsersIndexSourceForCommunityDIDs(t *tes
 		})
 	}
 
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 
 		"080 (moderation community record writes) must be rolled back first")

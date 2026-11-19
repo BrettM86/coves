@@ -23,6 +23,8 @@ import (
 
 func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),
@@ -149,6 +151,8 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
 
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 
 		"080 (moderation community record writes) must be rolled back first")
@@ -194,6 +198,8 @@ func TestUserBlobReferencesBackfill063_PreservesExistingReferencesAndUsers(t *te
 
 func TestUserBlobReferencesBackfill063_PagesPastUsersWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
+		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
 		"080 (moderation community record writes) must be rolled back first")
 	require.EqualValues(t, 79, testkit.MigrateDownOne(t, db, 79),

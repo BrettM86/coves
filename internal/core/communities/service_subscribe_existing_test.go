@@ -3,6 +3,7 @@ package communities_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestSubscribeToCommunity_NoMatchingRecordCreates(t *testing.T) {
 					subscriptionValue(otherCommunityDID, "2026-01-02T03:04:05Z", float64(2))),
 			}
 
-			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, tt.contentVisibility)
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, tt.contentVisibility, nil)
 			require.NoError(t, err)
 
 			assert.Empty(t, userPDS.putAttempts,
@@ -149,7 +150,7 @@ func TestSubscribeToCommunity_SuppliedValueRewritesMatchingRecord(t *testing.T) 
 			}
 
 			before := time.Now().Truncate(time.Second)
-			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, tt.contentVisibility)
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, tt.contentVisibility, nil)
 			after := time.Now()
 			require.NoError(t, err)
 
@@ -161,7 +162,8 @@ func TestSubscribeToCommunity_SuppliedValueRewritesMatchingRecord(t *testing.T) 
 			write := userPDS.putAttempts[0]
 			assert.Equal(t, "social.coves.community.subscription", write.collection)
 			assert.Equal(t, "3kaaaaaaaaaa2", write.rkey)
-			assert.Equal(t, "", write.swapRecord)
+			assert.Equal(t, "bafylisted", write.swapRecord,
+				"the rewrite is guarded by the listed record's CID, so a concurrent change is not overwritten")
 			assert.Len(t, write.record, 4, "the rewrite carries exactly $type, subject, createdAt, contentVisibility")
 			assert.Equal(t, "social.coves.community.subscription", write.record["$type"])
 			assert.Equal(t, seededCommunityDID, write.record["subject"])
@@ -192,9 +194,9 @@ func TestSubscribeToCommunity_RepeatBeforeIndexingRewritesFirstRecord(t *testing
 	ctx := context.Background()
 	service, _, userPDS := writeForwardService(t)
 
-	first, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 2)
+	first, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 2, nil)
 	require.NoError(t, err)
-	second, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5)
+	second, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5, nil)
 	require.NoError(t, err)
 
 	require.Len(t, userPDS.createAttempts, 1,
@@ -254,7 +256,7 @@ func TestSubscribeToCommunity_FindsMatchAcrossPagesAndPicksGreatestRkey(t *testi
 			userPDS.listPageSize = 2
 			userPDS.records = append([]pds.RecordEntry(nil), tt.records...)
 
-			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 4)
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 4, nil)
 			require.NoError(t, err)
 
 			require.Empty(t, userPDS.createAttempts,
@@ -280,7 +282,7 @@ func TestSubscribeToCommunity_OmittedValueKeepsExistingRecord(t *testing.T) {
 	}{
 		{name: "listed value", listedValue: float64(2), wantContentVisibility: 2},
 		{name: "listed value absent", listedValue: nil, wantContentVisibility: 3},
-		{name: "listed value out of range", listedValue: float64(9), wantContentVisibility: 3},
+		{name: "listed value out of range is clamped as the index does", listedValue: float64(9), wantContentVisibility: 5},
 		{name: "listed value not a number", listedValue: "x", wantContentVisibility: 3},
 	}
 
@@ -293,7 +295,7 @@ func TestSubscribeToCommunity_OmittedValueKeepsExistingRecord(t *testing.T) {
 					subscriptionValue(seededCommunityDID, "2026-01-02T03:04:05Z", tt.listedValue)),
 			}
 
-			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 0)
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 0, nil)
 			require.NoError(t, err)
 
 			require.Empty(t, userPDS.createAttempts,
@@ -373,7 +375,7 @@ func TestSubscribeToCommunity_ListAndRewriteFailures(t *testing.T) {
 			service, _, userPDS := writeForwardService(t)
 			tt.arrange(userPDS)
 
-			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5)
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5, nil)
 
 			if tt.wantUnauthorized {
 				require.ErrorIs(t, err, communities.ErrUnauthorized,
@@ -406,7 +408,7 @@ func TestSubscribeToCommunity_StopsAtPageCapWhenCursorNeverEnds(t *testing.T) {
 			subscriptionValue(seededCommunityDID, "2026-01-02T03:04:05Z", float64(3))),
 	}
 
-	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 4)
+	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 4, nil)
 
 	require.Error(t, err, "an unending listing must fail rather than act on a partial scan")
 	assert.NotErrorIs(t, err, communities.ErrUnauthorized,
@@ -415,4 +417,222 @@ func TestSubscribeToCommunity_StopsAtPageCapWhenCursorNeverEnds(t *testing.T) {
 	assert.Len(t, userPDS.listCalls, 50, "the service lists at most 50 pages")
 	assert.Empty(t, userPDS.createAttempts, "no record is created after an incomplete scan")
 	assert.Empty(t, userPDS.putAttempts, "no record is rewritten after an incomplete scan")
+}
+
+// errSwapConflict is a lost swapRecord guard as the PDS client reports it: a 400
+// InvalidSwap wraps only pds.ErrSwapConflict, a 409 InvalidSwap wraps
+// pds.ErrConflict as well.
+var errSwapConflict = fmt.Errorf("putRecord: %w: record was at bafyother", pds.ErrSwapConflict)
+
+var errSwapConflict409 = fmt.Errorf("putRecord: %w: %w: record was at bafyother", pds.ErrConflict, pds.ErrSwapConflict)
+
+// A rewrite that loses its swapRecord guard re-lists and rewrites from the
+// record another writer left there: the retry is guarded by the new CID and
+// carries the other writer's value for every setting this call omitted.
+func TestSubscribeToCommunity_RewriteRetriesFromFreshListingAfterSwapConflict(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name              string
+		conflict          error
+		contentVisibility int // 0 = omitted
+		favorite          *bool
+		// The record the other writer leaves before the first put lands.
+		otherVisibility       float64
+		otherFavorite         bool
+		wantContentVisibility int
+		wantFavorite          bool
+	}{
+		{
+			name:     "contentVisibility only; the other writer set favorite",
+			conflict: errSwapConflict, contentVisibility: 5, favorite: nil,
+			otherVisibility: 2, otherFavorite: true,
+			wantContentVisibility: 5, wantFavorite: true,
+		},
+		{
+			name:     "favorite only; the other writer changed contentVisibility",
+			conflict: errSwapConflict, contentVisibility: 0, favorite: boolPtr(true),
+			otherVisibility: 4, otherFavorite: false,
+			wantContentVisibility: 4, wantFavorite: true,
+		},
+		{
+			name:     "409 InvalidSwap is the same lost race",
+			conflict: errSwapConflict409, contentVisibility: 5, favorite: nil,
+			otherVisibility: 2, otherFavorite: true,
+			wantContentVisibility: 5, wantFavorite: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			service, _, userPDS := writeForwardService(t)
+			userPDS.records = []pds.RecordEntry{
+				subscriptionEntry("3kaaaaaaaaaa2", "bafylisted", favoriteSubscriptionValue(float64(2), false)),
+			}
+			userPDS.beforePut = func(attempt int) error {
+				if attempt != 0 {
+					return nil
+				}
+				userPDS.records = []pds.RecordEntry{
+					subscriptionEntry("3kaaaaaaaaaa2", "bafyotherwriter",
+						favoriteSubscriptionValue(tt.otherVisibility, tt.otherFavorite)),
+				}
+				return tt.conflict
+			}
+
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, tt.contentVisibility, tt.favorite)
+			require.NoError(t, err, "one lost swap is retried, not reported")
+
+			require.Empty(t, userPDS.createAttempts)
+			require.Len(t, userPDS.put, 1, "exactly one rewrite lands")
+			write := userPDS.put[0]
+			assert.Equal(t, "3kaaaaaaaaaa2", write.rkey)
+			assert.Equal(t, "bafyotherwriter", write.swapRecord,
+				"the retry is guarded by the CID the fresh listing returned")
+			assert.Equal(t, "2026-01-02T03:04:05Z", write.record["createdAt"])
+			assert.EqualValues(t, tt.wantContentVisibility, write.record["contentVisibility"])
+			assert.Equal(t, tt.wantFavorite, write.record["favorite"],
+				"an omitted setting is carried over from the fresh listing, not the stale one")
+
+			require.NotNil(t, subscription)
+			assert.True(t, subscription.Existing)
+			assert.Equal(t, "at://"+subscriberDID+"/social.coves.community.subscription/3kaaaaaaaaaa2", subscription.RecordURI)
+			assert.Equal(t, "bafyput3kaaaaaaaaaa2", subscription.RecordCID)
+			assert.Equal(t, tt.wantContentVisibility, subscription.ContentVisibility)
+			assert.Equal(t, tt.wantFavorite, subscription.Favorite)
+		})
+	}
+}
+
+// A rewrite that keeps losing its guard, or finds the record gone after a lost
+// guard, reports ErrSubscriptionConflict rather than overwriting or creating.
+func TestSubscribeToCommunity_RewriteReportsConflictWhenRaceDoesNotSettle(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("every attempt loses the swap; three attempts, then conflict", func(t *testing.T) {
+		t.Parallel()
+		service, _, userPDS := writeForwardService(t)
+		userPDS.records = []pds.RecordEntry{
+			subscriptionEntry("3kaaaaaaaaaa2", "bafylisted", favoriteSubscriptionValue(float64(2), false)),
+		}
+		userPDS.beforePut = func(attempt int) error {
+			userPDS.records = []pds.RecordEntry{
+				subscriptionEntry("3kaaaaaaaaaa2", fmt.Sprintf("bafyotherwriter%d", attempt),
+					favoriteSubscriptionValue(float64(2), false)),
+			}
+			return errSwapConflict
+		}
+
+		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5, nil)
+
+		require.ErrorIs(t, err, communities.ErrSubscriptionConflict)
+		assert.NotErrorIs(t, err, communities.ErrUnauthorized)
+		assert.Nil(t, subscription)
+		assert.Len(t, userPDS.putAttempts, 3, "the rewrite is attempted at most three times")
+		assert.Empty(t, userPDS.put)
+		assert.Empty(t, userPDS.createAttempts)
+	})
+
+	t.Run("record gone after the lost swap; conflict, nothing created", func(t *testing.T) {
+		t.Parallel()
+		service, _, userPDS := writeForwardService(t)
+		userPDS.records = []pds.RecordEntry{
+			subscriptionEntry("3kaaaaaaaaaa2", "bafylisted", favoriteSubscriptionValue(float64(2), false)),
+		}
+		userPDS.beforePut = func(int) error {
+			userPDS.records = nil // unsubscribed concurrently
+			return errSwapConflict
+		}
+
+		subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5, nil)
+
+		require.ErrorIs(t, err, communities.ErrSubscriptionConflict)
+		assert.Nil(t, subscription)
+		assert.Len(t, userPDS.putAttempts, 1, "a record that is gone is not rewritten again")
+		assert.Empty(t, userPDS.createAttempts, "a concurrent unsubscribe is not undone by creating a record")
+	})
+}
+
+// A re-list that fails after a lost swap is reported as that failure, the same
+// way a failed initial listing is.
+func TestSubscribeToCommunity_RewriteReListFailureAfterSwapConflict(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	injectedCause := errors.New("pds is down")
+
+	tests := []struct {
+		name             string
+		listErr          error
+		wantUnauthorized bool
+	}{
+		{name: "re-list other error", listErr: injectedCause},
+		{name: "re-list auth error", listErr: pds.ErrSessionExpired, wantUnauthorized: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			service, _, userPDS := writeForwardService(t)
+			userPDS.records = []pds.RecordEntry{
+				subscriptionEntry("3kaaaaaaaaaa2", "bafylisted", favoriteSubscriptionValue(float64(2), false)),
+			}
+			// Call 0 is the initial listing; call 1 is the re-list after the conflict.
+			userPDS.listErrOnCall = map[int]error{1: tt.listErr}
+			userPDS.beforePut = func(int) error { return errSwapConflict }
+
+			subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 5, nil)
+
+			if tt.wantUnauthorized {
+				require.ErrorIs(t, err, communities.ErrUnauthorized,
+					"a dead session on the re-list is a 401 like on the first listing")
+			} else {
+				require.ErrorIs(t, err, injectedCause, "the re-list failure must be returned, not swallowed")
+				assert.NotErrorIs(t, err, communities.ErrUnauthorized)
+			}
+			assert.NotErrorIs(t, err, communities.ErrSubscriptionConflict,
+				"a failed re-list is not a settled conflict")
+			assert.Nil(t, subscription)
+			assert.Len(t, userPDS.putAttempts, 1, "no rewrite is attempted without a fresh listing")
+			assert.Empty(t, userPDS.createAttempts)
+		})
+	}
+}
+
+// With legacy duplicate records for one community, the rewrite targets the
+// greatest rkey. When that record is deleted under a lost swap (a concurrent
+// unsubscribe), the re-list surfaces the older duplicate; rewriting it would
+// resurrect a subscription the viewer just removed, so the call reports
+// ErrSubscriptionConflict and writes nothing.
+func TestSubscribeToCommunity_RewriteDoesNotFallBackToOlderDuplicate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	const olderRkey, newerRkey = "3kaaaaaaaaaa2", "3kaaaaaaaaaa9"
+	service, _, userPDS := writeForwardService(t)
+	older := subscriptionEntry(olderRkey, "bafyolder", favoriteSubscriptionValue(float64(2), false))
+	userPDS.records = []pds.RecordEntry{
+		older,
+		subscriptionEntry(newerRkey, "bafynewer", favoriteSubscriptionValue(float64(2), false)),
+	}
+	userPDS.beforePut = func(attempt int) error {
+		if attempt != 0 {
+			return nil
+		}
+		userPDS.records = []pds.RecordEntry{older} // newer record unsubscribed concurrently
+		return errSwapConflict
+	}
+
+	subscription, err := service.SubscribeToCommunity(ctx, userSession(t), seededCommunityDID, 0, boolPtr(true))
+
+	require.ErrorIs(t, err, communities.ErrSubscriptionConflict)
+	assert.Nil(t, subscription)
+	for _, attempt := range userPDS.putAttempts {
+		assert.NotEqual(t, olderRkey, attempt.rkey,
+			"the older duplicate must not be rewritten after the targeted record vanished")
+	}
+	assert.Empty(t, userPDS.put)
+	assert.Empty(t, userPDS.createAttempts, "a concurrent unsubscribe is not undone by creating a record")
 }

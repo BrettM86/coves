@@ -26,7 +26,14 @@ func NewSubscribeHandler(service communities.Service) *SubscribeHandler {
 // HandleSubscribe subscribes a user to a community
 // POST /xrpc/social.coves.community.subscribe
 //
-// Request body: { "community": "<identifier>", "contentVisibility": 3 }
+// Request body: { "community": "<identifier>", "contentVisibility": 3, "favorite": true }
+// contentVisibility and favorite are optional; an omitted value keeps the
+// existing subscription's setting (or the default on a new subscription).
+// Response: { "uri", "cid", "existing", "favorite", "contentVisibility" }, the
+// last two being the stored settings after the call. A rewrite that keeps
+// losing to concurrent changes of the record, or whose record was removed or
+// replaced by a different record during the rewrite, answers 409
+// SubscriptionConflict.
 // Where <identifier> can be:
 //   - DID: did:plc:xxx
 //   - Canonical handle: c-name.coves.social
@@ -42,6 +49,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Community         string `json:"community"`         // DID, handle, or scoped identifier
 		ContentVisibility *int   `json:"contentVisibility"` // Optional: 1-5 scale
+		Favorite          *bool  `json:"favorite"`          // Optional; a non-boolean fails decoding with 400 InvalidRequest
 	}
 
 	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
@@ -74,17 +82,20 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Subscribe via service (write-forward to PDS with DPoP authentication)
 	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
-	subscription, err := h.service.SubscribeToCommunity(r.Context(), session, req.Community, contentVisibility)
+	subscription, err := h.service.SubscribeToCommunity(r.Context(), session, req.Community, contentVisibility, req.Favorite)
 	if err != nil {
 		handleServiceError(w, err)
 		return
 	}
 
-	// Return success response
+	// Return success response. favorite and contentVisibility are the
+	// settings the subscription holds after the call, from the service result.
 	response := map[string]interface{}{
-		"uri":      subscription.RecordURI,
-		"cid":      subscription.RecordCID,
-		"existing": subscription.Existing,
+		"uri":               subscription.RecordURI,
+		"cid":               subscription.RecordCID,
+		"existing":          subscription.Existing,
+		"favorite":          subscription.Favorite,
+		"contentVisibility": subscription.ContentVisibility,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
