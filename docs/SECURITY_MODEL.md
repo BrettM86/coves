@@ -12,7 +12,7 @@ Coves is an OAuth client (indigo `ClientApp`). It never validates PDS-issued acc
 2. A JWT-shaped token (three dot-separated parts) is a PDS service JWT. It is accepted only when the DID is a registered aggregator. It is validated with `lexMethod = nil` on purpose, so aggregators authenticate globally rather than per endpoint.
 3. Anything else is a sealed session token.
 
-A sealed token alone does not authenticate. `authenticateSealedSession` unseals it (AES-256-GCM, embedded expiry), loads the session from the server-side store, and requires the stored `AccountDID` to equal the sealed DID, so deleting the session row revokes the token. Production refuses an empty, placeholder or wrong-length `OAUTH_SEAL_SECRET`. One live exception: the web `POST /delete-account` handler in `internal/web/handlers.go` only unseals the cookie and never checks the session store.
+A sealed token alone does not authenticate. `authenticateSealedSession` unseals it (AES-256-GCM, embedded expiry), loads the session from the server-side store, and requires the stored `AccountDID` to equal the sealed DID, so deleting the session row revokes the token. Production refuses an empty, placeholder or wrong-length `OAUTH_SEAL_SECRET`.
 
 API keys are 32 random bytes from `crypto/rand`, stored as SHA-256, shown by prefix only, and checked for revocation on every use. A key can only be created from an OAuth session.
 
@@ -28,7 +28,7 @@ Mobile uses `/oauth/mobile/login`. Its redirect URIs are matched exactly against
 
 ## Write path
 
-Every route that writes as a user sits behind `RequireAuth`. The unauthenticated POST routes are deliberate: `social.coves.actor.signup`, `social.coves.actor.requestSignupToken`, `social.coves.aggregator.register`, `/oauth/logout`, `/oauth/refresh` and `/delete-account`. `internal/api/routes/registration_test.go` enforces the auth kind and rate budget of each route in both directions, and `caddy_allowlist_test.go` pins the Caddy `@appview` allowlist against the router. A new non-XRPC route must join that allowlist.
+Every route that writes as a user sits behind `RequireAuth`. The unauthenticated POST routes are deliberate: `social.coves.actor.signup`, `social.coves.actor.requestSignupToken`, `social.coves.aggregator.register`, `/oauth/logout` and `/oauth/refresh`. The web `POST /delete-account` form runs behind `OptionalAuth` and deletes only with a live server-side session, the CSRF token bound to that session and a same-origin `Origin`; without a live session it clears the cookie and redirects. `internal/api/routes/registration_test.go` enforces the auth kind and rate budget of each route in both directions, and `caddy_allowlist_test.go` pins the Caddy `@appview` allowlist against the router. A new non-XRPC route must join that allowlist.
 
 The acting DID always comes from the request context. Handlers reject a body that carries `authorDid`, `createdByDid` or `hostedByDid`. The `repo` in every PDS write is the session DID. Update and delete authorize the URI authority against the session DID before any fetch.
 

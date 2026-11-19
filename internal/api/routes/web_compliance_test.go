@@ -7,13 +7,15 @@ import (
 	"strings"
 	"testing"
 
+	"Coves/internal/api/middleware"
+
 	"github.com/go-chi/chi/v5"
 )
 
 func TestWebCompliancePagesSupportHEAD(t *testing.T) {
 	t.Parallel()
 	router := chi.NewRouter()
-	RegisterWebRoutes(router, nil, nil, "")
+	RegisterWebRoutes(router, nil, nil, middleware.NewOAuthAuthMiddleware(nil, nil), "", "")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -62,7 +64,7 @@ func TestWebCompliancePagesSupportHEAD(t *testing.T) {
 func TestWebCompliancePOSTMethodsRemainRestricted(t *testing.T) {
 	t.Parallel()
 	router := chi.NewRouter()
-	RegisterWebRoutes(router, nil, nil, "")
+	RegisterWebRoutes(router, nil, nil, middleware.NewOAuthAuthMiddleware(nil, nil), "", "")
 	for _, path := range []string{"/", "/privacy", "/safety/child-safety", "/delete-account/success"} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
@@ -73,6 +75,6 @@ func TestWebCompliancePOSTMethodsRemainRestricted(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/delete-account", nil))
 	if response.Code != http.StatusFound || response.Header().Get("Location") != "/delete-account" {
-		t.Errorf("unauthenticated deletion must retain its login guard; got %d, Location %q", response.Code, response.Header().Get("Location"))
+		t.Errorf("unauthenticated POST /delete-account: got %d, Location %q; want 302 to /delete-account", response.Code, response.Header().Get("Location"))
 	}
 }

@@ -210,7 +210,7 @@ func registerWebRoutes(r chi.Router, app *application) {
 	if app.labelPublisher != nil {
 		r.Method(http.MethodGet, "/.well-known/did.json", labelhandlers.NewDIDDocumentHandler(app.labelPublisher))
 	}
-	routes.RegisterWebRoutes(r, app.oauthClient, app.userService, app.cfg.Signup.TurnstileSiteKey)
+	routes.RegisterWebRoutes(r, app.oauthClient, app.userService, app.authMiddleware, app.cfg.OAuth.PublicURL, app.cfg.Signup.TurnstileSiteKey)
 	slog.Info("web and well-known endpoints registered")
 }
 

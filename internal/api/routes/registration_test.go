@@ -353,9 +353,9 @@ var declaredRoutes = []declaredRoute{
 	// RegisterWebRoutes — the browser-facing pages.
 	{http.MethodGet, "/", authNone, 0, false},
 	{http.MethodHead, "/", authNone, 0, false},
-	{http.MethodGet, "/delete-account", authNone, 0, false},
-	{http.MethodHead, "/delete-account", authNone, 0, false},
-	{http.MethodPost, "/delete-account", authNone, 0, false},
+	{http.MethodGet, "/delete-account", authOptional, 0, false},
+	{http.MethodHead, "/delete-account", authOptional, 0, false},
+	{http.MethodPost, "/delete-account", authOptional, 0, false},
 	{http.MethodGet, "/delete-account/success", authNone, 0, false},
 	{http.MethodHead, "/delete-account/success", authNone, 0, false},
 	{http.MethodGet, "/privacy", authNone, 0, false},
@@ -484,7 +484,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterAggregatorAPIKeyRoutes(mux, auth, nil, nil)
 	RegisterOAuthRoutes(mux, nil, []string{"https://coves.social"})
 	RegisterWellKnownRoutes(mux)
-	RegisterWebRoutes(mux, nil, nil, "")
+	RegisterWebRoutes(mux, nil, nil, auth, "", "")
 	RegisterImageProxyRoutes(mux, nil)
 	uploadLimiter, err := media.NewUploadLimiter(media.UploadLimitConfig{UploadsPerTenMinutes: media.DefaultUploadsPerTenMinutes, BytesPerDay: 500000000, WarnFraction: 0.8})
 	if err != nil {

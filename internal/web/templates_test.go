@@ -194,7 +194,7 @@ func TestTurnstileHandler_MissingSiteKeyReturns503(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTemplates() error = %v", err)
 	}
-	h := NewHandlers(templates, nil, nil, "")
+	h := NewHandlers(templates, nil, nil, "", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/m/turnstile.html", nil)
 	w := httptest.NewRecorder()
@@ -213,7 +213,7 @@ func TestTurnstileHandler_RendersWithCSP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTemplates() error = %v", err)
 	}
-	h := NewHandlers(templates, nil, nil, "0x4AAAAAAA_REAL_LOOKING_KEY")
+	h := NewHandlers(templates, nil, nil, "", "0x4AAAAAAA_REAL_LOOKING_KEY")
 
 	req := httptest.NewRequest(http.MethodGet, "/m/turnstile.html", nil)
 	w := httptest.NewRecorder()

@@ -186,6 +186,7 @@
     </div>
 
     <form method="POST" action="/delete-account" id="delete-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <div class="checkbox-container">
         <input type="checkbox" id="confirm-checkbox" name="confirm" value="true" onchange="toggleDeleteButton()">
         <label for="confirm-checkbox">I understand this action cannot be undone and I want to permanently delete my Coves account</label>
