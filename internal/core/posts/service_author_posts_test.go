@@ -15,6 +15,11 @@ type mockRepository struct {
 	rawRows    map[string]*Post
 	rawRowsErr error
 
+	// activeRemovals and admittedURIs back ActiveRemovalsByURIs and
+	// AdmittedURIsForViewer; nil answers "none".
+	activeRemovals map[string][]RemovalSource
+	admittedURIs   map[string]bool
+
 	// gotViewsViewerDID records the viewer the service threaded into the
 	// visibility gate — "" is a real value here (the anonymous read), so the
 	// separate flag is what distinguishes it from "never called".
@@ -52,10 +57,16 @@ func (m *mockRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 }
 
 func (m *mockRepository) ActiveRemovalsByURIs(context.Context, []string) (map[string][]RemovalSource, error) {
+	if m.activeRemovals != nil {
+		return m.activeRemovals, nil
+	}
 	return map[string][]RemovalSource{}, nil
 }
 
 func (m *mockRepository) AdmittedURIsForViewer(context.Context, []string, string) (map[string]bool, error) {
+	if m.admittedURIs != nil {
+		return m.admittedURIs, nil
+	}
 	return map[string]bool{}, nil
 }
 

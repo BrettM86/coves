@@ -65,3 +65,86 @@ func hasInstancePostSource(instanceDID string, sources []posts.ModerationSourceV
 func isThisInstanceSource(instanceDID, authorityDID, scopeKind string) bool {
 	return authorityDID == instanceDID && scopeKind == ScopeInstance
 }
+
+// CommunityViewerAuthority is the community authority a viewer holds in one
+// community.
+type CommunityViewerAuthority string
+
+const (
+	CommunityAuthorityNone      CommunityViewerAuthority = ""
+	CommunityAuthorityModerator CommunityViewerAuthority = "moderator"
+	// CommunityAuthorityOwner is the owner, or an instance admin acting for
+	// the community.
+	CommunityAuthorityOwner CommunityViewerAuthority = "owner"
+)
+
+// Community viewer action tokens with no modlog name.
+const (
+	ActionBanAuthor    = "ban-author"
+	ActionBanAccount   = "ban-account"
+	ActionUnbanAccount = "unban-account"
+)
+
+// CommunityPostViewerActions lists the community moderation actions the viewer
+// may take on a post in a community.
+//
+// A viewer without community authority gets nothing. A post whose admission
+// is accepted, pending or pending reacceptance offers remove; a community-
+// removed post offers restore; any other status (rejected, or no admission
+// row) offers neither. ban-author follows whatever the admission status,
+// because a community ban does not depend on the post, unless the author
+// holds a role in the community, which a community ban refuses.
+func CommunityPostViewerActions(authority CommunityViewerAuthority, admissionStatus string, authorHoldsRole bool) []string {
+	if authority == CommunityAuthorityNone {
+		return nil
+	}
+	var actions []string
+	switch admissionStatus {
+	case "accepted", "pending", "pending_reacceptance":
+		actions = []string{ActionRemove}
+	case "removed":
+		actions = []string{ActionRestore}
+	}
+	if !authorHoldsRole {
+		actions = append(actions, ActionBanAuthor)
+	}
+	return actions
+}
+
+// CommunityCommentViewerActions lists the community moderation actions the
+// viewer may take on a comment in a community.
+//
+// communityRemoved is whether the community removed the comment;
+// authorDeleted is whether its author deleted it, which offers nothing (a
+// community-removed comment is served as a deleted placeholder but is not
+// author-deleted). ban-author follows unless the author holds a role in the
+// community.
+func CommunityCommentViewerActions(authority CommunityViewerAuthority, communityRemoved, authorDeleted, authorHoldsRole bool) []string {
+	if authority == CommunityAuthorityNone || authorDeleted {
+		return nil
+	}
+	actions := []string{ActionRemove}
+	if communityRemoved {
+		actions = []string{ActionRestore}
+	}
+	if !authorHoldsRole {
+		actions = append(actions, ActionBanAuthor)
+	}
+	return actions
+}
+
+// CommunityViewerActions lists the community moderation actions the viewer may
+// take on the community itself.
+// A moderator may ban and unban accounts; the owner (or an instance admin
+// acting for the community) may also grant and remove roles and transfer
+// ownership.
+func CommunityViewerActions(authority CommunityViewerAuthority) []string {
+	switch authority {
+	case CommunityAuthorityModerator:
+		return []string{ActionBanAccount, ActionUnbanAccount}
+	case CommunityAuthorityOwner:
+		return []string{ActionBanAccount, ActionUnbanAccount, ActionGrantRole, ActionRemoveRole, ActionTransferOwnership}
+	default:
+		return nil
+	}
+}

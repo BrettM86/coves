@@ -225,7 +225,7 @@ func ccrRepoReparentComment(t *testing.T, db *sql.DB, rootURI, cid string) {
 func ccrRepoRemovalFrom(communityDID, recordKey, rev string) moderation.CommunityCommentRemoval {
 	return moderation.CommunityCommentRemoval{
 		RepositoryDID: communityDID, RecordKey: recordKey, RecordCID: "bafyreiccrreporecord",
-		Rev: rev, SubjectURI: ccrRepoSubjectURI, SubjectCID: "bafyreiccrreposubject",
+		Rev: rev, SubjectURI: ccrRepoSubjectURI, SubjectCID: "bafyreiccrreposubject", Code: "spam",
 	}
 }
 
@@ -369,8 +369,8 @@ func TestCommunityCommentRemovalRepository_ApplicationRacingAMoveIsDemoted(t *te
 // Moving a removed comment out of the removing community's thread and back is
 // the commenter's doing, not the community's: the demotion and the
 // re-application are system actions with no actor and reason
-// reasonSubjectMoved. Only the first application and the community's own
-// delete are attributed to the community.
+// reasonSubjectMoved. The first application and the community's own delete
+// have no actor either, and carry the record's mapped code (spam).
 func TestCommunityCommentRemovalRepository_MoveDemotionAndReapplicationAreSystemActions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -393,8 +393,9 @@ func TestCommunityCommentRemovalRepository_MoveDemotionAndReapplicationAreSystem
 	actions := ccrRepoActions(t, db)
 	require.Len(t, actions, 3, "the apply, the demotion and the re-application")
 	assert.Equal(t, ccrRepoActionRow{
-		id: actions[0].id, actor: "did:plc:community-ccrrepoc", action: "apply-removal", origin: "inherited",
-	}, actions[0], "the first application is the community's")
+		id: actions[0].id, actor: "", action: "apply-removal", origin: "inherited",
+		reason: "social.coves.moderation.defs#reasonSpam",
+	}, actions[0], "the first application has no actor and the spam code's mapped reason")
 	assert.Equal(t, ccrRepoActionRow{
 		id: actions[1].id, actor: "", action: "retract-removal", origin: "inherited",
 		reason: "social.coves.moderation.defs#reasonSubjectMoved", reverses: actions[0].id,
@@ -409,7 +410,7 @@ func TestCommunityCommentRemovalRepository_MoveDemotionAndReapplicationAreSystem
 			communityActions++
 		}
 	}
-	assert.Equal(t, 1, communityActions, "only the first application names the community as actor")
+	assert.Equal(t, 0, communityActions, "no action names the community as actor")
 	assert.Equal(t, 1, ccrRepoActiveDecisions(t, db, "did:plc:community-ccrrepoc"),
 		"the removal is active again once the comment is back under C's post")
 
@@ -442,7 +443,8 @@ func TestCommunityCommentRemovalRepository_MoveDemotionAndReapplicationAreSystem
 	assert.Equal(t, moderation.CommunityCommentRemovalRetracted, deleted)
 	actions = ccrRepoActions(t, db)
 	require.Len(t, actions, 4, "the community's delete logs one retract-removal")
-	assert.Equal(t, "did:plc:community-ccrrepoc", actions[3].actor, "the community deleting its record is the community's act")
+	assert.Equal(t, "", actions[3].actor, "the community deleting its record logs no actor")
+	assert.Equal(t, "social.coves.moderation.defs#reasonSpam", actions[3].reason, "the delete carries the deleted record's mapped code")
 	assert.Equal(t, "retract-removal", actions[3].action)
 	assert.Equal(t, actions[2].id, actions[3].reverses, "the delete reverses the active (system) apply-removal")
 	assert.Equal(t, 0, ccrRepoActiveDecisions(t, db, "did:plc:community-ccrrepoc"),
@@ -475,4 +477,117 @@ func TestCommunityCommentRemovalRepository_RedeliveryDemotesAMovedAppliedRemoval
 		"the redelivered removal must return to held")
 	assert.Equal(t, 0, ccrRepoActiveDecisions(t, db, "did:plc:community-ccrrepoc"),
 		"C's removal must not stay active on a comment shown under C2's post")
+}
+
+func ccrRepoSubjectVersion(t *testing.T, db *sql.DB, communityDID string) int64 {
+	t.Helper()
+	var version int64
+	err := db.QueryRow(`
+		SELECT version FROM community_subject_versions WHERE community_did = $1 AND subject = $2`,
+		communityDID, ccrRepoSubjectURI).Scan(&version)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	require.NoError(t, err)
+	return version
+}
+
+// A newer removal record that rewrites an applied removal (a changed record
+// CID) is a community record change, so it advances the comment's version
+// once; an equal-rev replay of that record changes nothing and advances
+// nothing.
+func TestCommunityCommentRemovalRepository_RewriteOfAppliedRemovalAdvancesTheVersion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.DB(t)
+	repo := NewCommunityCommentRemovalRepository(db)
+	thread := seedCCRRepoThread(t, db)
+	const recordKey = "ccrreporewrite"
+
+	applied, err := repo.RecordRemoval(ctx, ccrRepoRemovalFrom(thread.communityDID, recordKey, testkit.TID()))
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, applied, "fixture: the first application")
+	appliedVersion := ccrRepoSubjectVersion(t, db, thread.communityDID)
+	require.Positive(t, appliedVersion, "fixture: the first application advances the version")
+
+	rewrite := ccrRepoRemovalFrom(thread.communityDID, recordKey, testkit.TID())
+	rewrite.RecordCID = "bafyreiccrreporecordrewritten"
+	rewritten, err := repo.RecordRemoval(ctx, rewrite)
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, rewritten)
+	assert.Equal(t, appliedVersion+1, ccrRepoSubjectVersion(t, db, thread.communityDID),
+		"a newer record rewriting an applied removal must advance the version exactly once")
+
+	replayed, err := repo.RecordRemoval(ctx, rewrite)
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, replayed)
+	assert.Equal(t, appliedVersion+1, ccrRepoSubjectVersion(t, db, thread.communityDID),
+		"an equal-rev replay of the record must not advance the version")
+}
+
+// ccrRepoActiveDecisionAction is the action the comment's active
+// community-scope removal decision of communityDID points at.
+func ccrRepoActiveDecisionAction(t *testing.T, db *sql.DB, communityDID string) string {
+	t.Helper()
+	var actionID string
+	require.NoError(t, db.QueryRow(`
+		SELECT active_action_id FROM moderation_decisions
+		WHERE subject_uri = $1 AND authority_did = $2 AND scope_kind = 'community'
+		  AND scope_community_did = $2 AND kind = 'removal' AND active`,
+		ccrRepoSubjectURI, communityDID).Scan(&actionID))
+	return actionID
+}
+
+// A firehose rewrite of an applied removal that changes its code logs an
+// actorless apply-removal with the new mapped reason, and the active decision
+// moves to it; a replay of that rewrite logs nothing; the following delete
+// retracts the rewrite's action with the rewritten code.
+func TestCommunityCommentRemovalRepository_RewriteOfAppliedRemovalLogsTheNewCode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.DB(t)
+	repo := NewCommunityCommentRemovalRepository(db)
+	thread := seedCCRRepoThread(t, db)
+	const recordKey = "ccrreporecode"
+
+	applied, err := repo.RecordRemoval(ctx, ccrRepoRemovalFrom(thread.communityDID, recordKey, testkit.TID()))
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, applied, "fixture: the first application")
+	appliedVersion := ccrRepoSubjectVersion(t, db, thread.communityDID)
+
+	rewrite := ccrRepoRemovalFrom(thread.communityDID, recordKey, testkit.TID())
+	rewrite.RecordCID = "bafyreiccrreporecorddoxing"
+	rewrite.Code = "doxing"
+	rewritten, err := repo.RecordRemoval(ctx, rewrite)
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, rewritten)
+
+	actions := ccrRepoActions(t, db)
+	require.Len(t, actions, 2, "the first application and the rewrite")
+	assert.Equal(t, ccrRepoActionRow{
+		id: actions[1].id, actor: "", action: "apply-removal", origin: "inherited",
+		reason: "social.coves.moderation.defs#reasonDoxing",
+	}, actions[1], "the rewrite logs an actorless apply-removal with the new code's mapped reason")
+	assert.Equal(t, actions[1].id, ccrRepoActiveDecisionAction(t, db, thread.communityDID),
+		"the active decision points at the rewrite's apply-removal")
+	assert.Equal(t, appliedVersion+1, ccrRepoSubjectVersion(t, db, thread.communityDID),
+		"the rewrite advances the version exactly once")
+
+	replayed, err := repo.RecordRemoval(ctx, rewrite)
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalApplied, replayed)
+	assert.Len(t, ccrRepoActions(t, db), 2, "a replay of the rewrite logs no action")
+	assert.Equal(t, appliedVersion+1, ccrRepoSubjectVersion(t, db, thread.communityDID),
+		"a replay of the rewrite advances nothing")
+
+	deleted, err := repo.DeleteRemoval(ctx, thread.communityDID, recordKey, testkit.TID())
+	require.NoError(t, err)
+	require.Equal(t, moderation.CommunityCommentRemovalRetracted, deleted)
+	actions = ccrRepoActions(t, db)
+	require.Len(t, actions, 3, "the delete logs one retract-removal")
+	assert.Equal(t, ccrRepoActionRow{
+		id: actions[2].id, actor: "", action: "retract-removal", origin: "inherited",
+		reason: "social.coves.moderation.defs#reasonDoxing", reverses: actions[1].id,
+	}, actions[2], "the delete retracts the rewrite's apply-removal with the rewritten code")
+	assert.Equal(t, 0, ccrRepoActiveDecisions(t, db, thread.communityDID), "the delete ends the removal")
 }

@@ -111,6 +111,43 @@ func openSessionCoordinationDatabase(ctx context.Context, cfg config.DatabaseCon
 	return db, nil
 }
 
+// openCommunityActionDatabase returns the small dedicated pool that community
+// action transactions run on. Each holds its connection while it waits on or
+// holds a community's roster and account advisory locks, while the lock
+// holder's authorization reads, credential refresh and intent write take
+// connections from the application pool. Were the action transactions on the
+// application pool, waiters queued on one community's lock could hold every
+// connection and the holder could never get one to finish.
+//
+// The caller owns the returned pool and must Close it.
+func openCommunityActionDatabase(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, error) {
+	dsn, err := cfg.AppDSN()
+	if err != nil {
+		return nil, fmt.Errorf("building community action DSN: %w", err)
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening community action database: %w", err)
+	}
+	db.SetMaxOpenConns(cfg.CommunityActionMaxOpenConns)
+	db.SetMaxIdleConns(cfg.CommunityActionMaxOpenConns)
+	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+
+	if err := db.PingContext(ctx); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			slog.Error("failed to close community action pool after failed ping", "error", closeErr)
+		}
+		return nil, fmt.Errorf("pinging community action database: %w", err)
+	}
+
+	slog.Info("connected community action pool",
+		"max_open_conns", cfg.CommunityActionMaxOpenConns,
+	)
+	return db, nil
+}
+
 // identityRefreshLockMaxOpenConns caps the identity refresh lock pool. Each
 // in-flight identity refresh holds one connection from it while it waits for
 // or holds its DID's lock, and a process runs at most a few refreshes at once

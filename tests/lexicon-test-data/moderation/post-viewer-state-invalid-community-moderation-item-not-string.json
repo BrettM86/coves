@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.post.defs#viewerState",
+  "saved": false,
+  "communityModeration": ["remove", 7]
+}

@@ -570,7 +570,8 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			COALESCE(u.handle, c.commenter_did) as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle,
+			COALESCE(%[6]s, '') AS chain_community
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.commenter_did = $1
@@ -590,7 +591,8 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 		LIMIT $2
 	`, authorViewerParam, communityFilter, cursorFilter,
 		visibleToViewerUnlessRestrictedSQL("c.commenter_did", fmt.Sprintf("$%d", authorViewerParam), fmt.Sprintf("$%d", authorityParam)),
-		communityRemovedSQL(commentChainCommunitySQL("c"), fmt.Sprintf("$%d", authorityParam)))
+		communityRemovedSQL(commentChainCommunitySQL("c"), fmt.Sprintf("$%d", authorityParam)),
+		commentChainCommunitySQL("c"))
 
 	// Prepare query arguments
 	args := []interface{}{req.CommenterDID, req.Limit + 1} // +1 to detect next page
@@ -622,7 +624,7 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
 			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&authorHandle,
+			&authorHandle, &comment.CommunityDID,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1068,7 +1070,8 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle,
-			%s AS commenter_restricted
+			%s AS commenter_restricted,
+			COALESCE(%s, '') AS chain_community
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.root_uri = $1 AND c.rkey = $2
@@ -1076,7 +1079,7 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			%s
 		ORDER BY c.indexed_at ASC, c.id ASC
 		LIMIT 2
-	`, accountRestrictedSQL("c.commenter_did", "$4"), commentServedUnderDeclaredRootPredicate(3), viewerFilter)
+	`, accountRestrictedSQL("c.commenter_did", "$4"), commentChainCommunitySQL("c"), commentServedUnderDeclaredRootPredicate(3), viewerFilter)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1100,7 +1103,7 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
 			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&authorHandle, &comment.CommenterRestricted,
+			&authorHandle, &comment.CommenterRestricted, &comment.CommunityDID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1138,6 +1141,8 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
 	// COALESCE falls back to DID when handle is NULL (user not yet in users table)
 	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
+	// $2 is the account-ban authority DID; commenter_restricted lets callers
+	// build the restricted-account placeholder a thread shows.
 	query := `
 		SELECT
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
@@ -1145,13 +1150,14 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			COALESCE(u.handle, c.commenter_did) as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle,
+			` + accountRestrictedSQL("c.commenter_did", "$2") + ` AS commenter_restricted
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.uri = ANY($1)
 	`
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), r.authorityDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch get comments by URIs: %w", err)
 	}
@@ -1173,7 +1179,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
 			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&authorHandle,
+			&authorHandle, &comment.CommenterRestricted,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1227,7 +1233,7 @@ func (r *postgresCommentRepo) HydrateComments(ctx context.Context, uris []string
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
 			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&authorHandle, &comment.CommenterRestricted,
+			&authorHandle, &comment.CommenterRestricted, &comment.CommunityDID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1251,6 +1257,36 @@ func (r *postgresCommentRepo) HydrateComments(ctx context.Context, uris []string
 	return result, nil
 }
 
+// BlockedCommentURIs returns the URIs among uris whose commenter viewerDID
+// has blocked.
+func (r *postgresCommentRepo) BlockedCommentURIs(ctx context.Context, viewerDID string, uris []string) (map[string]bool, error) {
+	blocked := make(map[string]bool)
+	if viewerDID == "" || len(uris) == 0 {
+		return blocked, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT c.uri
+		FROM comments c
+		WHERE c.uri = ANY($1)
+		  AND EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $2 AND blocked_did = c.commenter_did)
+	`, pq.Array(uris), viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch blocked comment URIs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uri string
+		if err := rows.Scan(&uri); err != nil {
+			return nil, fmt.Errorf("scan blocked comment URI: %w", err)
+		}
+		blocked[uri] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked comment URIs: %w", err)
+	}
+	return blocked, nil
+}
+
 // hydrateQuery builds the SQL and arguments HydrateComments runs for uris. It
 // reads comments through the unique uri index only. The cost test EXPLAINs it.
 func (r *postgresCommentRepo) hydrateQuery(uris []string, viewerDID string) (string, []any) {
@@ -1271,12 +1307,13 @@ func (r *postgresCommentRepo) hydrateQuery(uris []string, viewerDID string) (str
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) AS author_handle,
-			%s AS commenter_restricted
+			%s AS commenter_restricted,
+			COALESCE(%s, '') AS chain_community
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.uri = ANY($1::text[])
 			%s
-	`, accountRestrictedSQL("c.commenter_did", "$2"), viewerFilter)
+	`, accountRestrictedSQL("c.commenter_did", "$2"), commentChainCommunitySQL("c"), viewerFilter)
 	return query, args
 }
 

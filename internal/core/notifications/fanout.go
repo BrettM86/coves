@@ -478,6 +478,60 @@ func editRecordAllowed(ctx context.Context, lookups Lookups, recordURI string, c
 	return true, nil
 }
 
+// FanoutCommunityInvitation returns the communityInvitation notification
+// for an invitation of inviteeDID to a role in communityDID by inviterDID, or
+// none when the recipient rules exclude the invitee: no users row, erased,
+// an aggregator, or a block in either direction with the inviter. The bridge
+// PDS exclusion does not apply to this reason.
+func FanoutCommunityInvitation(ctx context.Context, lookups Lookups, inviterDID, inviteeDID, communityDID string, createdAt time.Time) ([]Intent, error) {
+	allowed, err := notificationAllowedRecipients(ctx, lookups, nil, inviterDID, []string{inviteeDID})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := allowed[inviteeDID]; !ok {
+		return nil, nil
+	}
+	return []Intent{{
+		Reason:          ReasonCommunityInvitation,
+		RecipientDID:    inviteeDID,
+		ActorDID:        inviterDID,
+		SubjectURI:      "at://" + communityDID,
+		RecordCreatedAt: createdAt,
+	}}, nil
+}
+
+// FanoutCommunityReport returns the communityReport group intents for a new
+// report by reporterDID in communityDID's queue: one per distinct candidate
+// other than the reporter that the recipient rules allow (indexed, not erased,
+// not an aggregator, not on a trusted-bridge PDS). The reporter is not an
+// actor on the row, so blocks with the reporter do not apply.
+func FanoutCommunityReport(ctx context.Context, lookups Lookups, bridgeHosts BridgeHostChecker, reporterDID, communityDID string, candidates []string) ([]CommunityReportGroupIntent, error) {
+	recipients := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, did := range candidates {
+		if did == "" || did == reporterDID || seen[did] {
+			continue
+		}
+		seen[did] = true
+		recipients = append(recipients, did)
+	}
+	if len(recipients) == 0 {
+		return nil, nil
+	}
+	allowed, err := notificationAllowedRecipients(ctx, lookups, bridgeHosts, "", recipients)
+	if err != nil {
+		return nil, err
+	}
+	subjectURI := "at://" + communityDID
+	intents := make([]CommunityReportGroupIntent, 0, len(allowed))
+	for _, did := range recipients {
+		if _, ok := allowed[did]; ok {
+			intents = append(intents, CommunityReportGroupIntent{RecipientDID: did, SubjectURI: subjectURI})
+		}
+	}
+	return intents, nil
+}
+
 // notificationAllowedRecipients reads all candidate facts at once and retains
 // indexed recipients eligible for notification. A nil bridgeHosts trusts no host.
 func notificationAllowedRecipients(ctx context.Context, lookups Lookups, bridgeHosts BridgeHostChecker, actorDID string, candidates []string) (map[string]RecipientFacts, error) {

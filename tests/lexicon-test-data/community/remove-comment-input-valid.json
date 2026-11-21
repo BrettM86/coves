@@ -1,0 +1,8 @@
+{
+  "$type": "social.coves.community.removeComment#input",
+  "subject": "at://did:plc:commentauthor1/social.coves.community.comment/3kjzl5kcb2c2v",
+  "code": "spam",
+  "reason": "phishing links",
+  "expectedVersion": 4,
+  "idempotencyKey": "remove-comment-1"
+}

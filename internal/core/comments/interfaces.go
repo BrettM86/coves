@@ -73,6 +73,10 @@ type Repository interface {
 	// Used for hydrating comment threads without N+1 queries
 	GetByURIsBatch(ctx context.Context, uris []string) (map[string]*Comment, error)
 
+	// BlockedCommentURIs returns the URIs among uris whose commenter
+	// viewerDID has blocked, the rule the thread read paths apply.
+	BlockedCommentURIs(ctx context.Context, viewerDID string, uris []string) (map[string]bool, error)
+
 	// ActiveRemovalsByURIs returns the active moderation removal sources of
 	// each URI that has at least one.
 	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)

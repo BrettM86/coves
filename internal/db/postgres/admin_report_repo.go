@@ -10,17 +10,34 @@ import (
 	"time"
 
 	"Coves/internal/core/adminreports"
+	"Coves/internal/core/notifications"
 
 	"github.com/lib/pq"
 )
 
 type postgresAdminReportRepo struct {
 	db *sql.DB
+	// notificationAuthorityDID is the instance whose account bans,
+	// restrictions and community removals exclude recipients of community
+	// report notifications; empty names no instance.
+	notificationAuthorityDID string
+	// notificationBridgeHosts excludes recipients on trusted-bridge PDS
+	// hosts; nil trusts no host.
+	notificationBridgeHosts notifications.BridgeHostChecker
 }
 
-// NewAdminReportRepository creates a new PostgreSQL admin report repository
-func NewAdminReportRepository(db *sql.DB) adminreports.Repository {
-	return &postgresAdminReportRepo{db: db}
+// NewAdminReportRepository creates a new PostgreSQL admin report repository.
+// notificationAuthorityDID names the instance whose account bans and
+// restrictions exclude a roster member from community report notifications,
+// and whose removal of a community notifies nobody of its reports; empty names
+// no instance. notificationBridgeHosts excludes recipients on trusted-bridge
+// PDS hosts from those notifications; nil trusts no host.
+func NewAdminReportRepository(db *sql.DB, notificationAuthorityDID string, notificationBridgeHosts notifications.BridgeHostChecker) adminreports.Repository {
+	return &postgresAdminReportRepo{
+		db:                       db,
+		notificationAuthorityDID: notificationAuthorityDID,
+		notificationBridgeHosts:  notificationBridgeHosts,
+	}
 }
 
 // Create inserts a new admin report into the database
@@ -55,7 +72,23 @@ func (r *postgresAdminReportRepo) Create(ctx context.Context, report *adminrepor
 		explanation = &report.Explanation
 	}
 
-	err := r.db.QueryRowContext(
+	// The shared erasure gate keeps a report by an account out of the window of
+	// its erasure, which deletes the reports it filed; an erased reporter
+	// stores nothing.
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("failed to begin admin report creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	erased, err := erasureGateTx(ctx, tx, report.ReporterDID)
+	if err != nil {
+		return fmt.Errorf("failed to check admin reporter erasure: %w", err)
+	}
+	if erased {
+		return adminreports.ErrReporterErased
+	}
+
+	err = tx.QueryRowContext(
 		ctx, query,
 		report.ReporterDID, report.TargetURI, string(report.TargetType),
 		string(report.Reason), explanation, string(status),
@@ -74,6 +107,14 @@ func (r *postgresAdminReportRepo) Create(ctx context.Context, report *adminrepor
 			}
 		}
 		return fmt.Errorf("failed to create admin report: %w", err)
+	}
+	// A report that lands in a hosted community's queue bumps its roster's
+	// communityReport groups in the same transaction; a failure fails the report.
+	if err := r.bumpCommunityReportGroupsTx(ctx, tx, report.ID, report.ReporterDID); err != nil {
+		return fmt.Errorf("failed to notify community of admin report: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit admin report: %w", err)
 	}
 
 	report.Status = status

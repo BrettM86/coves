@@ -22,6 +22,7 @@ type SearchPostsHandler struct {
 	blueskyService blueskypost.Service
 	authority      moderation.Authority
 	instanceDID    string
+	communities    moderation.CommunityViewer
 }
 
 // NewSearchPostsHandler creates the post search handler.
@@ -90,7 +91,7 @@ func (h *SearchPostsHandler) HandleSearchPosts(w http.ResponseWriter, r *http.Re
 		response.Feed = []*communityFeeds.FeedViewPost{}
 	}
 
-	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService, h.authority, h.instanceDID)
+	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService, h.authority, h.instanceDID, h.communities)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -99,13 +100,25 @@ func (h *SearchPostsHandler) HandleSearchPosts(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each post.
+func (h *SearchPostsHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *SearchPostsHandler {
+	if viewer == nil {
+		panic("communityFeed.SearchPostsHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
+	return h
+}
+
 // processFeedPosts adds the viewer's vote state and moderation actions to each
 // post and resolves its blob URLs and embeds.
 func processFeedPosts(r *http.Request, feed []*communityFeeds.FeedViewPost, voteService votes.Service, blueskyService blueskypost.Service,
-	authority moderation.Authority, instanceDID string,
+	authority moderation.Authority, instanceDID string, communityViewer moderation.CommunityViewer,
 ) {
 	common.PopulateViewerVoteState(r.Context(), r, voteService, feed)
 	common.PopulateViewerModeration(r, authority, instanceDID, feed)
+	common.PopulateCommunityViewerModeration(r, communityViewer, feed)
 	for _, feedPost := range feed {
 		if feedPost.Post != nil {
 			posts.TransformBlobRefsToURLs(feedPost.Post)

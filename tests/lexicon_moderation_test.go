@@ -98,7 +98,7 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 			required: []string{"ref", "action", "authorityDid", "scope", "createdAt", "origin"},
 			properties: map[string]moderationPropertyExpectation{
 				"ref":             reference("#actionRef"),
-				"action":          stringProperty(64, "remove", "restore", "apply-removal", "retract-removal", "label", "retract-label"),
+				"action":          stringProperty(64, "remove", "restore", "apply-removal", "retract-removal", "label", "retract-label", "grant-role", "remove-role", "transfer-ownership"),
 				"authorityDid":    formattedString("did"),
 				"scope":           reference("#scopeView"),
 				"createdAt":       formattedString("datetime"),
@@ -111,6 +111,8 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 				"issuedAt":        formattedString("datetime"),
 				"contentSnapshot": reference("#contentSnapshot"),
 				"expiresAt":       formattedString("datetime"),
+				"adminActing":     {schemaType: "boolean"},
+				"role":            stringProperty(64, "owner", "moderator"),
 			},
 		},
 		"adminActionView": {
@@ -340,12 +342,13 @@ func TestLexiconModerationReasonTokens(t *testing.T) {
 }
 
 // TestLexiconModerationActionVocabulary prevents action producers and consumers
-// from drifting onto different names for the six public moderation transitions.
+// from drifting onto different names for the nine public moderation transitions:
+// the six content transitions plus the three community roster transitions.
 func TestLexiconModerationActionVocabulary(t *testing.T) {
 	doc := readLexiconJSON(t, moderationDefsPath)
 	action := defProperties(t, doc, "actionView")["action"].(map[string]interface{})
 	assert.ElementsMatch(t,
-		[]string{"remove", "restore", "apply-removal", "retract-removal", "label", "retract-label"},
+		[]string{"remove", "restore", "apply-removal", "retract-removal", "label", "retract-label", "grant-role", "remove-role", "transfer-ownership"},
 		asStrings(t, action["knownValues"], "actionView.action knownValues"),
 		"actionView.action must expose exactly the transitions understood by moderation clients")
 }
@@ -716,9 +719,10 @@ func TestLexiconModerationProcedureInputs(t *testing.T) {
 // listActionParameterExpectations returns the public or admin action-log
 // filters. They differ only in actionId and in the action filter: the public
 // log never serves label or retract-label actions (2026-09-30), so its action
-// filter does not list them.
+// filter does not list them. Both logs list the community roster actions
+// (grant-role, remove-role, transfer-ownership).
 func listActionParameterExpectations(admin bool) map[string]moderationPropertyExpectation {
-	actionKinds := []string{"remove", "restore", "apply-removal", "retract-removal"}
+	actionKinds := []string{"remove", "restore", "apply-removal", "retract-removal", "grant-role", "remove-role", "transfer-ownership"}
 	if admin {
 		actionKinds = append(actionKinds, "label", "retract-label")
 	}

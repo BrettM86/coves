@@ -684,12 +684,23 @@ func (q *CommunityRecordWriteQueue) reconcileRestore(ctx context.Context, write 
 	return communityRecordOutcome{complete: true}, nil
 }
 
+// CommunityRemovalRecordRelease is implemented by admissions that index the
+// removal record a community holds for a post (the Postgres admission
+// repository): ReleaseRemovalRecord drops the indexed record older than rev,
+// which the AppView's own commit at rev deleted, so that commit's firehose
+// delete is recognised as already indexed and logs no community restore.
+type CommunityRemovalRecordRelease interface {
+	ReleaseRemovalRecord(ctx context.Context, communityDID, postURI, rev string) error
+}
+
 // applyRestoreStamp stamps the post's admission row with the restore stamp
-// the row records.
+// the row records, then releases the removal record the undo deleted from
+// the index.
 func (q *CommunityRecordWriteQueue) applyRestoreStamp(ctx context.Context, write CommunityRecordWrite) error {
 	watermark := posts.CommunityWatermark{Rev: write.RestoreStampRev}
+	var err error
 	if write.RestoreStampPinnedCID != "" {
-		_, err := q.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		_, err = q.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
 			CommunityDID:   write.CommunityDID,
 			PostURI:        write.SubjectURI,
 			AcceptanceURI:  write.RestoreStampAcceptanceURI,
@@ -697,14 +708,20 @@ func (q *CommunityRecordWriteQueue) applyRestoreStamp(ctx context.Context, write
 			PinnedCID:      write.RestoreStampPinnedCID,
 			Watermark:      watermark,
 		})
+	} else {
+		_, err = q.admissions.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+			CommunityDID: write.CommunityDID,
+			PostURI:      write.SubjectURI,
+			Watermark:    watermark,
+		})
+	}
+	if err != nil {
 		return err
 	}
-	_, err := q.admissions.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
-		CommunityDID: write.CommunityDID,
-		PostURI:      write.SubjectURI,
-		Watermark:    watermark,
-	})
-	return err
+	if records, ok := q.admissions.(CommunityRemovalRecordRelease); ok {
+		return records.ReleaseRemovalRecord(ctx, write.CommunityDID, write.SubjectURI, write.RestoreStampRev)
+	}
+	return nil
 }
 
 // recordCreatedAt is the createdAt the queue's removal record carries.

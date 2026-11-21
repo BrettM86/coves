@@ -25,6 +25,7 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/repo" //nolint:staticcheck // SA1019: atproto/repo.LoadRepoFromCAR expands the whole MST eagerly; untrusted CARs need the lazy loader
+	"github.com/rivo/uniseg"
 )
 
 // Ingesting author-owned posts and the community records that decide about
@@ -1075,6 +1076,13 @@ type communityDecisionRecord struct {
 	CreatedAt string `json:"createdAt"`
 }
 
+// Bounds from the social.coves.community.removal lexicon.
+const (
+	maxRemovalCodeBytes       = 64
+	maxRemovalReasonBytes     = 10000
+	maxRemovalReasonGraphemes = 1000
+)
+
 // parseCommunityDecision converts a raw acceptance/removal record, refusing the
 // shapes that can never become valid.
 func parseCommunityDecision(record map[string]interface{}, collection string) (*communityDecisionRecord, error) {
@@ -1098,6 +1106,18 @@ func parseCommunityDecision(record map[string]interface{}, collection string) (*
 	}
 	if collection == posts.RemovalCollection && parsed.Code == "" {
 		return nil, fmt.Errorf("%w: removal record for %s carries no code", ErrPermanentEvent, parsed.Subject.URI)
+	}
+	if collection == posts.RemovalCollection {
+		if len(parsed.Code) > maxRemovalCodeBytes {
+			return nil, fmt.Errorf("%w: removal record for %s carries a code over the lexicon limit", ErrPermanentEvent, parsed.Subject.URI)
+		}
+		if len(parsed.Reason) > maxRemovalReasonBytes || uniseg.GraphemeClusterCount(parsed.Reason) > maxRemovalReasonGraphemes {
+			return nil, fmt.Errorf("%w: removal record for %s carries a reason over the lexicon limit", ErrPermanentEvent, parsed.Subject.URI)
+		}
+		// U+0000 is lexicon-valid but Postgres TEXT rejects it, which would fail
+		// the write on every retry and leave the post visible. The bounds above
+		// judge the record as published; only the stored reason loses the NUL.
+		parsed.Reason = strings.ReplaceAll(parsed.Reason, "\x00", "")
 	}
 	return &parsed, nil
 }
@@ -1174,7 +1194,7 @@ func (c *PostEventConsumer) handleCommunityDecisionEvent(ctx context.Context, ev
 		if subjectCollection == CommentCollection && c.communityCommentRemovals != nil {
 			return c.recordCommunityCommentRemoval(ctx, communityDID, commit, decision)
 		}
-		return c.applyRemoval(ctx, communityDID, decision, watermark)
+		return c.applyRemoval(ctx, communityDID, commit, decision, watermark)
 	}
 	return nil
 }
@@ -1257,6 +1277,7 @@ func (c *PostEventConsumer) applyAcceptance(
 		AcceptanceRkey: commit.RKey,
 		PinnedCID:      decision.Subject.CID,
 		Watermark:      watermark,
+		RecordCID:      commit.CID,
 	})
 	if err != nil {
 		return fmt.Errorf("applying the acceptance of %s in %s: %w", decision.Subject.URI, communityDID, err)
@@ -1402,6 +1423,22 @@ func (c *PostEventConsumer) convergeOnAcceptedSubject(
 	return nil
 }
 
+// CommunityRemovalRecordIndex indexes a community's post removal records as
+// changes to its moderation log: a copy of the record the index already holds
+// changes nothing, a record this instance's open intent wrote completes that
+// intent with its actor, a record this AppView wrote with its own audit
+// changes only the admission, and any other record applies the removal with
+// one action that has no actor. A removal record's delete is resolved to its
+// post from the index and is logged the same way. The Postgres admission
+// repository implements it; with an admission repository that does not, a
+// removal record changes only the admission.
+type CommunityRemovalRecordIndex interface {
+	ApplyRemovalRecord(ctx context.Context, cmd posts.ApplyRemovalRecordCommand) (posts.AdmissionResult, error)
+	// ApplyRemovalRecordDelete returns the post the deleted record removed,
+	// "" when the index knows no record under that key.
+	ApplyRemovalRecordDelete(ctx context.Context, cmd posts.ApplyRemovalRecordDeleteCommand) (string, posts.AdmissionResult, error)
+}
+
 // applyRemoval records a community's moderation decision about a post.
 //
 // A removal with no prior acceptance is VALID: a community that has decided in
@@ -1411,18 +1448,39 @@ func (c *PostEventConsumer) convergeOnAcceptedSubject(
 // direct fetch either: a removed post is not rendered, so there is nothing to
 // converge on, and fetching content in order to hide it would hand a moderation
 // record the power to make the AppView dial an arbitrary host.
+//
+// With an admission repository that indexes removal records
+// (CommunityRemovalRecordIndex), the removal is also a change to the
+// community's moderation log: the record's key and CID go with it.
 func (c *PostEventConsumer) applyRemoval(
 	ctx context.Context,
 	communityDID string,
+	commit *CommitEvent,
 	decision *communityDecisionRecord,
 	watermark posts.CommunityWatermark,
 ) error {
-	result, err := c.admissions.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+	removal := posts.ApplyRemovalCommand{
 		CommunityDID: communityDID,
 		PostURI:      decision.Subject.URI,
 		DecisionCode: decision.Code,
+		Reason:       decision.Reason,
 		Watermark:    watermark,
-	})
+	}
+	var (
+		result posts.AdmissionResult
+		err    error
+	)
+	if records, ok := c.admissions.(CommunityRemovalRecordIndex); ok {
+		result, err = records.ApplyRemovalRecord(ctx, posts.ApplyRemovalRecordCommand{
+			ApplyRemovalCommand: removal,
+			RecordKey:           commit.RKey,
+			RecordCID:           commit.CID,
+			SubjectCID:          decision.Subject.CID,
+			CreatedAt:           decision.CreatedAt,
+		})
+	} else {
+		result, err = c.admissions.ApplyRemoval(ctx, removal)
+	}
 	if err != nil {
 		return fmt.Errorf("applying the removal of %s in %s: %w", decision.Subject.URI, communityDID, err)
 	}
@@ -1448,6 +1506,10 @@ func (c *PostEventConsumer) applyRemoval(
 // acceptance deletion, which the host writes when an author deletes their post
 // (§5.3), is the one delete that arrives unpaired — and it is the one this
 // lookup resolves.
+//
+// With an admission repository that indexes removal records
+// (CommunityRemovalRecordIndex), a post removal's deletion is resolved and
+// logged by that index instead.
 func (c *PostEventConsumer) applyCommunityDecisionDelete(ctx context.Context, communityDID string, commit *CommitEvent) error {
 	// A comment removal is indexed by (repo DID, rkey); a key it does not know
 	// may still be a post removal.
@@ -1455,6 +1517,24 @@ func (c *PostEventConsumer) applyCommunityDecisionDelete(ctx context.Context, co
 		if handled, err := c.deleteCommunityCommentRemoval(ctx, communityDID, commit); handled || err != nil {
 			return err
 		}
+	}
+
+	if records, ok := c.admissions.(CommunityRemovalRecordIndex); ok && commit.Collection == posts.RemovalCollection {
+		postURI, result, err := records.ApplyRemovalRecordDelete(ctx, posts.ApplyRemovalRecordDeleteCommand{
+			CommunityDID: communityDID,
+			RecordKey:    commit.RKey,
+			Watermark:    posts.CommunityWatermark{Rev: commit.Rev},
+		})
+		if err != nil {
+			return fmt.Errorf("withdrawing the removal %s/%s: %w", communityDID, commit.RKey, err)
+		}
+		if postURI == "" {
+			log.Printf("INFO: removal deletion %s/%s matches no indexed removal record; nothing to withdraw",
+				communityDID, commit.RKey)
+			return nil
+		}
+		logAdmissionOutcome(commit.Collection+"#delete", communityDID, postURI, result.Outcome)
+		return nil
 	}
 
 	postURI, found, err := c.subjectOfDeletedRecord(ctx, communityDID, commit)

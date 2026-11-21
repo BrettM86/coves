@@ -59,7 +59,7 @@ func newValidationService(t *testing.T) (communities.Service, *fakeCommunityRepo
 	provisioner := communities.NewPDSAccountProvisioner(fakeInstanceDomain, unparseablePDSURL, communities.PrivateHostOptions(true)...)
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo, unparseablePDSURL, fakeInstanceDID, fakeInstanceDomain, provisioner, nil, nil, nil,
-		communities.PrivateHostOptions(true)...)
+		append(communities.PrivateHostOptions(true), newRoleAuthorizationFixture().option())...)
 	return service, repo
 }
 

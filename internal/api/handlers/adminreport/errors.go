@@ -24,6 +24,8 @@ var errorMapper = xrpc.NewMapper("adminreport",
 		"Reporter DID is required"),
 	xrpc.Sentinel(adminreports.ErrInvalidTargetType, http.StatusBadRequest, "InvalidTargetType",
 		"Invalid target type. Must be one of: post, comment"),
+	xrpc.Sentinel(adminreports.ErrReporterErased, http.StatusUnauthorized, "AuthRequired",
+		"Authentication required"),
 
 	xrpc.Match(adminreports.IsNotFound, http.StatusNotFound,
 		"NotFound", "Report not found"),

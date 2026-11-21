@@ -10,32 +10,23 @@ import (
 	"Coves/internal/core/communities"
 )
 
-// CreateHandler handles community creation
+// CreateHandler handles community creation, gated by the instance's
+// community creation policy.
 type CreateHandler struct {
-	service                  communities.Service
-	allowedCommunityCreators map[string]bool // nil = allow all
+	service  communities.Service
+	creation communities.CreationPolicy
+	admins   communities.InstanceAdminChecker
 }
 
-// NewCreateHandler creates a new create handler
-// allowedCreators is a list of DIDs that can create communities. If empty, anyone can create.
-func NewCreateHandler(service communities.Service, allowedCreators []string) *CreateHandler {
-	var allowedMap map[string]bool
-	if len(allowedCreators) > 0 {
-		allowedMap = make(map[string]bool)
-		for _, did := range allowedCreators {
-			if did != "" { // Skip empty strings
-				allowedMap[did] = true
-			}
-		}
-		// If all entries were empty, treat as no restriction
-		if len(allowedMap) == 0 {
-			allowedMap = nil
-		}
+// NewCreateHandler creates a new create handler. Unless creation is
+// CreationAnyone, only callers admins recognizes as instance admins may create
+// a community; any other value, including the zero value, fails closed. It
+// panics if admins is nil.
+func NewCreateHandler(service communities.Service, creation communities.CreationPolicy, admins communities.InstanceAdminChecker) *CreateHandler {
+	if admins == nil {
+		panic("community.NewCreateHandler: instance admin checker is required")
 	}
-	return &CreateHandler{
-		service:                  service,
-		allowedCommunityCreators: allowedMap,
-	}
+	return &CreateHandler{service: service, creation: creation, admins: admins}
 }
 
 // HandleCreate creates a new community
@@ -62,10 +53,9 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if user is allowed to create communities (if restriction is enabled)
-	if h.allowedCommunityCreators != nil && !h.allowedCommunityCreators[userDID] {
+	if h.creation != communities.CreationAnyone && !h.admins.IsInstanceAdmin(userDID) {
 		writeError(w, http.StatusForbidden, "CommunityCreationRestricted",
-			"Community creation is restricted to authorized users")
+			"Community creation is restricted to instance admins")
 		return
 	}
 

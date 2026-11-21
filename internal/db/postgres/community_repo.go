@@ -728,6 +728,41 @@ func (r *postgresCommunityRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to deactivate community content blob references: %w", err)
 	}
 
+	// community_roles, community_subject_versions, community_write_intents
+	// (and their community_write_intent_erasures and attempts),
+	// community_role_invitations, community_role_record_deletes and
+	// community_post_removal_records have no foreign key to communities, so
+	// remove the community's rows here or they outlive it.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_roles WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community roles: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_subject_versions WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community subject versions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_write_intent_erasures
+		WHERE intent_id IN (SELECT id FROM community_write_intents WHERE community_did = $1)`, did); err != nil {
+		return fmt.Errorf("failed to delete community write intent erasures: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_write_intent_attempts
+		WHERE intent_id IN (SELECT id FROM community_write_intents WHERE community_did = $1)`, did); err != nil {
+		return fmt.Errorf("failed to delete community write intent attempts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_write_intents WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community write intents: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_role_invitations WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community role invitations: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_role_record_deletes WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community role record deletes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_post_removal_records WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community post removal records: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_report_dismissals WHERE community_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community report dismissals: %w", err)
+	}
+
 	query := `DELETE FROM communities WHERE did = $1`
 
 	result, err := tx.ExecContext(ctx, query, did)

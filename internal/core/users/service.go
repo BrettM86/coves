@@ -62,6 +62,7 @@ const profileBackfillTimeout = 10 * time.Second
 
 type userService struct {
 	userRepo         UserRepository
+	erasureFollowUp  ErasureFollowUp      // Optional; runs after a committed erasure.
 	accountBans      accountbans.Reader   // Optional; when set, banned accounts' profiles read as suspended to others.
 	accountStatuses  accountstatus.Reader // Optional; when set, PDS-restricted accounts' profiles read as suspended to others.
 	identityResolver identity.Resolver
@@ -208,6 +209,19 @@ func WithProfileBackfill(client *http.Client) UserServiceOption {
 			client = NewProfileBackfillClient(false)
 		}
 		s.profileBackfillClient = client
+	}
+}
+
+// ErasureFollowUp runs after an account erasure commits.
+type ErasureFollowUp interface {
+	AfterErasure(ctx context.Context, did string)
+}
+
+// WithErasureFollowUp sets the follow-up DeleteAccount calls after a
+// successful erasure.
+func WithErasureFollowUp(f ErasureFollowUp) UserServiceOption {
+	return func(s *userService) {
+		s.erasureFollowUp = f
 	}
 }
 
@@ -1107,6 +1121,10 @@ func (s *userService) DeleteAccount(ctx context.Context, did string) error {
 		slog.String("handle", user.Handle),
 		slog.Time("deleted_at", time.Now().UTC()),
 	)
+
+	if s.erasureFollowUp != nil {
+		s.erasureFollowUp.AfterErasure(ctx, did)
+	}
 
 	return nil
 }

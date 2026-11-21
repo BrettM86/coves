@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/tests/testkit"
 
@@ -494,6 +495,8 @@ func TestAdmissionRepo_RepinAcceptedCID(t *testing.T) {
 	before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
 	require.NoError(t, err)
 
+	versionBefore := readCommunitySubjectVersion(t, db, subject.CommunityDID, subject.PostURI)
+
 	refreshedCID := contentCID(t, "restats")
 	result, err := repo.RepinAcceptedCID(ctx, posts.RepinAcceptanceCommand{
 		CommunityDID: subject.CommunityDID,
@@ -515,6 +518,8 @@ func TestAdmissionRepo_RepinAcceptedCID(t *testing.T) {
 	assert.Equal(t, before.AcceptanceURI, result.Admission.AcceptanceURI,
 		"the acceptance record is updated in place, same rkey — a repin is not a new acceptance")
 	assert.Equal(t, before.AcceptanceRkey, result.Admission.AcceptanceRkey)
+	assert.Equal(t, versionBefore+1, readCommunitySubjectVersion(t, db, subject.CommunityDID, subject.PostURI),
+		"a repin rewrites the community's acceptance record, so it must advance the post's community version by exactly one")
 
 	t.Run("a stale repin is refused like any other community event", func(t *testing.T) {
 		stale, err := repo.RepinAcceptedCID(ctx, posts.RepinAcceptanceCommand{
@@ -529,6 +534,17 @@ func TestAdmissionRepo_RepinAcceptedCID(t *testing.T) {
 		require.NotNil(t, stale.Admission)
 		assertNullableString(t, refreshedCID, stale.Admission.AcceptedCID, "accepted_cid after the stale repin")
 	})
+}
+
+// readCommunitySubjectVersion reads a post's community version through the
+// subject state reader.
+func readCommunitySubjectVersion(t *testing.T, db *sql.DB, communityDID, postURI string) int64 {
+	t.Helper()
+	state, err := NewCommunitySubjectStateReader(db).ReadCommunitySubjectState(
+		context.Background(), communityDID, postURI, moderation.CommunitySubjectPost)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	return state.Version
 }
 
 func TestAdmissionRepo_RecordRejection(t *testing.T) {

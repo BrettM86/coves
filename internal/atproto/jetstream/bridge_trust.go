@@ -29,8 +29,8 @@ const maxBridgedCount = bridgedvotes.MaxBridgedCount
 //     bridged actors) — the bridge mints a new DID per federated community/user, so a
 //     DID allowlist would be unmaintainable. Trusting the bridge's PDS host(s) trusts
 //     exactly the infrastructure the operator controls.
-//   - The set is operator config (TRUSTED_BRIDGE_PDS_HOSTS), mirroring the existing
-//     COMMUNITY_CREATORS allowlist convention (comma-separated env var).
+//   - The set is operator config (TRUSTED_BRIDGE_PDS_HOSTS), a comma-separated env
+//     var like the MODERATION_ADMINS allowlist.
 //
 // Trade-off / trust assumption (documented deliberately): this trusts that the stored
 // pds_url faithfully reflects where the repo is hosted. A hostile actor who could get

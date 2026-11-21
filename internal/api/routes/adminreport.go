@@ -31,3 +31,16 @@ func RegisterAdminReportRoutes(r chi.Router, service adminreports.Service, authM
 		"/xrpc/social.coves.admin.submitReport",
 		submitHandler.HandleSubmit)
 }
+
+// RegisterCommunityReportQueueRoutes registers social.coves.community.listReports
+// and social.coves.community.dismissReports. Both require an authenticated
+// caller; the service decides community authority.
+func RegisterCommunityReportQueueRoutes(r chi.Router, adminAuth *middleware.InstanceAdminMiddleware,
+	service adminreport.CommunityQueueService, viewer adminreport.ReportSubjectViewer,
+) {
+	list := adminreport.NewListCommunityReportsHandler(service, viewer)
+	dismiss := adminreport.NewDismissCommunityReportsHandler(service)
+	authenticated := r.With(adminAuth.RequireAuthenticated)
+	authenticated.Get("/xrpc/social.coves.community.listReports", list.HandleListReports)
+	authenticated.Post("/xrpc/social.coves.community.dismissReports", dismiss.HandleDismissReports)
+}

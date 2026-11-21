@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.declineInvitation#input",
+  "invitation": "invitation-1",
+  "expectedVersion": 7,
+  "idempotencyKey": "decline-1"
+}

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"Coves/internal/core/communities"
 )
 
 // This file owns the multi-feed Jetstream configuration. The AppView consumes
@@ -62,6 +64,7 @@ var consumerWantedCollections = map[string][]string{
 		"social.coves.community.profile",
 		"social.coves.community.subscription",
 		"social.coves.community.block",
+		communities.RoleCollection,
 	},
 	// One consumer for all three post-related collections, because they decide
 	// about each other: an acceptance is meaningless without the postv2 it

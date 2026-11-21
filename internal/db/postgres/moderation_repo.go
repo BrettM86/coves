@@ -61,7 +61,8 @@ func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityD
 		       a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
 		       a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 		       a.action, a.label_value, a.reason, a.private_classification, a.private_note,
-		       a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind
+		       a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind,
+		       a.admin_acting, a.role
 		FROM (SELECT $2::text AS uri) AS target
 		LEFT JOIN moderation_subjects s ON s.subject_uri = target.uri
 		LEFT JOIN moderation_decisions d ON d.subject_uri = target.uri
@@ -304,7 +305,8 @@ const moderationActionColumns = `
 	a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
 	a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 	a.action, a.label_value, a.reason, a.private_classification, a.private_note,
-	a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind`
+	a.reverses_action_id, a.origin, a.created_at, a.expires_at, a.subject_kind,
+	a.admin_acting, a.role`
 
 type moderationRow interface {
 	Scan(dest ...any) error
@@ -314,13 +316,15 @@ func scanModerationAction(row moderationRow, version *int64, reversedReason *sql
 	var id, actorDID, authorityDID, scopeKind, scopeCommunityDID sql.NullString
 	var subjectURI, subjectCollection, subjectCommunityDID, subjectRootURI, observedCID sql.NullString
 	var actionKind, labelValue, reason, privateClassification, privateNote sql.NullString
-	var reversesActionID, origin, subjectKind sql.NullString
+	var reversesActionID, origin, subjectKind, role sql.NullString
 	var createdAt, expiresAt sql.NullTime
+	var adminActing sql.NullBool
 	dest := []any{
 		&id, &actorDID, &authorityDID, &scopeKind, &scopeCommunityDID,
 		&subjectURI, &subjectCollection, &subjectCommunityDID, &subjectRootURI, &observedCID,
 		&actionKind, &labelValue, &reason, &privateClassification, &privateNote,
 		&reversesActionID, &origin, &createdAt, &expiresAt, &subjectKind,
+		&adminActing, &role,
 	}
 	if version != nil {
 		dest = append([]any{version}, dest...)
@@ -343,6 +347,7 @@ func scanModerationAction(row moderationRow, version *int64, reversedReason *sql
 		LabelValue: labelValue.String, Reason: reason.String,
 		PrivateNote: privateNote.String, ReversesActionID: reversesActionID.String,
 		Origin: origin.String, CreatedAt: createdAt.Time, SubjectKind: moderation.SubjectKind(subjectKind.String),
+		AdminActing: adminActing.Bool, Role: role.String,
 	}
 	if expiresAt.Valid {
 		expiry := expiresAt.Time.UTC()

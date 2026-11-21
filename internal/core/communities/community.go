@@ -154,6 +154,22 @@ type CommunityViewerState struct {
 	BanURI       string `json:"banUri,omitempty"`
 	BanReason    string `json:"banReason,omitempty"`
 	BanExpiresAt string `json:"banExpiresAt,omitempty"`
+	// Role is the viewer's usable role in this community (owner or moderator).
+	Role string `json:"role,omitempty"`
+	// Invitation is the viewer's pending invitation to a role in this
+	// community; omitted when there is none.
+	Invitation *CommunityViewerInvitation `json:"invitation,omitempty"`
+	// CommunityModeration lists the community moderation actions the viewer
+	// may take on the community. Omitted when there are none.
+	CommunityModeration []string `json:"communityModeration,omitempty"`
+}
+
+// CommunityViewerInvitation is the viewer's pending invitation as community.get
+// serves it. ExpiresAt is RFC 3339 UTC.
+type CommunityViewerInvitation struct {
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	ExpiresAt string `json:"expiresAt"`
 }
 
 // CommunityView is the API view for community lists

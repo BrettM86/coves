@@ -66,7 +66,7 @@ func TestNotificationLexicon_Contract(t *testing.T) {
 		require.NoError(t, err)
 		stringReason, ok := reason.Def.(lexicon.SchemaString)
 		require.True(t, ok, "reason must be a string, got %T", reason.Def)
-		assert.ElementsMatch(t, []string{"postReply", "commentReply", "mention", "upvote"}, stringReason.KnownValues)
+		assert.ElementsMatch(t, []string{"postReply", "commentReply", "mention", "upvote", "communityInvitation", "communityReport"}, stringReason.KnownValues)
 		assert.Empty(t, stringReason.Enum, "reason vocabulary must remain open")
 	})
 

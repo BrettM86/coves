@@ -43,6 +43,9 @@ type HostedCommunitySource interface {
 	// token this AppView stores, in a stable order. It returns identifiers only:
 	// no credential material crosses the boundary.
 	HostedCommunityDIDs(ctx context.Context) ([]string, error)
+	// IsHostedCommunity reports whether this AppView stores communityDID's PDS
+	// refresh token: the same predicate as HostedCommunityDIDs.
+	IsHostedCommunity(ctx context.Context, communityDID string) (bool, error)
 }
 
 // NewHostedCommunityQuery returns the hosted-community scope query.
@@ -83,4 +86,20 @@ func (q *hostedCommunityQuery) HostedCommunityDIDs(ctx context.Context) ([]strin
 		return nil, fmt.Errorf("iterating hosted community DIDs: %w", err)
 	}
 	return dids, nil
+}
+
+// IsHostedCommunity reports whether communityDID is a hosted community, by the
+// same predicate as HostedCommunityDIDs. hosted_by_did plays no part.
+func (q *hostedCommunityQuery) IsHostedCommunity(ctx context.Context, communityDID string) (bool, error) {
+	var hosted bool
+	err := q.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM communities
+			WHERE did = $1 AND pds_refresh_token_encrypted IS NOT NULL
+		)
+	`, communityDID).Scan(&hosted)
+	if err != nil {
+		return false, fmt.Errorf("checking whether community %s is hosted: %w", communityDID, err)
+	}
+	return hosted, nil
 }

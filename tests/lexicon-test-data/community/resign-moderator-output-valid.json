@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.resignModerator#output",
+  "community": "did:plc:rosteralpha",
+  "subject": "did:plc:troublemaker456",
+  "version": 8
+}

@@ -634,6 +634,12 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	`, did); err != nil {
 		return fmt.Errorf("failed to delete community_post_admissions for did=%s: %w", did, err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM community_post_removal_records
+		WHERE starts_with(post_uri, 'at://' || $1 || '/')
+	`, did); err != nil {
+		return fmt.Errorf("failed to delete community_post_removal_records for did=%s: %w", did, err)
+	}
 
 	// 10. Delete posts (explicit DELETE - fk_author CASCADE removed in migration 034)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM posts WHERE author_did = $1`, did); err != nil {
@@ -706,9 +712,28 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete notification public post withdrawals for did=%s: %w", did, err)
 	}
 
+	// 12a. Delete the reports the account filed, its name as the resolver of
+	// reports it closed (those reports keep their status), and its community
+	// report dismissal records. Report creation takes the shared erasure lock,
+	// so no report by this account is stored after this transaction.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM admin_reports WHERE reporter_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete admin reports filed by did=%s: %w", did, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE admin_reports SET resolved_by = NULL WHERE resolved_by = $1`, did); err != nil {
+		return fmt.Errorf("failed to clear admin report resolver did=%s: %w", did, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_report_dismissals WHERE dismissed_by_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community report dismissals by did=%s: %w", did, err)
+	}
+
 	// 13. Delete notification state
 	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_state WHERE did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete notification_state for did=%s: %w", did, err)
+	}
+
+	// 13a. Delete the account's community roles and every invitation naming it.
+	if err := eraseCommunityRoles(ctx, tx, did); err != nil {
+		return err
 	}
 
 	// 14. Delete user
@@ -731,6 +756,91 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to commit transaction for did=%s: %w", did, err)
 	}
 
+	return nil
+}
+
+// eraseCommunityRoles removes, inside the erasure transaction, every
+// community role invitation naming did as invitee or inviter (every state)
+// and every community role row for did, and marks each record of an open
+// create or update community write intent whose subject is did
+// (community_write_intent_erasures), so its later completion never indexes
+// it, even after did signs up again, and queues its repo delete instead. The
+// marks are inserted from a plain read of the intents, taking no intent row
+// lock. Each community that lost a role row
+// advances its roster version once, hosted or not, and each lost role record
+// in a community this AppView hosts gets a guarded repo delete queued with the
+// row's CID. Every writer of a role row holds its subject's shared erasure
+// gate, and every invitation writer the inviter's and the invitee's, taken
+// before any of the rows, so erasure, holding did's exclusive gate, meets
+// none of them in flight. The exceptions are a decline, which holds only the
+// invitee's gate, and an invite superseding an earlier open invitation,
+// which does not hold that invitation's inviter's (gateRoleSubjects): when
+// did is that inviter, the delete below can wait on the invitation row until
+// the writer commits, which takes no lock erasure holds. Invitations still go
+// first, the order those writers lock them in.
+func eraseCommunityRoles(ctx context.Context, tx *sql.Tx, did string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_role_invitations
+		WHERE invitee_did = $1 OR inviter_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community role invitations for did=%s: %w", did, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO community_write_intent_erasures (intent_id, paired)
+		SELECT id, false FROM community_write_intents
+		WHERE state = 'open' AND op IN ('create', 'update') AND record->>'subject' = $1
+		UNION ALL
+		SELECT id, true FROM community_write_intents
+		WHERE state = 'open' AND op IN ('create', 'update') AND paired_record->>'subject' = $1
+		ON CONFLICT DO NOTHING`, did); err != nil {
+		return fmt.Errorf("failed to mark open community write intents for did=%s: %w", did, err)
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH erased AS (
+		    DELETE FROM community_roles WHERE subject_did = $1
+		    RETURNING community_did, record_key, record_cid
+		)
+		SELECT erased.community_did, erased.record_key, erased.record_cid,
+		    COALESCE(c.pds_refresh_token_encrypted IS NOT NULL, false)
+		FROM erased LEFT JOIN communities c ON c.did = erased.community_did
+		ORDER BY erased.community_did`, did)
+	if err != nil {
+		return fmt.Errorf("failed to delete community roles for did=%s: %w", did, err)
+	}
+	type erasedRole struct {
+		community, recordKey, recordCID string
+		hosted                          bool
+	}
+	var erased []erasedRole
+	for rows.Next() {
+		var role erasedRole
+		if err := rows.Scan(&role.community, &role.recordKey, &role.recordCID, &role.hosted); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to scan erased community role for did=%s: %w", did, err)
+		}
+		erased = append(erased, role)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("failed to delete community roles for did=%s: %w", did, err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to delete community roles for did=%s: %w", did, err)
+	}
+
+	// (community_did, subject_did) is the primary key, so each community
+	// appears once and advances once.
+	for _, role := range erased {
+		if err := advanceCommunitySubjectVersion(ctx, tx, role.community, role.community); err != nil {
+			return err
+		}
+	}
+	for _, role := range erased {
+		if !role.hosted {
+			continue
+		}
+		if err := enqueueRoleRecordDelete(ctx, tx, role.community, role.recordKey, role.recordCID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

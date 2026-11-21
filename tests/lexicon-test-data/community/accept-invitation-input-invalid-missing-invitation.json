@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.acceptInvitation#input",
+  "expectedVersion": 7,
+  "idempotencyKey": "accept-1"
+}

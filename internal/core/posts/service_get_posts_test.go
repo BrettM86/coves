@@ -2,8 +2,10 @@ package posts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -574,6 +576,112 @@ func TestGetPosts_RemovedMarkers(t *testing.T) {
 				t.Errorf("removal code = %q, want %q — %s", got.Removed.Code, tt.wantCode, tt.why)
 			}
 		})
+	}
+}
+
+// TestGetPosts_RemovedTombstoneNeverCarriesReason is a GUARD, not a RED test: it
+// passes on the base. removedMarkers now reads an Admission that also carries the
+// community's removal reason; the reason is served only on the author's own
+// postView (communityRemoval), so the #removedPost tombstone that every other
+// viewer gets keeps the code and never the reason text.
+func TestGetPosts_RemovedTombstoneNeverCarriesReason(t *testing.T) {
+	const ownCommunity = "did:plc:owncommunity"
+	const authorDID = "did:plc:postauthor"
+	uri := didPostURI("rr1")
+	code := "spam"
+	reason := "Posting the same link in every thread"
+
+	for _, tc := range []struct {
+		name      string
+		viewerDID string
+	}{
+		{name: "another signed-in viewer", viewerDID: "did:plc:otherviewer"},
+		{name: "a signed-out viewer", viewerDID: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockRepository{rawRows: map[string]*Post{uri: {URI: uri, AuthorDID: authorDID, CommunityDID: ownCommunity}}}
+			admissions := &fakeAdmissions{
+				rec: &engineRecorder{},
+				byPostURIs: map[string][]*Admission{uri: {{
+					CommunityDID: ownCommunity, PostURI: uri, Status: AdmissionStatusRemoved,
+					DecisionCode: &code, RemovalReason: &reason,
+				}}},
+			}
+			s := &postService{repo: repo, admissions: admissions}
+
+			results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}, ViewerDID: tc.viewerDID})
+			if err != nil {
+				t.Fatalf("GetPosts returned error: %v", err)
+			}
+			if len(results) != 1 || results[0].Removed == nil {
+				t.Fatalf("expected one #removedPost tombstone, got %+v", results)
+			}
+			if results[0].Removed.Code != "spam" {
+				t.Fatalf("tombstone code = %q, want %q", results[0].Removed.Code, "spam")
+			}
+			member, ok := results[0].Member()
+			if !ok {
+				t.Fatalf("result has no single union member: %+v", results[0])
+			}
+			encoded, err := json.Marshal(member)
+			if err != nil {
+				t.Fatalf("marshal tombstone: %v", err)
+			}
+			if strings.Contains(string(encoded), "Posting the same link in every thread") {
+				t.Fatalf("a non-author's tombstone carries the removal reason: %s", encoded)
+			}
+		})
+	}
+}
+
+// TestGetPosts_InstanceRemovalHidesCommunityReasonFromAuthor is a GUARD, not a
+// RED test: it passes on the base. An active instance removal hides the post
+// from its author too, so the author gets #moderatedPost, which must never
+// carry the community's removal reason even though the admission row now
+// holds one.
+func TestGetPosts_InstanceRemovalHidesCommunityReasonFromAuthor(t *testing.T) {
+	const ownCommunity = "did:plc:owncommunity"
+	const authorDID = "did:plc:postauthor"
+	uri := didPostURI("rr2")
+	code := "spam"
+	reason := "Posting the same link in every thread"
+
+	repo := &mockRepository{
+		rawRows: map[string]*Post{uri: {
+			URI: uri, AuthorDID: authorDID, CommunityDID: ownCommunity,
+			CommunityHandle: "community.test", CommunityName: "community",
+		}},
+		activeRemovals: map[string][]RemovalSource{uri: {{AuthorityDID: "did:web:instance.test", ScopeKind: "instance"}}},
+		admittedURIs:   map[string]bool{uri: true},
+	}
+	admissions := &fakeAdmissions{
+		rec: &engineRecorder{},
+		byPostURIs: map[string][]*Admission{uri: {{
+			CommunityDID: ownCommunity, PostURI: uri, Status: AdmissionStatusRemoved,
+			DecisionCode: &code, RemovalReason: &reason,
+		}}},
+	}
+	s := &postService{repo: repo, admissions: admissions}
+
+	results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}, ViewerDID: authorDID})
+	if err != nil {
+		t.Fatalf("GetPosts returned error: %v", err)
+	}
+	if len(results) != 1 || results[0].Moderated == nil {
+		t.Fatalf("expected one #moderatedPost, got %+v", results)
+	}
+	member, ok := results[0].Member()
+	if !ok {
+		t.Fatalf("result has no single union member: %+v", results[0])
+	}
+	encoded, err := json.Marshal(member)
+	if err != nil {
+		t.Fatalf("marshal moderated post: %v", err)
+	}
+	for _, forbidden := range []string{"Posting the same link in every thread", "communityRemoval"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("#moderatedPost carries %q: %s", forbidden, encoded)
+		}
 	}
 }
 

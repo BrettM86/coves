@@ -90,6 +90,7 @@ type CommunityEventConsumer struct {
 	instanceDID      string                                            // DID of this Coves instance
 	skipVerification bool                                              // Skip did:web verification (for dev mode)
 	revGate          *RevGate                                          // Optional: cross-feed ordering guard for commit events (nil = ungated)
+	roster           communities.RoleRepository                        // Optional: community role index (nil = role records not indexed)
 
 	// bridgeTrust decides which repos may assert an `origin` that differs from
 	// their verified handle's domain (see admitCommunityOrigin). nil is
@@ -445,6 +446,8 @@ func (c *CommunityEventConsumer) HandleEvent(ctx context.Context, event *Jetstre
 		return applyGated(ctx, c.revGate, ConsumerCommunities, event.Did, commit, func() error {
 			return c.handleBlock(ctx, event.Did, commit)
 		})
+	case communities.RoleCollection:
+		return c.handleCommunityRoleEvent(ctx, event.Did, commit)
 	default:
 		// Not a community-related collection
 		return nil

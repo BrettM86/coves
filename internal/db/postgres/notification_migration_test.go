@@ -35,7 +35,7 @@ type migrationNotification struct {
 	recordCID    any
 	actorDID     any
 	subjectURI   any
-	rootPostURI  string
+	rootPostURI  any
 }
 
 func insertMigrationNotification(db *sql.DB, notification migrationNotification) error {
@@ -63,6 +63,30 @@ func TestNotificationMigration053_ActivationSingleton(t *testing.T) {
 func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -134,6 +158,30 @@ func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 func TestNotificationMigration055_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -303,4 +351,50 @@ func TestNotificationMigration053_ErasedRecipientCannotReceiveNotifications(t *t
 	rootPostURI := "at://" + recipientDID + "/social.coves.community.post/root"
 	requireNotificationSQLState(t, insertMigrationNotification(db,
 		migrationNotification{recipientDID, "upvote", nil, nil, nil, rootPostURI, rootPostURI}), "23503")
+}
+
+// Migration 093 admits the communityReport group: one row per (recipient,
+// community), subject at://<community DID>, no record, actor or root post.
+func TestNotificationMigration093_CommunityReportGroupShape(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	suffix := testkit.UniqueID(t)
+	recipientDID := "did:plc:notificationreport" + suffix
+	createTestUser(t, db, "notificationreport"+suffix+".test", recipientDID)
+	group := migrationNotification{
+		recipientDID: recipientDID, reason: "communityReport",
+		subjectURI: "at://did:plc:notificationreportcommunity" + suffix,
+	}
+	require.NoError(t, insertMigrationNotification(db, group),
+		"a communityReport group with only a community subject is a valid row")
+
+	withActor := group
+	withActor.subjectURI = "at://did:plc:notificationreportother" + suffix
+	withActor.actorDID = "did:plc:notificationreportactor" + suffix
+	requireNotificationSQLState(t, insertMigrationNotification(db, withActor), "23514")
+
+	requireNotificationSQLState(t, insertMigrationNotification(db, group), "23505")
+}
+
+func TestNotificationMigration093_DownAndUpRoundTrip(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	suffix := testkit.UniqueID(t)
+	recipientDID := "did:plc:notificationreportrt" + suffix
+	createTestUser(t, db, "notificationreportrt"+suffix+".test", recipientDID)
+	group := migrationNotification{
+		recipientDID: recipientDID, reason: "communityReport",
+		subjectURI: "at://did:plc:notificationreportrtcommunity" + suffix,
+	}
+	require.NoError(t, insertMigrationNotification(db, group), "093 accepts a communityReport group")
+
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) is the migration rolled back")
+	var remaining int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE reason = 'communityReport'`).Scan(&remaining))
+	require.Equal(t, 0, remaining, "093's down removes communityReport rows before restoring the reason check")
+	requireNotificationSQLState(t, insertMigrationNotification(db, group), "23514")
+
+	testkit.MigrateUp(t, db)
+	require.NoError(t, insertMigrationNotification(db, group), "093 re-applied accepts a communityReport group again")
 }

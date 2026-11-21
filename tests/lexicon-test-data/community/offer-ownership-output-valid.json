@@ -1,0 +1,13 @@
+{
+  "$type": "social.coves.community.offerOwnership#output",
+  "invitation": {
+    "id": "invitation-2",
+    "community": "did:plc:rosteralpha",
+    "subject": "did:plc:troublemaker456",
+    "role": "owner",
+    "inviter": "did:plc:rosterowner",
+    "createdAt": "2026-11-14T10:00:00.000Z",
+    "expiresAt": "2026-11-28T10:00:00.000Z"
+  },
+  "version": 7
+}

@@ -120,10 +120,10 @@ func ccrCommentURI(rkey string) string {
 
 // assertCommunityCommentRemoval checks the "applied" / "nothing applied"
 // definitions for one comment URI, with the active apply-removal the
-// community's own.
+// firehose's: no actor and the rule-violation code's mapped reason.
 func assertCommunityCommentRemoval(t *testing.T, db *sql.DB, commentURI string, applied bool) {
 	t.Helper()
-	assertCommunityCommentRemovalBy(t, db, commentURI, applied, "did:plc:acccommunity", "")
+	assertCommunityCommentRemovalBy(t, db, commentURI, applied, "", "social.coves.moderation.defs#reasonRuleViolation")
 }
 
 // assertCommunityCommentRemovalBy is assertCommunityCommentRemoval with the

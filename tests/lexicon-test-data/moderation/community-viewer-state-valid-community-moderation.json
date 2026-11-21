@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.defs#viewerState",
+  "subscribed": true,
+  "role": "owner",
+  "communityModeration": ["ban-account", "unban-account", "grant-role", "remove-role", "transfer-ownership"]
+}

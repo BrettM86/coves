@@ -1,0 +1,12 @@
+{
+  "$type": "social.coves.moderation.getCommunityState#output",
+  "community": "did:plc:communityalpha",
+  "subject": "did:plc:troublemaker456",
+  "kind": "account",
+  "version": 4,
+  "ban": {
+    "reason": "spam",
+    "expiresAt": "2099-01-01T00:00:00Z",
+    "recordUri": "at://did:plc:communityalpha/social.coves.moderation.ban/a5uzm6rn7ba5hnqtdjrd22rg53skdtu6ksiksa5eini4ychhrcpa"
+  }
+}

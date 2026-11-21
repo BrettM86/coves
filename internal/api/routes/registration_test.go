@@ -13,6 +13,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/feedgen"
 	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
@@ -192,6 +193,10 @@ var declaredRoutes = []declaredRoute{
 	// it here is what stops it being "fixed" into OptionalAuth by accident, or
 	// stops the other two silently decaying into it.
 	{http.MethodGet, "/xrpc/social.coves.community.search", authNone, 0, false},
+	// The roster and an actor's roles are public: role records are public in
+	// the community's repo, and OptionalAuth leaves room for viewer state.
+	{http.MethodGet, "/xrpc/social.coves.community.getModerators", authOptional, 0, false},
+	{http.MethodGet, "/xrpc/social.coves.community.getActorRoles", authOptional, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.create", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.update", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.subscribe", authRequired, 0, false},
@@ -284,6 +289,10 @@ var declaredRoutes = []declaredRoute{
 	// admin. Any authenticated caller may ask about themselves; there is no
 	// anonymous answer.
 	{http.MethodGet, "/xrpc/social.coves.actor.getViewerAuthority", authRequired, 0, false},
+
+	// RegisterCommunityStateRoute — a subject's community moderation state for
+	// the community's owners and moderators and instance admins.
+	{http.MethodGet, "/xrpc/social.coves.moderation.getCommunityState", authRequired, 0, false},
 
 	// RegisterCommunitySuggestionRoutes — social.coves.community.suggestion.*
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.list", authOptional, 0, false},
@@ -473,7 +482,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 		panic(err)
 	}
 	RegisterUserRoutesWithOptions(mux, &stubUserService{}, auth, indigooauth.NewClientApp(&clientConfig, nil), &UserRouteOptions{MediaPipeline: pipeline})
-	RegisterCommunityRoutes(mux, nil, nil, auth, nil)
+	RegisterCommunityRoutes(mux, nil, nil, auth, communities.CreationAnyone, moderation.NewAllowlistAuthority(nil))
 	RegisterPostRoutes(mux, nil, nil, nil, auth, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterVoteRoutes(mux, nil, auth)
 	RegisterUserBlockRoutes(mux, unreachableUserBlockService{}, auth)
@@ -483,6 +492,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterLabelRoutes(mux, nil)
 	RegisterLabelStreamRoutes(mux, nil)
 	RegisterViewerAuthorityRoute(mux, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil), moderation.NewAllowlistAuthority(nil))
+	RegisterCommunityStateRoute(mux, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil), &moderation.CommunityStateService{})
 	RegisterCommunitySuggestionRoutes(mux, nil, auth, nil)
 	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	// getTimeline, getDiscover and getCommunity are aliases of getFeed,

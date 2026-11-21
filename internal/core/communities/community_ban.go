@@ -50,11 +50,24 @@ type BanReader interface {
 //     other's account-activity check.
 const BanSubjectLockKeySQL = "hashtext('community-ban-subject:' || $1)"
 
+// BanRecordEvent is one firehose commit of a community's ban record at RKey:
+// a create or update carries the parsed Ban, a delete carries none. Rev is
+// the commit's rev ("" applies the event without the rev gate).
+type BanRecordEvent struct {
+	CommunityDID, RKey, Rev string
+	Ban                     *CommunityBan
+}
+
 // BanRepository maintains the community ban index.
 type BanRepository interface {
 	BanReader
 	UpsertCommunityBan(ctx context.Context, ban CommunityBan) error
 	DeleteCommunityBan(ctx context.Context, communityDID, recordKey string) error
+	// ApplyBanRecordEvent applies one firehose ban commit in one transaction:
+	// the record's rev gate, the index and history change, the version, and
+	// the action, completing the open ban or unban intent of this instance
+	// whose commit the event is, else logging the change with no actor.
+	ApplyBanRecordEvent(ctx context.Context, event BanRecordEvent) error
 }
 
 // CommunityBanIndex reads bans and resolves the community of indexed content.
@@ -87,6 +100,12 @@ func ActiveCommunityBan(ctx context.Context, reader BanReader, communityDID, sub
 // It is the unpadded lowercase base32 encoding of SHA-256(subjectDID), so a
 // community holds at most one ban record per subject.
 func BanRecordKey(subjectDID string) string {
+	return subjectRecordKey(subjectDID)
+}
+
+// subjectRecordKey is the unpadded lowercase base32 encoding of
+// SHA-256(subjectDID), the record key of per-subject community records.
+func subjectRecordKey(subjectDID string) string {
 	digest := sha256.Sum256([]byte(subjectDID))
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(digest[:]))
 }

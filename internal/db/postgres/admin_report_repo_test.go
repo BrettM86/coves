@@ -59,7 +59,7 @@ import (
 func adminReportRepoAndDB(t *testing.T) (adminreports.Repository, *sql.DB) {
 	t.Helper()
 	db := testkit.DB(t)
-	return NewAdminReportRepository(db), db
+	return NewAdminReportRepository(db, "", nil), db
 }
 
 // adminReportFixture is a report that will pass both CHECK constraints, so a

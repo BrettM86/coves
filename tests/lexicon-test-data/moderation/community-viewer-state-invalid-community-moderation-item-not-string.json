@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.defs#viewerState",
+  "role": "moderator",
+  "communityModeration": ["ban-account", 7]
+}

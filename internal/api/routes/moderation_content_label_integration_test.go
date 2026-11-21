@@ -61,6 +61,16 @@ type contentLabelRouteFixture struct {
 	// insertPostIn inserts an accepted post in another community; the caller
 	// owns that community's and author's rows.
 	insertPostIn func(communityDID, authorDID, title string) string
+	// signIn registers an OAuth session for did and returns its bearer token.
+	signIn func(did string) string
+	// The services and middleware behind the fixture's routes, for tests that
+	// mount handlers the routes do not yet configure.
+	optionalAuth     *middleware.OAuthAuthMiddleware
+	authority        moderation.Authority
+	postService      posts.Service
+	communityService communities.Service
+	commentService   comments.Service
+	userService      users.UserService
 }
 
 func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
@@ -155,6 +165,13 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	unsealer.AddSession(authorToken, authorDID, "content-label-author")
 	oauthStore.AddSession(authorDID, "content-label-author", "author-access-token")
 	optionalAuth := middleware.NewOAuthAuthMiddleware(unsealer, oauthStore)
+	signIn := func(did string) string {
+		t.Helper()
+		token := "session-" + did
+		unsealer.AddSession(token, did, "session-id-"+did)
+		oauthStore.AddSession(did, "session-id-"+did, "access-token-"+did)
+		return token
+	}
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
 	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, authority, instanceDID)
@@ -182,7 +199,9 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		authorDID: authorDID, authorToken: authorToken, communityDID: communityDID, adminDID: adminDID,
 		adminToken: adminToken, nonAdminDID: nonAdminDID, nonAdminToken: nonAdminToken, postCID: postCID,
 		pdsRequests: &pdsRequests, insertPost: insertAcceptedPost, insertPostBy: insertAcceptedPostBy,
-		insertPostIn: insertAcceptedPostIn,
+		insertPostIn: insertAcceptedPostIn, signIn: signIn,
+		optionalAuth: optionalAuth, authority: authority, postService: postService, communityService: communityService,
+		commentService: commentService, userService: userService,
 	}
 }
 

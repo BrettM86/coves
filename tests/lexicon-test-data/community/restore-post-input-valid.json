@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.restorePost#input",
+  "subject": "at://did:plc:postauthor1/social.coves.community.postv2/3kjzl5kcb2s2v",
+  "expectedVersion": 5,
+  "idempotencyKey": "restore-post-1"
+}

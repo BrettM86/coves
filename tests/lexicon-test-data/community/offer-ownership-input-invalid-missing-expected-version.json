@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.offerOwnership#input",
+  "community": "did:plc:rosteralpha",
+  "subject": "did:plc:troublemaker456",
+  "idempotencyKey": "offer-1"
+}

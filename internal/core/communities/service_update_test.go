@@ -26,7 +26,7 @@ import (
 //
 //   - the write could target the wrong repo (the instance's, as V1 did), which
 //     produces a record no consumer attributes to the community;
-//   - it could accept a caller who is not the creator, which is a takeover;
+//   - it could accept a caller who is not the indexed owner, which is a takeover;
 //   - it could be attempted for a community whose credentials this AppView does
 //     not hold — every federated community — which must fail cleanly rather
 //     than half-writing.
@@ -39,7 +39,7 @@ import (
 // newUpdatableCommunity provisions a community and returns everything a caller
 // needs to check both sides of an update: the service that performs it, the
 // repository the AppView reads, the PDS that holds the record, and the creator
-// DID that is allowed to ask.
+// DID that CreateCommunity indexed as the owner, the one allowed to ask.
 func newUpdatableCommunity(t *testing.T, prefix string) (
 	communities.Service, communities.Repository, *testkit.PDS, *communities.Community, string,
 ) {
@@ -129,7 +129,7 @@ func TestService_UpdateWritesTheChangedProfileToTheCommunityRepo(t *testing.T) {
 		"UpdateCommunity does not index; the row is the consumer's job")
 }
 
-func TestService_UpdateRejectsACallerWhoIsNotTheCreator(t *testing.T) {
+func TestService_UpdateRejectsACallerWhoIsNotTheOwner(t *testing.T) {
 	t.Parallel()
 
 	service, _, pdsServer, community, _ := newUpdatableCommunity(t, "aut")
@@ -143,7 +143,7 @@ func TestService_UpdateRejectsACallerWhoIsNotTheCreator(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, communities.ErrUnauthorized),
-		"a non-creator must be refused with the typed error the handler maps to 403, got %v", err)
+		"a caller who is not the indexed owner must be refused with the typed error the handler maps to 403, got %v", err)
 
 	// The check runs BEFORE the token refresh and before any blob upload, which
 	// is what keeps an unauthorized request from costing a PDS round trip — but
@@ -158,18 +158,9 @@ func TestService_UpdateRejectsACallerWhoIsNotTheCreator(t *testing.T) {
 // every FEDERATED community: rows indexed from the firehose carry no PDS
 // password and no tokens, because their accounts live on somebody else's
 // server. An update aimed at one of them cannot be performed and must not be
-// half-performed.
-//
-// # A DEAD BRANCH THIS PINS
-//
-// service.go has an explicit "community %s missing PDS credentials - cannot
-// update" guard immediately before the record write, and it is unreachable: the
-// EnsureFreshToken call earlier in the same function parses the access token,
-// and an empty token fails there first with "access token is empty". The error
-// a caller actually receives is therefore the token-refresh one, which this
-// test asserts, rather than the message the code appears to promise. Asserting
-// the real text is the only way the day someone reorders those two checks shows
-// up as a test change rather than as a silently different error string.
+// half-performed. Such a community is not hosted here, so no caller holds a
+// usable role in it and the update is refused as unauthorized before any PDS
+// call.
 func TestService_UpdateRefusesACommunityWhoseCredentialsThisInstanceLacks(t *testing.T) {
 	t.Parallel()
 
@@ -199,9 +190,8 @@ func TestService_UpdateRefusesACommunityWhoseCredentialsThisInstanceLacks(t *tes
 		UpdatedByDID: "did:plc:externaluser",
 		DisplayName:  &displayName,
 	})
-	require.Error(t, err, "an update must not be attempted for a community this instance cannot authenticate as")
-	assert.ErrorContains(t, err, "failed to ensure fresh credentials")
-	assert.ErrorContains(t, err, "access token is empty")
+	require.ErrorIs(t, err, communities.ErrUnauthorized,
+		"an update must not be attempted for a community this instance cannot authenticate as")
 
 	// And the row is untouched: the failure happened before any write, so a
 	// caller retrying against the right instance still sees the indexed values.

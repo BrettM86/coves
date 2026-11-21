@@ -38,6 +38,7 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
+	"Coves/tests/fixtures/communityrolefixture"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -82,7 +83,7 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL, communities.PrivateHostOptions(true)...),
 		nil, // no PDS client factory: provisioning uses the password session
 		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...), pipeline,
-		communities.PrivateHostOptions(true)...,
+		append(communities.PrivateHostOptions(true), communityrolefixture.Authorization(db))...,
 	)
 
 	// The provisioner prefixes "c-", and a PDS handle's local label is capped at

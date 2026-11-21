@@ -90,7 +90,7 @@ const admissionColumns = `
 	acceptance_uri, acceptance_rkey, accepted_cid,
 	decision_code, decision_at, evaluated_cid, redrivable,
 	last_community_rev, last_community_op_rank,
-	created_at, updated_at`
+	created_at, updated_at, removal_reason`
 
 // communityWatermarkGuard is the §5.2 rule, and the only thing that decides
 // whether a community-repo event applies: the event's (rev, op-rank) tuple must
@@ -110,6 +110,17 @@ const communityWatermarkGuard = `
 	WHERE community_post_admissions.last_community_rev IS NULL
 	   OR (community_post_admissions.last_community_rev, community_post_admissions.last_community_op_rank)
 	    < (excluded.last_community_rev, excluded.last_community_op_rank)`
+
+// localCompletionWatermarkGuard is the guard a community post action's local
+// completion applies its own commit under: the commit's (rev, op-rank) need
+// only not be older than the row's. A completion recovered after a lost
+// response knows only the intent's guard rev, which events already indexed may
+// carry; those predate the commit, so the commit still applies over them,
+// while any change at a later rev is kept.
+const localCompletionWatermarkGuard = `
+	WHERE community_post_admissions.last_community_rev IS NULL
+	   OR (community_post_admissions.last_community_rev, community_post_admissions.last_community_op_rank)
+	    <= (excluded.last_community_rev, excluded.last_community_op_rank)`
 
 // UpsertPending records an AUTHOR-repo observation of the post's content.
 //
@@ -187,7 +198,7 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 		  AND (NOT $4::boolean OR community_post_admissions.evaluated_cid IS NULL)
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired,
+	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired, localObservation,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID, cmd.IsSeed)
 }
 
@@ -223,33 +234,48 @@ func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.A
 	// acceptance} converge on different statuses). A post event that later
 	// lands a different CID moves the row to pending_reacceptance through the
 	// ordinary path.
-	query := `
-		INSERT INTO community_post_admissions (
-			community_did, post_uri, status,
-			acceptance_uri, acceptance_rkey, accepted_cid, evaluated_cid,
-			last_community_rev, last_community_op_rank, created_at, updated_at
-		) VALUES ($1, $2, 'accepted', $3, $4, $5, $5, $6, $7, NOW(), NOW())
-		ON CONFLICT (community_did, post_uri) DO UPDATE SET
-			status = CASE
-				WHEN COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid) = excluded.accepted_cid
-					THEN 'accepted'
-				ELSE 'pending_reacceptance'
-			END,
-			evaluated_cid = COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid),
-			acceptance_uri = excluded.acceptance_uri,
-			acceptance_rkey = excluded.acceptance_rkey,
-			accepted_cid = excluded.accepted_cid,
-			decision_code = NULL,
-			decision_at = NULL,
-			last_community_rev = excluded.last_community_rev,
-			last_community_op_rank = excluded.last_community_op_rank,
-			updated_at = NOW()` + communityWatermarkGuard + `
-		RETURNING ` + admissionColumns
+	//
+	// An acceptance the row already holds (accepted, the same record pinning
+	// the same CID) is no new decision: it takes the watermark without
+	// advancing the post's community version. That is the delayed firehose
+	// copy of a restore whose completion was recovered at its guard rev.
+	//
+	// A firehose acceptance that an open restore intent of this instance wrote
+	// completes that intent instead (completeRestoreByAcceptanceTx).
+	query := applyAcceptanceQuery(communityWatermarkGuard)
 
-	return r.compareAndSwap(ctx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
-		query, cmd.CommunityDID, cmd.PostURI,
-		cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
-		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
+	var result posts.AdmissionResult
+	err := inAdmissionTransaction(ctx, r.db, func(tx *sql.Tx) error {
+		if cmd.RecordCID != "" {
+			completed, err := completeRestoreByAcceptanceTx(ctx, tx, cmd)
+			if err != nil {
+				return fmt.Errorf("ApplyAcceptance for %s in %s: %w", cmd.PostURI, cmd.CommunityDID, err)
+			}
+			if completed != nil {
+				result = *completed
+				return nil
+			}
+		}
+		var standing bool
+		err := tx.QueryRowContext(ctx, `
+			SELECT status = 'accepted' AND acceptance_uri IS NOT DISTINCT FROM $3 AND accepted_cid IS NOT DISTINCT FROM $4
+			FROM community_post_admissions
+			WHERE community_did = $1 AND post_uri = $2
+			FOR UPDATE
+		`, cmd.CommunityDID, cmd.PostURI, cmd.AcceptanceURI, cmd.PinnedCID).Scan(&standing)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("ApplyAcceptance for %s in %s: reading the standing acceptance: %w", cmd.PostURI, cmd.CommunityDID, err)
+		}
+		result, err = compareAndSwapInTx(ctx, tx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, !standing,
+			query, nil, cmd.CommunityDID, cmd.PostURI,
+			cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
+			cmd.Watermark.Rev, int16(posts.CommunityOpPut))
+		return err
+	})
+	if err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return result, nil
 }
 
 // ApplyAcceptanceDelete applies the deletion of the acceptance record.
@@ -268,26 +294,9 @@ func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd p
 	// A deletion for a subject with no row still inserts one: it is a
 	// tombstone, and without it the acceptance-create this deletion supersedes
 	// would apply the next time a feed replays it.
-	query := `
-		INSERT INTO community_post_admissions (
-			community_did, post_uri, status,
-			last_community_rev, last_community_op_rank, created_at, updated_at
-		) VALUES ($1, $2, 'pending', $3, $4, NOW(), NOW())
-		ON CONFLICT (community_did, post_uri) DO UPDATE SET
-			status = CASE
-				WHEN community_post_admissions.status IN ('accepted', 'pending_reacceptance')
-					THEN 'pending'
-				ELSE community_post_admissions.status
-			END,
-			acceptance_uri = NULL,
-			acceptance_rkey = NULL,
-			accepted_cid = NULL,
-			last_community_rev = excluded.last_community_rev,
-			last_community_op_rank = excluded.last_community_op_rank,
-			updated_at = NOW()` + communityWatermarkGuard + `
-		RETURNING ` + admissionColumns
+	query := applyAcceptanceDeleteQuery(communityWatermarkGuard)
 
-	return r.compareAndSwapWithWithdrawal(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
+	return r.compareAndSwapWithWithdrawal(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
 		query, &communityWithdrawal{rev: cmd.Watermark.Rev},
 		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
@@ -308,33 +317,36 @@ func (r *postgresAdmissionRepo) ApplyRemoval(ctx context.Context, cmd posts.Appl
 		return posts.AdmissionResult{}, err
 	}
 
-	query := `
-		INSERT INTO community_post_admissions (
-			community_did, post_uri, status, decision_code, decision_at,
-			last_community_rev, last_community_op_rank, created_at, updated_at
-		) VALUES ($1, $2, 'removed', $3, NOW(), $4, $5, NOW(), NOW())
-		ON CONFLICT (community_did, post_uri) DO UPDATE SET
-			status = 'removed',
-			decision_code = excluded.decision_code,
-			decision_at = excluded.decision_at,
-			acceptance_uri = NULL,
-			acceptance_rkey = NULL,
-			accepted_cid = NULL,
-			last_community_rev = excluded.last_community_rev,
-			last_community_op_rank = excluded.last_community_op_rank,
-			updated_at = NOW()` + communityWatermarkGuard + `
-		RETURNING ` + admissionColumns
+	query := applyRemovalQuery(communityWatermarkGuard)
 
-	return r.compareAndSwapWithWithdrawal(ctx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
-		query, &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
-		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
-		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
+	// The callers are the AppView's own removal writers (the acceptance
+	// engine and the instance removal outbox) stamping the commit they wrote.
+	// A removal that applies is indexed as the record the community holds,
+	// under the subject's canonical key, at the stamped rev and with its CID
+	// unknown: the commit's firehose copy is recognised by that rev and fills
+	// the CID in (ApplyRemovalRecord), so it logs no second change.
+	var result posts.AdmissionResult
+	err := inAdmissionTransaction(ctx, r.db, func(tx *sql.Tx) error {
+		var err error
+		result, err = compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
+			query, &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+			cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
+			cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
+		if err != nil || result.Outcome != posts.AdmissionApplied {
+			return err
+		}
+		return indexStampedRemovalRecord(ctx, tx, cmd)
+	})
+	if err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return result, nil
 }
 
 // ApplyRemovalDelete applies the deletion of the removal record.
 //
 // Withdrawing a removal returns the subject to pending and drops the decision
-// with it — a row that is no longer removed must not keep the code a reader
+// with it — a row that is no longer removed must not keep the code or reason a reader
 // would render. Redrivable resets to true with it: the standing decision is
 // what justified refusing to re-evaluate, and a pre-removal terminal rejection
 // leaving redrivable=false behind would make the reopened pending row a post
@@ -346,7 +358,85 @@ func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd post
 		return posts.AdmissionResult{}, err
 	}
 
-	query := `
+	query := applyRemovalDeleteQuery(communityWatermarkGuard)
+
+	return r.compareAndSwap(ctx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
+}
+
+// applyAcceptanceQuery is ApplyAcceptance's upsert under guard.
+func applyAcceptanceQuery(guard string) string {
+	return `
+		INSERT INTO community_post_admissions (
+			community_did, post_uri, status,
+			acceptance_uri, acceptance_rkey, accepted_cid, evaluated_cid,
+			last_community_rev, last_community_op_rank, created_at, updated_at
+		) VALUES ($1, $2, 'accepted', $3, $4, $5, $5, $6, $7, NOW(), NOW())
+		ON CONFLICT (community_did, post_uri) DO UPDATE SET
+			status = CASE
+				WHEN COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid) = excluded.accepted_cid
+					THEN 'accepted'
+				ELSE 'pending_reacceptance'
+			END,
+			evaluated_cid = COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid),
+			acceptance_uri = excluded.acceptance_uri,
+			acceptance_rkey = excluded.acceptance_rkey,
+			accepted_cid = excluded.accepted_cid,
+			decision_code = NULL,
+			decision_at = NULL,
+			removal_reason = NULL,
+			last_community_rev = excluded.last_community_rev,
+			last_community_op_rank = excluded.last_community_op_rank,
+			updated_at = NOW()` + guard + `
+		RETURNING ` + admissionColumns
+}
+
+// applyAcceptanceDeleteQuery is ApplyAcceptanceDelete's upsert under guard.
+func applyAcceptanceDeleteQuery(guard string) string {
+	return `
+		INSERT INTO community_post_admissions (
+			community_did, post_uri, status,
+			last_community_rev, last_community_op_rank, created_at, updated_at
+		) VALUES ($1, $2, 'pending', $3, $4, NOW(), NOW())
+		ON CONFLICT (community_did, post_uri) DO UPDATE SET
+			status = CASE
+				WHEN community_post_admissions.status IN ('accepted', 'pending_reacceptance')
+					THEN 'pending'
+				ELSE community_post_admissions.status
+			END,
+			acceptance_uri = NULL,
+			acceptance_rkey = NULL,
+			accepted_cid = NULL,
+			last_community_rev = excluded.last_community_rev,
+			last_community_op_rank = excluded.last_community_op_rank,
+			updated_at = NOW()` + guard + `
+		RETURNING ` + admissionColumns
+}
+
+// applyRemovalQuery is ApplyRemoval's upsert under guard.
+func applyRemovalQuery(guard string) string {
+	return `
+		INSERT INTO community_post_admissions (
+			community_did, post_uri, status, decision_code, decision_at, removal_reason,
+			last_community_rev, last_community_op_rank, created_at, updated_at
+		) VALUES ($1, $2, 'removed', $3, NOW(), NULLIF($6, ''), $4, $5, NOW(), NOW())
+		ON CONFLICT (community_did, post_uri) DO UPDATE SET
+			status = 'removed',
+			decision_code = excluded.decision_code,
+			decision_at = excluded.decision_at,
+			removal_reason = excluded.removal_reason,
+			acceptance_uri = NULL,
+			acceptance_rkey = NULL,
+			accepted_cid = NULL,
+			last_community_rev = excluded.last_community_rev,
+			last_community_op_rank = excluded.last_community_op_rank,
+			updated_at = NOW()` + guard + `
+		RETURNING ` + admissionColumns
+}
+
+// applyRemovalDeleteQuery is ApplyRemovalDelete's upsert under guard.
+func applyRemovalDeleteQuery(guard string) string {
+	return `
 		INSERT INTO community_post_admissions (
 			community_did, post_uri, status,
 			last_community_rev, last_community_op_rank, created_at, updated_at
@@ -364,17 +454,18 @@ func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd post
 				WHEN community_post_admissions.status = 'removed' THEN NULL
 				ELSE community_post_admissions.decision_at
 			END,
+			removal_reason = CASE
+				WHEN community_post_admissions.status = 'removed' THEN NULL
+				ELSE community_post_admissions.removal_reason
+			END,
 			redrivable = CASE
 				WHEN community_post_admissions.status = 'removed' THEN true
 				ELSE community_post_admissions.redrivable
 			END,
 			last_community_rev = excluded.last_community_rev,
 			last_community_op_rank = excluded.last_community_op_rank,
-			updated_at = NOW()` + communityWatermarkGuard + `
+			updated_at = NOW()` + guard + `
 		RETURNING ` + admissionColumns
-
-	return r.compareAndSwap(ctx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
 // RepinAcceptedCID moves a standing acceptance onto new content without
@@ -425,7 +516,7 @@ func (r *postgresAdmissionRepo) RepinAcceptedCID(ctx context.Context, cmd posts.
 		       OR (last_community_rev, last_community_op_rank) < ($4::text COLLATE "C", $5::smallint))
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, repinOutcome, rowOptional,
+	return r.compareAndSwap(ctx, "RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, repinOutcome, rowOptional, communityRecordChange,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.PinnedCID,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
@@ -470,7 +561,7 @@ func (r *postgresAdmissionRepo) RecordRejection(ctx context.Context, cmd posts.R
 		  AND evaluated_cid IS NOT DISTINCT FROM $5
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "RecordRejection", cmd.CommunityDID, cmd.PostURI, rejectionOutcome, rowRequired,
+	return r.compareAndSwap(ctx, "RecordRejection", cmd.CommunityDID, cmd.PostURI, rejectionOutcome, rowRequired, localObservation,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode, cmd.Redrivable, cmd.JudgedCID)
 }
 
@@ -786,6 +877,18 @@ const (
 	rowOptional = true
 )
 
+// Whether a mutation that writes a row changes the community's moderation
+// index, and so advances the post's community subject version. Only community
+// record events do. The AppView's own observations (the author's content, a
+// local rejection) share the compare-and-swap but are not community changes.
+const (
+	localObservation      = false
+	communityRecordChange = true
+	// versionAdvancedByCaller is a community record change whose caller
+	// advances the version itself: once for a commit of several changes.
+	versionAdvancedByCaller = false
+)
+
 // compareAndSwap runs one guarded mutation and reports the row it left behind.
 //
 // The transaction exists for the refusal path. A guard that fails returns no
@@ -800,10 +903,11 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 	operation, communityDID, postURI string,
 	classify admissionOutcome,
 	mayLackRow bool,
+	advancesVersion bool,
 	query string,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
-	return r.compareAndSwapWithWithdrawal(ctx, operation, communityDID, postURI, classify, mayLackRow, query, nil, args...)
+	return r.compareAndSwapWithWithdrawal(ctx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, nil, args...)
 }
 
 type communityWithdrawal struct {
@@ -821,6 +925,7 @@ func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
 	operation, communityDID, postURI string,
 	classify admissionOutcome,
 	mayLackRow bool,
+	advancesVersion bool,
 	query string,
 	withdrawal *communityWithdrawal,
 	args ...interface{},
@@ -842,6 +947,29 @@ func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
 		}
 	}()
 
+	result, err := compareAndSwapInTx(ctx, tx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, withdrawal, args...)
+	if err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: committing: %w", operation, postURI, communityDID, err)
+	}
+	return result, nil
+}
+
+// compareAndSwapInTx is compareAndSwapWithWithdrawal's mutation in the
+// caller's transaction, which the caller commits.
+func compareAndSwapInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation, communityDID, postURI string,
+	classify admissionOutcome,
+	mayLackRow bool,
+	advancesVersion bool,
+	query string,
+	withdrawal *communityWithdrawal,
+	args ...interface{},
+) (posts.AdmissionResult, error) {
 	var ownCommunityPost, admittedBefore, alreadyRemoved bool
 	if withdrawal != nil {
 		var priorStatus posts.AdmissionStatus
@@ -916,10 +1044,60 @@ func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: committing: %w", operation, postURI, communityDID, err)
+	if wrote && advancesVersion {
+		if err := advanceCommunitySubjectVersion(ctx, tx, communityDID, postURI); err != nil {
+			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: %w", operation, postURI, communityDID, err)
+		}
 	}
+
 	return posts.AdmissionResult{Outcome: classify(wrote, admission), Admission: admission}, nil
+}
+
+// The four community record changes a community post action's commit makes,
+// applied by its local completion in the action transaction under
+// localCompletionWatermarkGuard. They do not advance the post's community
+// version: the completion advances it once for the commit.
+
+// applyAcceptanceInTx is ApplyAcceptance in tx.
+func applyAcceptanceInTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyAcceptanceCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return compareAndSwapInTx(ctx, tx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
+		applyAcceptanceQuery(localCompletionWatermarkGuard), nil, cmd.CommunityDID, cmd.PostURI,
+		cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
+		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
+}
+
+// applyAcceptanceDeleteInTx is ApplyAcceptanceDelete in tx.
+func applyAcceptanceDeleteInTx(ctx context.Context, tx *sql.Tx, cmd posts.CommunityDeleteCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return compareAndSwapInTx(ctx, tx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
+		applyAcceptanceDeleteQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev},
+		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
+}
+
+// applyRemovalInTx is ApplyRemoval in tx.
+func applyRemovalInTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyRemovalCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyRemoval", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
+		applyRemovalQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
+		cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
+}
+
+// applyRemovalDeleteInTx is ApplyRemovalDelete in tx.
+func applyRemovalDeleteInTx(ctx context.Context, tx *sql.Tx, cmd posts.CommunityDeleteCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+	return compareAndSwapInTx(ctx, tx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
+		applyRemovalDeleteQuery(localCompletionWatermarkGuard), nil,
+		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
 // admissionRow is the one-row read both compareAndSwap and Get need, so the
@@ -936,6 +1114,7 @@ func scanAdmission(row admissionRow) (*posts.Admission, error) {
 		acceptanceRkey sql.NullString
 		acceptedCID    sql.NullString
 		decisionCode   sql.NullString
+		removalReason  sql.NullString
 		decisionAt     sql.NullTime
 		evaluatedCID   sql.NullString
 		lastRev        sql.NullString
@@ -947,7 +1126,7 @@ func scanAdmission(row admissionRow) (*posts.Admission, error) {
 		&acceptanceURI, &acceptanceRkey, &acceptedCID,
 		&decisionCode, &decisionAt, &evaluatedCID, &admission.Redrivable,
 		&lastRev, &lastOpRank,
-		&admission.CreatedAt, &admission.UpdatedAt,
+		&admission.CreatedAt, &admission.UpdatedAt, &removalReason,
 	); err != nil {
 		return nil, err
 	}
@@ -956,6 +1135,7 @@ func scanAdmission(row admissionRow) (*posts.Admission, error) {
 	admission.AcceptanceRkey = nullableString(acceptanceRkey)
 	admission.AcceptedCID = nullableString(acceptedCID)
 	admission.DecisionCode = nullableString(decisionCode)
+	admission.RemovalReason = nullableString(removalReason)
 	admission.EvaluatedCID = nullableString(evaluatedCID)
 	if decisionAt.Valid {
 		decidedAt := decisionAt.Time

@@ -111,6 +111,12 @@ func requireUpvoteGroupOuterExpression(role, expression string) {
 // The isolation level is checked before the lock, so a wrong-isolation
 // transaction fails without waiting on an erasure in progress.
 func (r *postgresNotificationRepo) ErasureGateTx(ctx context.Context, tx *sql.Tx, actorDID string) (bool, error) {
+	return erasureGateTx(ctx, tx, actorDID)
+}
+
+// erasureGateTx is the shared erasure gate (ErasureGateTx) for repositories
+// that do not hold a notification repository.
+func erasureGateTx(ctx context.Context, tx *sql.Tx, actorDID string) (bool, error) {
 	var isolation string
 	if err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&isolation); err != nil {
 		return false, fmt.Errorf("check notification erasure gate isolation: %w", err)
@@ -319,7 +325,7 @@ func (r *postgresNotificationRepo) ApplyTx(ctx context.Context, tx *sql.Tx, inte
 		INSERT INTO notifications (recipient_did, reason, record_uri, record_cid, actor_did,
 			subject_uri, root_post_uri, record_created_at, sort_at)
 		SELECT recipient, reason, NULLIF(record_uri, ''), NULLIF(record_cid, ''), NULLIF(actor, ''),
-			NULLIF(subject_uri, ''), root_post_uri, created_at, clock_timestamp()
+			NULLIF(subject_uri, ''), NULLIF(root_post_uri, ''), created_at, clock_timestamp()
 		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
 			$6::text[], $7::text[], $8::timestamptz[])
 			AS intent(recipient, reason, record_uri, record_cid, actor, subject_uri, root_post_uri, created_at)
@@ -355,7 +361,7 @@ func (r *postgresNotificationRepo) ApplyTx(ctx context.Context, tx *sql.Tx, inte
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp())
 			ON CONFLICT (recipient_did, reason, record_uri) WHERE reason <> 'upvote' DO NOTHING`,
 			intent.RecipientDID, intent.Reason, nullString(intent.RecordURI), nullString(intent.RecordCID),
-			nullString(intent.ActorDID), nullString(intent.SubjectURI), intent.RootPostURI, intent.RecordCreatedAt)
+			nullString(intent.ActorDID), nullString(intent.SubjectURI), nullString(intent.RootPostURI), intent.RecordCreatedAt)
 		if err != nil {
 			if isRecipientForeignKeyViolation(err) {
 				if _, rollbackError := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT notification_intent`); rollbackError != nil {

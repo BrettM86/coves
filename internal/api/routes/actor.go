@@ -26,12 +26,18 @@ func RegisterActorRoutes(
 	// identifies this instance's own removals and labels.
 	authority moderation.Authority,
 	instanceDID string,
+	opts ...ViewerModerationRouteOption,
 ) {
+	cfg := newViewerModerationRouteConfig(opts)
 	// Create handlers
 	getPostsHandler := actor.NewGetPostsHandler(postService, userService, voteService, blueskyService).
 		WithViewerModeration(authority, instanceDID)
 	getCommentsHandler := actor.NewGetCommentsHandler(commentService, userService, voteService).
 		WithViewerModeration(authority, instanceDID)
+	if cfg.communityViewer != nil {
+		getPostsHandler.WithCommunityViewerModeration(cfg.communityViewer)
+		getCommentsHandler.WithCommunityViewerModeration(cfg.communityViewer)
+	}
 
 	// GET /xrpc/social.coves.actor.getPosts
 	// Public endpoint with optional auth for viewer-specific state (vote state, moderation actions)

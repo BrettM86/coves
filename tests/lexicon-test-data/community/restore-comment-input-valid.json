@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.restoreComment#input",
+  "subject": "at://did:plc:commentauthor1/social.coves.community.comment/3kjzl5kcb2c2v",
+  "expectedVersion": 5,
+  "idempotencyKey": "restore-comment-1"
+}

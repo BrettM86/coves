@@ -1,0 +1,7 @@
+{
+  "$type": "social.coves.community.inviteModerator#input",
+  "community": "did:plc:rosteralpha",
+  "subject": "invitee.coves.social",
+  "expectedVersion": 7,
+  "idempotencyKey": "invite-1"
+}

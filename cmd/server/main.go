@@ -91,6 +91,16 @@ func run() error {
 		}
 	}()
 
+	communityActionDB, err := openCommunityActionDatabase(ctx, cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := communityActionDB.Close(); closeErr != nil {
+			slog.Error("failed to close community action pool", "error", closeErr)
+		}
+	}()
+
 	otelProvider, err := startObservability(ctx)
 	if err != nil {
 		return err
@@ -104,7 +114,7 @@ func run() error {
 		}
 	}()
 
-	app, err := buildApplication(ctx, cfg, db, sessionCoordinationDB, identityRefreshLockDB, credentialCipher)
+	app, err := buildApplication(ctx, cfg, db, sessionCoordinationDB, identityRefreshLockDB, communityActionDB, credentialCipher)
 	if err != nil {
 		return err
 	}
@@ -144,6 +154,8 @@ func run() error {
 	if app.communityRecordWriteQueue != nil {
 		startCommunityRecordWriteSweepJob(backgroundCtx, &backgroundWG, app.communityRecordWriteQueue, communityRecordWriteSweepInterval)
 	}
+	startRoleRecordDeleteSweepJob(backgroundCtx, &backgroundWG, app.roleRecordDeleteQueue, roleRecordDeleteSweepInterval)
+	startCommunityIntentSweepJob(backgroundCtx, &backgroundWG, app.communityActionService, communityIntentSweepInterval)
 
 	// Nil when the driver is disabled, and passed as a typed nil would be a
 	// non-nil interface — so the guard is here rather than inside the job.
@@ -253,6 +265,11 @@ func serve(
 		// next boot's sweep.
 		app.communityRecordWriteQueue.Close()
 	}
+	if app.roleRecordDeleteQueue != nil {
+		// Erasures from here on leave their role record deletes to the next
+		// boot's sweep.
+		app.roleRecordDeleteQueue.Close()
+	}
 
 	// Drain background work concurrently with the listener drain, not after
 	// it. They are independent — background work runs on its own context,
@@ -293,6 +310,13 @@ func serve(
 		// first sweep after its lease expires retries, on a later boot.
 		if err := app.communityRecordWriteQueue.Wait(shutdownCtx); err != nil {
 			slog.Warn("community record writes still in flight at shutdown", "error", err)
+		}
+	}
+	if app.roleRecordDeleteQueue != nil {
+		// Best effort: an attempt cut off here keeps its pending row, which the
+		// first sweep after its lease expires retries, on a later boot.
+		if err := app.roleRecordDeleteQueue.Wait(shutdownCtx); err != nil {
+			slog.Warn("role record deletes still in flight at shutdown", "error", err)
 		}
 	}
 
@@ -365,12 +389,7 @@ func logStartupWarnings(cfg *config.Config) {
 			"will fail at the captcha step")
 	}
 
-	if len(cfg.Instance.AllowedCommunityCreators) > 0 {
-		slog.Info("community creation restricted to an allowlist",
-			"allowed_dids", len(cfg.Instance.AllowedCommunityCreators))
-	} else {
-		slog.Info("community creation is open to all authenticated users")
-	}
+	slog.Info("community creation policy", "community_creation", cfg.Instance.CommunityCreation)
 
 	slog.Info("instance identity resolved",
 		"instance_did", cfg.Instance.DID,

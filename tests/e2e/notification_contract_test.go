@@ -35,6 +35,10 @@ type notificationContractRow struct {
 	Author struct {
 		DID string `json:"did"`
 	} `json:"author"`
+	Community struct {
+		DID string `json:"did"`
+	} `json:"community"`
+	ReportCount    int `json:"reportCount"`
 	UpvoteCount    int `json:"upvoteCount"`
 	RecentUpvoters []struct {
 		DID string `json:"did"`

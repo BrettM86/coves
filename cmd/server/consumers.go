@@ -202,6 +202,7 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 			jetstream.WithCommunityUncachedIdentityResolver(a.uncachedIdentityResolver),
 			jetstream.WithCommunityIdentityRefreshFailureTTL(a.cfg.Identity.NegativeCacheTTL),
 			jetstream.WithCommunityIdentityRefreshLock(identityRefreshLock),
+			jetstream.WithCommunityRoster(postgresRepo.NewCommunityRoleRepository(a.db)),
 		},
 		jetstream.PrivateHostOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{

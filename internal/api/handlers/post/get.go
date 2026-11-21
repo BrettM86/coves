@@ -26,6 +26,7 @@ type GetHandler struct {
 	blueskyService blueskypost.Service
 	authority      moderation.Authority
 	instanceDID    string
+	communities    moderation.CommunityViewer
 }
 
 // NewGetHandler creates a new get handler.
@@ -101,6 +102,7 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	common.PopulateModeratedPostViewerModeration(r, h.authority, h.instanceDID, tombstones)
+	common.PopulatePostResultsCommunityViewerModeration(r, h.communities, results)
 
 	// Transform blob refs to URLs and resolve embedded Bluesky posts for found posts
 	for _, res := range results {
@@ -138,4 +140,15 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(responseBytes); err != nil {
 		log.Printf("ERROR: Failed to write getPosts response: %v", err)
 	}
+}
+
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each live post and removal tombstone.
+func (h *GetHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *GetHandler {
+	if viewer == nil {
+		panic("post.GetHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
+	return h
 }

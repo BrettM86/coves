@@ -32,7 +32,7 @@ func TestBuildApplicationPostServiceCarriesLexiconValidator(t *testing.T) {
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
 	t.Chdir(t.TempDir())
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 

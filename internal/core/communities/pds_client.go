@@ -39,6 +39,12 @@ type pdsClientConfig struct {
 	// pdsAdminPassword mints community invite codes. Only
 	// NewPDSAccountProvisioner reads it.
 	pdsAdminPassword string
+
+	// roles and roleAuthorizer are the community service's role index and
+	// authorizer (WithRoleAuthorization). Only the service constructors read
+	// them.
+	roles          RoleRepository
+	roleAuthorizer RoleAuthorizer
 }
 
 // PDSClientOption configures the HTTP client this package's xrpc calls go

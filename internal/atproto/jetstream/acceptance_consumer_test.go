@@ -139,14 +139,23 @@ func removalEvent(communityDID, postURI, pinnedCID, code, rev string, timeUS int
 // removalEventAt builds a community-repo removal create or update at the
 // given record key.
 func removalEventAt(communityDID, operation, rkey, postURI, pinnedCID, code, rev string, timeUS int64) *JetstreamEvent {
+	return removalEventWithReason(communityDID, operation, rkey, postURI, pinnedCID, code, "", rev, timeUS)
+}
+
+// removalEventWithReason is removalEventAt carrying the record's optional
+// reason; an empty reason omits the field.
+func removalEventWithReason(communityDID, operation, rkey, postURI, pinnedCID, code, reason, rev string, timeUS int64) *JetstreamEvent {
+	record := map[string]interface{}{
+		"$type":     posts.RemovalCollection,
+		"subject":   map[string]interface{}{"uri": postURI, "cid": pinnedCID},
+		"code":      code,
+		"createdAt": "2026-03-01T00:00:00Z",
+	}
+	if reason != "" {
+		record["reason"] = reason
+	}
 	return revCommitEvent(communityDID, posts.RemovalCollection, operation,
-		rkey, rev, "bafyreiremovalrecord", timeUS,
-		map[string]interface{}{
-			"$type":     posts.RemovalCollection,
-			"subject":   map[string]interface{}{"uri": postURI, "cid": pinnedCID},
-			"code":      code,
-			"createdAt": "2026-03-01T00:00:00Z",
-		})
+		rkey, rev, "bafyreiremovalrecord", timeUS, record)
 }
 
 func TestAcceptanceConsumer_MatchingCID_AcceptsAndStampsTheWatermark(t *testing.T) {
@@ -813,6 +822,7 @@ func readAdmissionRow(t *testing.T, db *sql.DB, communityDID, postURI string) []
 		status                                  string
 		acceptanceURI, acceptanceRkey, accepted *string
 		decisionCode, evaluatedCID, rev         *string
+		removalReason                           *string
 		decisionAt                              *time.Time
 		opRank                                  *int16
 		redrivable                              bool
@@ -820,11 +830,13 @@ func readAdmissionRow(t *testing.T, db *sql.DB, communityDID, postURI string) []
 	)
 	require.NoError(t, db.QueryRow(`
 		SELECT status, acceptance_uri, acceptance_rkey, accepted_cid, decision_code, decision_at,
-		       evaluated_cid, redrivable, last_community_rev, last_community_op_rank, created_at, updated_at
+		       evaluated_cid, redrivable, last_community_rev, last_community_op_rank, created_at, updated_at,
+		       removal_reason
 		FROM community_post_admissions WHERE community_did = $1 AND post_uri = $2
 	`, communityDID, postURI).Scan(
 		&status, &acceptanceURI, &acceptanceRkey, &accepted, &decisionCode, &decisionAt,
 		&evaluatedCID, &redrivable, &rev, &opRank, &createdAt, &updatedAt,
+		&removalReason,
 	))
 
 	deref := func(p *string) interface{} {
@@ -844,5 +856,138 @@ func readAdmissionRow(t *testing.T, db *sql.DB, communityDID, postURI string) []
 	return []interface{}{
 		status, deref(acceptanceURI), deref(acceptanceRkey), deref(accepted), deref(decisionCode),
 		decidedAt, deref(evaluatedCID), redrivable, deref(rev), rank, createdAt.UTC(), updatedAt.UTC(),
+		deref(removalReason),
+	}
+}
+
+// removalReasonStep is one community-repo event in a removal-reason sequence and
+// the admission row's (status, decision_code, removal_reason) after it. A nil
+// want is SQL NULL.
+type removalReasonStep struct {
+	event                func(uri, cid string, revs []string, timeUS int64) *JetstreamEvent
+	wantStatus           string
+	wantCode, wantReason interface{}
+}
+
+// removalReasonDecision reads the (status, decision_code, removal_reason)
+// columns of one admission row through readAdmissionRow.
+func removalReasonDecision(t *testing.T, db *sql.DB, communityDID, postURI string) []interface{} {
+	t.Helper()
+	row := readAdmissionRow(t, db, communityDID, postURI)
+	return []interface{}{row[0], row[4], row[12]}
+}
+
+// runRemovalReasonSteps indexes the post (when asked), delivers each step's
+// event in order, and asserts the row after each.
+func runRemovalReasonSteps(t *testing.T, f accFixture, rkey string, indexFirst bool, steps []removalReasonStep) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Now().UnixMicro()
+	cid := "bafyreirr" + rkey
+	uri := accPostURI(rkey)
+	if indexFirst {
+		f.indexPV2(t, rkey, cid, base)
+	}
+	revs := increasingTIDs(t, 4)
+	for i, step := range steps {
+		require.NoErrorf(t, f.consumer.HandleEvent(ctx, step.event(uri, cid, revs, base+int64(i+1)*1_000_000)), "step %d", i)
+		assert.Equalf(t, []interface{}{step.wantStatus, step.wantCode, step.wantReason},
+			removalReasonDecision(t, f.db, accCommunity, uri), "admission (status, decision_code, removal_reason) after step %d", i)
+	}
+}
+
+// A community removal's reason is stored with its code on the admission row,
+// whether the removal updates an existing row or creates it, and each newer
+// revision of the same removal record replaces it — including a revision that
+// drops the reason.
+func TestRemovalConsumer_StoresTheReasonItCarries(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	f := newAccFixture(t, db)
+
+	removal := func(operation, reason string, revIndex int) func(uri, cid string, revs []string, timeUS int64) *JetstreamEvent {
+		return func(uri, cid string, revs []string, timeUS int64) *JetstreamEvent {
+			return removalEventWithReason(accCommunity, operation, posts.SubjectRkey(uri), uri, cid,
+				string(posts.DecisionSpam), reason, revs[revIndex], timeUS)
+		}
+	}
+	tests := []struct {
+		name       string
+		rkey       string
+		indexFirst bool
+		steps      []removalReasonStep
+	}{
+		{
+			name: "removal of an indexed post", rkey: "rrupdate", indexFirst: true,
+			steps: []removalReasonStep{
+				{removal("create", "Posting the same link in every thread", 0), "removed", "spam", "Posting the same link in every thread"},
+			},
+		},
+		{
+			name: "removal before the post is indexed", rkey: "rrinsert", indexFirst: false,
+			steps: []removalReasonStep{
+				{removal("create", "Posting the same link in every thread", 0), "removed", "spam", "Posting the same link in every thread"},
+			},
+		},
+		{
+			name: "newer revisions replace the reason", rkey: "rrrevise", indexFirst: true,
+			steps: []removalReasonStep{
+				{removal("create", "first explanation", 0), "removed", "spam", "first explanation"},
+				{removal("update", "second explanation", 1), "removed", "spam", "second explanation"},
+				{removal("update", "", 2), "removed", "spam", nil},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runRemovalReasonSteps(t, f, tt.rkey, tt.indexFirst, tt.steps)
+		})
+	}
+}
+
+// Ending a community removal clears its reason with its code: the restore
+// commit (removal-record delete + fresh acceptance create at one rev), in
+// either delivery order, and a lone removal-record delete.
+func TestRemovalConsumer_EndingTheRemovalClearsTheReason(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	f := newAccFixture(t, db)
+
+	removeWithReason := removalReasonStep{
+		event: func(uri, cid string, revs []string, timeUS int64) *JetstreamEvent {
+			return removalEventWithReason(accCommunity, "create", posts.SubjectRkey(uri), uri, cid,
+				string(posts.DecisionSpam), "Posting the same link in every thread", revs[0], timeUS)
+		},
+		wantStatus: "removed", wantCode: "spam", wantReason: "Posting the same link in every thread",
+	}
+	removalDelete := func(wantStatus string) removalReasonStep {
+		return removalReasonStep{
+			event: func(uri, _ string, revs []string, timeUS int64) *JetstreamEvent {
+				return removalDeleteEvent(accCommunity, uri, revs[1], timeUS)
+			},
+			wantStatus: wantStatus,
+		}
+	}
+	freshAcceptance := removalReasonStep{
+		event: func(uri, cid string, revs []string, timeUS int64) *JetstreamEvent {
+			return acceptanceEvent(accCommunity, uri, cid, revs[1], timeUS)
+		},
+		wantStatus: "accepted",
+	}
+	tests := []struct {
+		name  string
+		rkey  string
+		steps []removalReasonStep
+	}{
+		{"restore delivered delete first", "rrrestoredel", []removalReasonStep{removeWithReason, removalDelete("pending"), freshAcceptance}},
+		{"restore delivered acceptance first", "rrrestoreacc", []removalReasonStep{removeWithReason, freshAcceptance, removalDelete("accepted")}},
+		{"lone removal delete", "rrlonedelete", []removalReasonStep{removeWithReason, removalDelete("pending")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runRemovalReasonSteps(t, f, tt.rkey, true, tt.steps)
+		})
 	}
 }

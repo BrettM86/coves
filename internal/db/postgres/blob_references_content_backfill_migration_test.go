@@ -56,6 +56,30 @@ func contentBackfillRows(t *testing.T, db *sql.DB, subjects ...string) []content
 
 func TestContentBlobReferencesBackfill062_PostEmbeds(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -132,6 +156,30 @@ func TestContentBlobReferencesBackfill062_PostEmbeds(t *testing.T) {
 
 func TestContentBlobReferencesBackfill062_LegacyPostCommunityOwnsImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -181,6 +229,30 @@ func TestContentBlobReferencesBackfill062_LegacyPostCommunityOwnsImages(t *testi
 
 func TestContentBlobReferencesBackfill062_CommentImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -234,6 +306,30 @@ func TestContentBlobReferencesBackfill062_CommentImages(t *testing.T) {
 
 func TestContentBlobReferencesBackfill062_CanonicalDedupAndInvalidEmbeds(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -304,6 +400,30 @@ func TestContentBlobReferencesBackfill062_CanonicalDedupAndInvalidEmbeds(t *test
 
 func TestContentBlobReferencesBackfill062_EmptyBatchesBeforePopulatedBatches(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -403,6 +523,30 @@ func TestContentBlobReferencesBackfill062_EmptyBatchesBeforePopulatedBatches(t *
 
 func TestContentBlobReferencesBackfill062_SoftDeletedContent(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -496,6 +640,30 @@ func TestContentBlobReferencesBackfill062_AdminRemovedPostRemainsActive(t *testi
 	// The removal runs through the current moderation service, so it is
 	// recorded at the current schema; rolling back afterwards leaves an
 	// admin-removed post in place for 062 to backfill.
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -538,6 +706,30 @@ func TestContentBlobReferencesBackfill062_AdminRemovedPostRemainsActive(t *testi
 
 func TestContentBlobReferencesBackfill062_PreservesConsumerRowsAndContentOnDown(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -639,6 +831,30 @@ func TestContentBlobReferencesBackfill062_PreservesConsumerRowsAndContentOnDown(
 	testkit.MigrateUp(t, db)
 	assert.ElementsMatch(t, want, contentBackfillRows(t, db, postURI, commentURI))
 	checkPreserved()
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -704,6 +920,30 @@ func contentBackfillImagesEmbed(cids []string) string {
 
 func TestContentBlobReferencesBackfill062_SkipsRecordsOverImageLimit(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),
@@ -768,6 +1008,30 @@ func TestContentBlobReferencesBackfill062_SkipsRecordsOverImageLimit(t *testing.
 
 func TestContentBlobReferencesBackfill062_CensusCountsEverySkip(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+		"093 (community report notifications) must be rolled back first")
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+		"090 (community ban actions) must be rolled back first")
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+		"088 (community post actions) must be rolled back first")
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),

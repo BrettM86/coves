@@ -1,0 +1,4 @@
+{
+  "$type": "social.coves.community.declineInvitation#output",
+  "invitation": "invitation-1"
+}

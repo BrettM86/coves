@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -29,8 +30,19 @@ import (
 const mediaCommunityDID = "did:plc:mediafixturecommunity"
 
 type mediaPDSRequest struct {
-	path string
-	body map[string]any
+	path          string
+	body          map[string]any
+	authorization string
+}
+
+// pdsRecordWrite is one createRecord or putRecord the fake PDS received.
+type pdsRecordWrite struct {
+	method        string // "createRecord" or "putRecord"
+	repo          string
+	collection    string
+	rkey          string
+	record        map[string]any
+	authorization string
 }
 
 type mediaBlobUpload struct {
@@ -59,14 +71,35 @@ type communityMediaHarness struct {
 	service  communities.Service
 	repo     *fakeCommunityRepo
 	blobs    *recordingMediaBlobs
+	authz    *roleAuthorizationFixture
 	requests []mediaPDSRequest
 	mu       sync.Mutex
 	stored   *communities.Community
+	pdsURL   string
+
+	// accessToken is what createAccount and createSession hand out for the
+	// community account.
+	accessToken string
+	// existingRecords are "collection/rkey" paths already in the community's
+	// repo: createRecord on one is refused as already existing.
+	existingRecords map[string]bool
+	// failingCollections answer every write to the collection with a 500.
+	failingCollections map[string]bool
+	writeCount         int
 }
 
 func newCommunityMediaHarness(t *testing.T) *communityMediaHarness {
 	t.Helper()
-	h := &communityMediaHarness{repo: newFakeCommunityRepo(), blobs: &recordingMediaBlobs{}}
+	h := &communityMediaHarness{
+		repo: newFakeCommunityRepo(), blobs: &recordingMediaBlobs{},
+		accessToken:     communityAccountJWT(t),
+		existingRecords: map[string]bool{}, failingCollections: map[string]bool{},
+	}
+	// The creator is the indexed owner of the seeded community, so updates by
+	// the creator stay authorized.
+	h.authz = newRoleAuthorizationFixture(
+		ownerRow(mediaCommunityDID, aValidCreateRequest().CreatedByDID, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	h.authz.hosted[mediaCommunityDID] = true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/xrpc/com.atproto.repo.getRecord" {
 			w.Header().Set("Content-Type", "application/json")
@@ -84,18 +117,34 @@ func newCommunityMediaHarness(t *testing.T) *communityMediaHarness {
 			return
 		}
 		h.mu.Lock()
-		h.requests = append(h.requests, mediaPDSRequest{path: r.URL.Path, body: body})
-		h.mu.Unlock()
+		defer h.mu.Unlock()
+		h.requests = append(h.requests, mediaPDSRequest{path: r.URL.Path, body: body, authorization: r.Header.Get("Authorization")})
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/xrpc/com.atproto.server.createAccount":
+		case "/xrpc/com.atproto.server.createAccount", "/xrpc/com.atproto.server.createSession":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"did": mediaCommunityDID, "handle": "c-gardening." + fakeInstanceDomain,
-				"accessJwt": mediaPipelineJWT(t), "refreshJwt": "refresh-token",
+				"accessJwt": h.accessToken, "refreshJwt": "refresh-token",
 			})
 		case "/xrpc/com.atproto.repo.createRecord", "/xrpc/com.atproto.repo.putRecord":
+			repo, _ := body["repo"].(string)
+			collection, _ := body["collection"].(string)
+			rkey, _ := body["rkey"].(string)
+			if h.failingCollections[collection] {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "InternalServerError", "message": "write failed"})
+				return
+			}
+			if r.URL.Path == "/xrpc/com.atproto.repo.createRecord" && h.existingRecords[collection+"/"+rkey] {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "InvalidRequest", "message": "Record already exists"})
+				return
+			}
+			h.existingRecords[collection+"/"+rkey] = true
+			h.writeCount++
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"uri": "at://" + mediaCommunityDID + "/social.coves.community.profile/self", "cid": "bafytestrecord",
+				"uri": "at://" + repo + "/" + collection + "/" + rkey, "cid": fmt.Sprintf("bafywrite%d", h.writeCount),
+				"commit": map[string]any{"cid": fmt.Sprintf("bafycommit%d", h.writeCount), "rev": "3l3qo2vutsw2b"},
 			})
 		default:
 			t.Errorf("unexpected PDS request %s", r.URL.Path)
@@ -108,8 +157,9 @@ func newCommunityMediaHarness(t *testing.T) *communityMediaHarness {
 	h.service = communities.NewCommunityService(
 		h.repo, server.URL, fakeInstanceDID, fakeInstanceDomain,
 		communities.NewPDSAccountProvisioner(fakeInstanceDomain, server.URL, communities.PrivateHostOptions(true)...),
-		nil, h.blobs, pipeline, communities.PrivateHostOptions(true)...,
+		nil, h.blobs, pipeline, append(communities.PrivateHostOptions(true), h.authz.option())...,
 	)
+	h.pdsURL = server.URL
 	h.stored = h.repo.seed(&communities.Community{
 		DID: mediaCommunityDID, Handle: "c-gardening." + fakeInstanceDomain,
 		Name: "gardening", OwnerDID: mediaCommunityDID, CreatedByDID: aValidCreateRequest().CreatedByDID,
@@ -126,6 +176,55 @@ func mediaPipelineJWT(t *testing.T) string {
 	require.NoError(t, err)
 	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." +
 		base64.RawURLEncoding.EncodeToString(claims) + ".signature"
+}
+
+// communityAccountJWT is the community account's unexpired access token,
+// distinguishable from the seeded community's token by its subject claim.
+func communityAccountJWT(t *testing.T) string {
+	t.Helper()
+	claims, err := json.Marshal(map[string]any{"exp": time.Now().Add(24 * time.Hour).Unix(), "sub": "community-account"})
+	require.NoError(t, err)
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." +
+		base64.RawURLEncoding.EncodeToString(claims) + ".signature"
+}
+
+// recordWrites returns the createRecord and putRecord calls the fake PDS
+// accepted or refused, in arrival order.
+func (h *communityMediaHarness) recordWrites() []pdsRecordWrite {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var writes []pdsRecordWrite
+	for _, request := range h.requests {
+		var method string
+		switch request.path {
+		case "/xrpc/com.atproto.repo.createRecord":
+			method = "createRecord"
+		case "/xrpc/com.atproto.repo.putRecord":
+			method = "putRecord"
+		default:
+			continue
+		}
+		repo, _ := request.body["repo"].(string)
+		collection, _ := request.body["collection"].(string)
+		rkey, _ := request.body["rkey"].(string)
+		record, _ := request.body["record"].(map[string]any)
+		writes = append(writes, pdsRecordWrite{
+			method: method, repo: repo, collection: collection, rkey: rkey,
+			record: record, authorization: request.authorization,
+		})
+	}
+	return writes
+}
+
+// writesTo returns the record writes to collection, in arrival order.
+func (h *communityMediaHarness) writesTo(collection string) []pdsRecordWrite {
+	var writes []pdsRecordWrite
+	for _, write := range h.recordWrites() {
+		if write.collection == collection {
+			writes = append(writes, write)
+		}
+	}
+	return writes
 }
 
 func (h *communityMediaHarness) requestsAt(path string) []mediaPDSRequest {
@@ -235,7 +334,12 @@ func TestCommunityMedia_UploadsSanitizedBytesWithSniffedMIME(t *testing.T) {
 			if tc.operation == "update" {
 				path = "/xrpc/com.atproto.repo.putRecord"
 			}
-			writes := h.requestsAt(path)
+			var writes []mediaPDSRequest
+			for _, write := range h.requestsAt(path) {
+				if write.body["collection"] == "social.coves.community.profile" {
+					writes = append(writes, write)
+				}
+			}
 			require.Len(t, writes, 1)
 			record, ok := writes[0].body["record"].(map[string]any)
 			require.True(t, ok)

@@ -37,7 +37,14 @@ const getStatusRateLimit = 120
 type PostRouteOption func(*postRouteConfig)
 
 type postRouteConfig struct {
-	statusService posts.StatusService
+	statusService   posts.StatusService
+	communityViewer moderation.CommunityViewer
+}
+
+// WithPostCommunityViewerModeration supplies the community viewer reader, so
+// post.get serves viewer.communityModeration. Without it post.get serves none.
+func WithPostCommunityViewerModeration(viewer moderation.CommunityViewer) PostRouteOption {
+	return func(c *postRouteConfig) { c.communityViewer = viewer }
 }
 
 // WithPostStatusService supplies the service behind
@@ -94,6 +101,9 @@ func RegisterPostRoutes(
 	updateHandler := post.NewUpdateHandler(service)
 	deleteHandler := post.NewDeleteHandler(service)
 	getHandler := post.NewGetHandler(service, voteService, blueskyService).WithViewerModeration(authority, instanceDID)
+	if cfg.communityViewer != nil {
+		getHandler.WithCommunityViewerModeration(cfg.communityViewer)
+	}
 
 	// Procedure endpoints (POST) - require authentication
 	// social.coves.community.post.create - create a new post in a community

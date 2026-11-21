@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"Coves/internal/core/notifications"
 
@@ -113,6 +114,15 @@ func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, curso
 			&rootState, &rootCID, &subjectState, &subjectCID, &recordState, &recordCID); err != nil {
 			return notifications.ListPage{}, fmt.Errorf("scan listed notification: %w", err)
 		}
+		notification.ActorDID = actorDID.String
+		notification.SubjectURI = subjectURI.String
+		notification.SortAt = notification.SortAt.UTC()
+		if notification.Reason == notifications.ReasonCommunityInvitation || notification.Reason == notifications.ReasonCommunityReport {
+			// It references no post or comment, only its community, read
+			// below.
+			page.Notifications = append(page.Notifications, notification)
+			continue
+		}
 		notification.RootPost, err = listedReference(rootState, rootCID)
 		if err != nil {
 			return notifications.ListPage{}, fmt.Errorf("listed notification root post: %w", err)
@@ -130,13 +140,10 @@ func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, curso
 			}
 		}
 		notification.RecordURI = recordURI.String
-		notification.ActorDID = actorDID.String
-		notification.SubjectURI = subjectURI.String
 		notification.RootPostURI = rootPostURI.String
 		if recordCreatedAt.Valid {
 			notification.RecordCreatedAt = recordCreatedAt.Time.UTC()
 		}
-		notification.SortAt = notification.SortAt.UTC()
 		page.Notifications = append(page.Notifications, notification)
 	}
 	if err := rows.Err(); err != nil {
@@ -149,6 +156,12 @@ func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, curso
 		page.Notifications = page.Notifications[:limit]
 		last := page.Notifications[limit-1]
 		page.Cursor = notifications.EncodeCursor(notifications.Cursor{SortAt: last.SortAt, ID: last.ID})
+	}
+	if err := listNotificationCommunities(ctx, transaction, page.Notifications); err != nil {
+		return notifications.ListPage{}, err
+	}
+	if err := listCommunityReportCounts(ctx, transaction, page.Notifications); err != nil {
+		return notifications.ListPage{}, err
 	}
 	var subjects []string
 	indices := make(map[string]int)
@@ -180,6 +193,95 @@ func (r *postgresNotificationRepo) List(ctx context.Context, recipientDID, curso
 		}
 	}
 	return page, nil
+}
+
+// namesCommunity reports whether a notification of reason has subject
+// at://<community DID> and serves that community.
+func namesCommunity(reason notifications.Reason) bool {
+	return reason == notifications.ReasonCommunityInvitation || reason == notifications.ReasonCommunityReport
+}
+
+// listNotificationCommunities sets the community of each communityInvitation
+// and communityReport in listed, read in the list's snapshot. The visibility
+// predicate admitted only rows whose community is indexed.
+func listNotificationCommunities(ctx context.Context, transaction *sql.Tx, listed []notifications.ListedNotification) error {
+	var dids []string
+	for _, notification := range listed {
+		if namesCommunity(notification.Reason) {
+			dids = append(dids, strings.TrimPrefix(notification.SubjectURI, "at://"))
+		}
+	}
+	if len(dids) == 0 {
+		return nil
+	}
+	rows, err := transaction.QueryContext(ctx, `SELECT did, handle, name FROM communities WHERE did = ANY($1)`, pq.Array(dids))
+	if err != nil {
+		return fmt.Errorf("list invitation notification communities: %w", err)
+	}
+	defer rows.Close()
+	found := make(map[string]notifications.ListedCommunity, len(dids))
+	for rows.Next() {
+		var community notifications.ListedCommunity
+		if err := rows.Scan(&community.DID, &community.Handle, &community.Name); err != nil {
+			return fmt.Errorf("scan invitation notification community: %w", err)
+		}
+		found[community.DID] = community
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate invitation notification communities: %w", err)
+	}
+	for index := range listed {
+		notification := &listed[index]
+		if !namesCommunity(notification.Reason) {
+			continue
+		}
+		community, ok := found[strings.TrimPrefix(notification.SubjectURI, "at://")]
+		if !ok {
+			return fmt.Errorf("listed %s notification %d: community %s is not indexed", notification.Reason, notification.ID, notification.SubjectURI)
+		}
+		notification.Community = &community
+	}
+	return nil
+}
+
+// listCommunityReportCounts sets the ReportCount of each communityReport in
+// listed: its community's community-visible open report count, read in the
+// list's snapshot. The visibility predicate admitted only groups whose queue
+// holds a report.
+func listCommunityReportCounts(ctx context.Context, transaction *sql.Tx, listed []notifications.ListedNotification) error {
+	var dids []string
+	for _, notification := range listed {
+		if notification.Reason == notifications.ReasonCommunityReport {
+			dids = append(dids, strings.TrimPrefix(notification.SubjectURI, "at://"))
+		}
+	}
+	if len(dids) == 0 {
+		return nil
+	}
+	rows, err := transaction.QueryContext(ctx, listCommunityReportCountsSQL, pq.Array(dids))
+	if err != nil {
+		return fmt.Errorf("count community report notification reports: %w", err)
+	}
+	defer rows.Close()
+	counts := make(map[string]int, len(dids))
+	for rows.Next() {
+		var did string
+		var count int
+		if err := rows.Scan(&did, &count); err != nil {
+			return fmt.Errorf("scan community report notification count: %w", err)
+		}
+		counts[did] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate community report notification counts: %w", err)
+	}
+	for index := range listed {
+		notification := &listed[index]
+		if notification.Reason == notifications.ReasonCommunityReport {
+			notification.ReportCount = counts[strings.TrimPrefix(notification.SubjectURI, "at://")]
+		}
+	}
+	return nil
 }
 
 func listedReference(state, cid sql.NullString) (notifications.ListedReference, error) {

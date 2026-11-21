@@ -24,6 +24,10 @@ const commentHideReasonCommunityBan = "community_ban"
 // n) every visibility predicate is evaluated against.
 const notificationRecipientSQL = "n.recipient_did"
 
+// invitationCommunitySQL is the community DID of a communityInvitation row
+// (alias n), whose subject is at://<community DID>.
+const invitationCommunitySQL = "split_part(n.subject_uri, '/', 3)"
+
 type notificationVisibilitySQL struct {
 	joins               string
 	subjectPostState    string
@@ -122,9 +126,10 @@ func notificationVisibility(bridgedTotals bool, authorityExpr string) notificati
 			postLookup("root_post", "n.root_post_uri") +
 			commentLookup("record_comment", "n.record_uri") +
 			commentLookup("subject_comment", "n.subject_uri"),
-		subjectPostState:    fmt.Sprintf("CASE WHEN n.reason = 'postReply' OR (n.reason = 'upvote' AND "+postCollection+") THEN %s END", "n.subject_uri", postState("subject_post")),
-		recordPostState:     fmt.Sprintf("CASE WHEN n.reason = 'mention' AND "+postCollection+" THEN %s END", "n.record_uri", postState("record_post")),
-		rootPostState:       postState("root_post"),
+		subjectPostState: fmt.Sprintf("CASE WHEN n.reason = 'postReply' OR (n.reason = 'upvote' AND "+postCollection+") THEN %s END", "n.subject_uri", postState("subject_post")),
+		recordPostState:  fmt.Sprintf("CASE WHEN n.reason = 'mention' AND "+postCollection+" THEN %s END", "n.record_uri", postState("record_post")),
+		// A communityInvitation or communityReport has no root post.
+		rootPostState:       "CASE WHEN n.reason NOT IN ('communityInvitation', 'communityReport') THEN " + postState("root_post") + " END",
 		recordCommentState:  fmt.Sprintf("CASE WHEN n.reason IN ('postReply', 'commentReply') OR (n.reason = 'mention' AND %s = 'social.coves.community.comment') THEN %s END", recordCollection, commentState("record_comment")),
 		subjectCommentState: fmt.Sprintf("CASE WHEN n.reason = 'commentReply' OR (n.reason = 'upvote' AND %s = 'social.coves.community.comment') THEN %s END", subjectCollection, commentState("subject_comment")),
 	}
@@ -139,7 +144,10 @@ func notificationVisibility(bridgedTotals bool, authorityExpr string) notificati
 	}
 	references = append(references,
 		fmt.Sprintf("(n.reason <> 'mention' OR %s = 'social.coves.community.comment' OR "+postCollection+")", recordCollection, "n.record_uri"),
-		fmt.Sprintf("(n.reason <> 'upvote' OR %s = 'social.coves.community.comment' OR "+postCollection+")", subjectCollection, "n.subject_uri"))
+		fmt.Sprintf("(n.reason <> 'upvote' OR %s = 'social.coves.community.comment' OR "+postCollection+")", subjectCollection, "n.subject_uri"),
+		// A communityInvitation's subject is at://<community DID>: it reads
+		// hidden once the community is gone.
+		"(n.reason <> 'communityInvitation' OR EXISTS (SELECT 1 FROM communities invited WHERE invited.did = "+invitationCommunitySQL+"))")
 	visibility.referencesVisible = strings.Join(references, " AND ")
 	conditions := []string{
 		visibility.referencesVisible,
@@ -148,6 +156,9 @@ func notificationVisibility(bridgedTotals bool, authorityExpr string) notificati
 				(b.blocker_did = n.recipient_did AND b.blocked_did = n.actor_did)
 				OR (b.blocker_did = n.actor_did AND b.blocked_did = n.recipient_did)))`,
 		"(n.reason <> 'upvote' OR " + upvoteGroupAliveSQL("n.subject_uri", "n.recipient_did", bridgedTotals) + ")",
+		// A communityReport group is served only while the recipient can act
+		// on a report in its community's queue that it did not file.
+		"(n.reason <> 'communityReport' OR " + communityReportGroupAliveSQL(communityReportGroupCommunitySQL, notificationRecipientSQL, authorityExpr) + ")",
 		`NOT EXISTS (SELECT 1 FROM notification_state ps
 			WHERE ps.did = n.recipient_did AND n.reason = ANY(ps.disabled_reasons))`,
 	}

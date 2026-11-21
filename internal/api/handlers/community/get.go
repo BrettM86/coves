@@ -7,6 +7,7 @@ import (
 
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/moderation"
 )
 
 // GetHandler handles community retrieval
@@ -14,6 +15,11 @@ type GetHandler struct {
 	service communities.Service
 	repo    communities.Repository
 	bans    communities.BanReader
+	roles   communities.RoleAuthorizer
+	// invitations serves the viewer's pending invitation; nil serves none.
+	invitations communities.InvitationReader
+	// communityViewer serves the viewer's community moderation actions; nil serves none.
+	communityViewer moderation.CommunityViewer
 }
 
 // NewGetHandler creates a new get handler
@@ -59,6 +65,18 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.populateBanState(r, community); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if err := h.populateRoleState(r, community); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if err := h.populateInvitationState(r, community); err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	if err := h.populateCommunityModeration(r, community); err != nil {
 		handleServiceError(w, err)
 		return
 	}

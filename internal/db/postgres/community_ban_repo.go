@@ -24,10 +24,16 @@ func NewCommunityBanRepository(db *sql.DB) *CommunityBanRepository {
 // communities.ErrCommunityBanNotFound. It does not apply expiry; see
 // communities.ActiveCommunityBan.
 func (r *CommunityBanRepository) GetCommunityBan(ctx context.Context, communityDID, subjectDID string) (*communities.CommunityBan, error) {
+	return getCommunityBan(ctx, r.db, communityDID, subjectDID)
+}
+
+// getCommunityBan reads the subject's indexed ban in the community through
+// querier, a pool or a transaction.
+func getCommunityBan(ctx context.Context, querier accountStatusQuerier, communityDID, subjectDID string) (*communities.CommunityBan, error) {
 	ban := communities.CommunityBan{}
 	var reason sql.NullString
 	var expiresAt sql.NullTime
-	err := r.db.QueryRowContext(ctx, `
+	err := querier.QueryRowContext(ctx, `
 		SELECT community_did, subject_did, record_key, record_cid, reason, expires_at, indexed_at
 		FROM community_bans
 		WHERE community_did = $1 AND subject_did = $2
@@ -50,83 +56,124 @@ func (r *CommunityBanRepository) GetCommunityBan(ctx context.Context, communityD
 
 // UpsertCommunityBan indexes a ban, overwriting any earlier ban on the same
 // subject in the same community. The ban history records it at a new Coves
-// index order, and an overwritten ban is lifted at that same order.
+// index order, and an overwritten ban is lifted at that same order. It
+// advances the subject's community version. Re-indexing the ban already
+// indexed (same record key, CID, reason and expiry) changes nothing.
 func (r *CommunityBanRepository) UpsertCommunityBan(ctx context.Context, ban communities.CommunityBan) error {
+	return r.inTransaction(ctx, func(tx *sql.Tx) error {
+		_, err := upsertCommunityBanTx(ctx, tx, ban)
+		return err
+	})
+}
+
+// upsertCommunityBanTx is UpsertCommunityBan in the caller's transaction. It
+// reports whether the index changed (false for the ban already indexed).
+func upsertCommunityBanTx(ctx context.Context, tx *sql.Tx, ban communities.CommunityBan) (bool, error) {
 	var expiresAt sql.NullTime
 	if ban.ExpiresAt != nil {
 		expiresAt = sql.NullTime{Time: ban.ExpiresAt.UTC(), Valid: true}
 	}
-	return r.inTransaction(ctx, func(tx *sql.Tx) error {
-		if err := lockBanSubject(ctx, tx, ban.SubjectDID); err != nil {
-			return err
-		}
-		var order int64
-		if err := tx.QueryRowContext(ctx, `SELECT nextval('coves_index_order')`).Scan(&order); err != nil {
-			return fmt.Errorf("draw ban index order: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE community_ban_history SET lifted_order = $3
-			WHERE community_did = $1 AND subject_did = $2 AND lifted_order IS NULL
-		`, ban.CommunityDID, ban.SubjectDID, order); err != nil {
-			return fmt.Errorf("lift overwritten community ban: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO community_ban_history
-			    (community_did, subject_did, record_key, record_cid, expires_at, index_order)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, ban.CommunityDID, ban.SubjectDID, ban.RecordKey, ban.RecordCID, expiresAt, order); err != nil {
-			return fmt.Errorf("record community ban history: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO community_bans
-			    (community_did, subject_did, record_key, record_cid, reason, expires_at, indexed_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (community_did, subject_did) DO UPDATE SET
-			    record_key = EXCLUDED.record_key,
-			    record_cid = EXCLUDED.record_cid,
-			    reason = EXCLUDED.reason,
-			    expires_at = EXCLUDED.expires_at,
-			    indexed_at = EXCLUDED.indexed_at
-		`, ban.CommunityDID, ban.SubjectDID, ban.RecordKey, ban.RecordCID, nullString(ban.Reason), expiresAt, time.Now().UTC()); err != nil {
-			return fmt.Errorf("upsert community ban: %w", err)
-		}
-		return nil
-	})
+	if err := lockBanSubject(ctx, tx, ban.SubjectDID); err != nil {
+		return false, err
+	}
+	// A redelivered event (the rev gate's claim lost after this
+	// transaction committed) finds its ban already indexed: it changes
+	// nothing, so it writes no history and advances no version.
+	var alreadyIndexed bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM community_bans
+		    WHERE community_did = $1 AND subject_did = $2
+		      AND record_key = $3 AND record_cid = $4
+		      AND reason IS NOT DISTINCT FROM $5 AND expires_at IS NOT DISTINCT FROM $6
+		)
+	`, ban.CommunityDID, ban.SubjectDID, ban.RecordKey, ban.RecordCID, nullString(ban.Reason), expiresAt).Scan(&alreadyIndexed); err != nil {
+		return false, fmt.Errorf("check indexed community ban: %w", err)
+	}
+	if alreadyIndexed {
+		return false, nil
+	}
+	var order int64
+	if err := tx.QueryRowContext(ctx, `SELECT nextval('coves_index_order')`).Scan(&order); err != nil {
+		return false, fmt.Errorf("draw ban index order: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE community_ban_history SET lifted_order = $3
+		WHERE community_did = $1 AND subject_did = $2 AND lifted_order IS NULL
+	`, ban.CommunityDID, ban.SubjectDID, order); err != nil {
+		return false, fmt.Errorf("lift overwritten community ban: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO community_ban_history
+		    (community_did, subject_did, record_key, record_cid, expires_at, index_order)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, ban.CommunityDID, ban.SubjectDID, ban.RecordKey, ban.RecordCID, expiresAt, order); err != nil {
+		return false, fmt.Errorf("record community ban history: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO community_bans
+		    (community_did, subject_did, record_key, record_cid, reason, expires_at, indexed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (community_did, subject_did) DO UPDATE SET
+		    record_key = EXCLUDED.record_key,
+		    record_cid = EXCLUDED.record_cid,
+		    reason = EXCLUDED.reason,
+		    expires_at = EXCLUDED.expires_at,
+		    indexed_at = EXCLUDED.indexed_at
+	`, ban.CommunityDID, ban.SubjectDID, ban.RecordKey, ban.RecordCID, nullString(ban.Reason), expiresAt, time.Now().UTC()); err != nil {
+		return false, fmt.Errorf("upsert community ban: %w", err)
+	}
+	return true, advanceCommunitySubjectVersion(ctx, tx, ban.CommunityDID, ban.SubjectDID)
 }
 
 // DeleteCommunityBan removes the ban recorded at recordKey in communityDID's
-// repo and lifts it in the ban history at a new Coves index order. Deleting a
-// ban that is not indexed is not an error.
+// repo and lifts it in the ban history at a new Coves index order, advancing
+// the subject's community version. Deleting a ban that is not indexed is not
+// an error and advances nothing.
 func (r *CommunityBanRepository) DeleteCommunityBan(ctx context.Context, communityDID, recordKey string) error {
 	return r.inTransaction(ctx, func(tx *sql.Tx) error {
-		// The subject's lock comes before the lift's index order is drawn; the
-		// lift below re-checks lifted_order IS NULL after it.
-		var subjectDID string
-		err := tx.QueryRowContext(ctx, `
-			SELECT subject_did FROM community_ban_history
-			WHERE community_did = $1 AND record_key = $2 AND lifted_order IS NULL
-		`, communityDID, recordKey).Scan(&subjectDID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("find deleted community ban subject: %w", err)
-		}
-		if err == nil {
-			if err := lockBanSubject(ctx, tx, subjectDID); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE community_ban_history SET lifted_order = nextval('coves_index_order')
-				WHERE community_did = $1 AND record_key = $2 AND subject_did = $3 AND lifted_order IS NULL
-			`, communityDID, recordKey, subjectDID); err != nil {
-				return fmt.Errorf("lift deleted community ban: %w", err)
-			}
+		_, _, err := deleteCommunityBanTx(ctx, tx, communityDID, recordKey)
+		return err
+	})
+}
+
+// deleteCommunityBanTx is DeleteCommunityBan in the caller's transaction. It
+// returns the deleted ban's subject and record CID, "" when no ban was indexed
+// at recordKey.
+func deleteCommunityBanTx(ctx context.Context, tx *sql.Tx, communityDID, recordKey string) (string, string, error) {
+	// The subject's lock comes before the lift's index order is drawn; the
+	// lift below re-checks lifted_order IS NULL after it.
+	var subjectDID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT subject_did FROM community_ban_history
+		WHERE community_did = $1 AND record_key = $2 AND lifted_order IS NULL
+	`, communityDID, recordKey).Scan(&subjectDID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("find deleted community ban subject: %w", err)
+	}
+	if err == nil {
+		if err := lockBanSubject(ctx, tx, subjectDID); err != nil {
+			return "", "", err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			DELETE FROM community_bans WHERE community_did = $1 AND record_key = $2
-		`, communityDID, recordKey); err != nil {
-			return fmt.Errorf("delete community ban: %w", err)
+			UPDATE community_ban_history SET lifted_order = nextval('coves_index_order')
+			WHERE community_did = $1 AND record_key = $2 AND subject_did = $3 AND lifted_order IS NULL
+		`, communityDID, recordKey, subjectDID); err != nil {
+			return "", "", fmt.Errorf("lift deleted community ban: %w", err)
 		}
-		return nil
-	})
+	}
+	var deletedSubjectDID, deletedCID string
+	err = tx.QueryRowContext(ctx, `
+		DELETE FROM community_bans WHERE community_did = $1 AND record_key = $2
+		RETURNING subject_did, record_cid
+	`, communityDID, recordKey).Scan(&deletedSubjectDID, &deletedCID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("delete community ban: %w", err)
+	}
+	return deletedSubjectDID, deletedCID, advanceCommunitySubjectVersion(ctx, tx, communityDID, deletedSubjectDID)
 }
 
 // lockBanSubject takes the ban-subject advisory lock on subjectDID

@@ -28,9 +28,11 @@ Edit the commands with that test in mind.
   verb-noun rule covers new moderation names only. Existing groups keep their
   nested convention.
 - `moderation.defs#banView` is published as it stands. It is a generic
-  `uri`/`cid`/`record`/`indexedAt` record view referenced only by the held-back
-  `banUser`, `listBans` and `getBanStatus`. Publishing `moderation.defs`
-  publishes it unchanged, and it cannot be removed afterwards.
+  `uri`/`cid`/`record`/`indexedAt` record view that nothing references since
+  the unrouted `banUser`, `listBans` and `getBanStatus` were deleted
+  (2026-11-16, replaced by `community.banAccount`, `unbanAccount` and
+  `listBans`). Publishing `moderation.defs` publishes it unchanged, and it
+  cannot be removed afterwards.
 - Post search is `feed.searchPosts`, not `community.post.search` or
   `community.searchPosts`. `feed.*` is the read-many namespace (output
   `{feed, cursor}`, mirrors `app.bsky.feed.searchPosts`); `community.post.*`
@@ -94,9 +96,10 @@ Accepted 2026-09-21, output-loosening:
   required a verbatim record, but the AppView has served author-deleted
   comments as a content-free placeholder with `record: null` since soft
   deletion shipped, and moderator removal reuses that placeholder. No reader
-  that works today breaks, because the wire shape is unchanged. This is the
-  only exception that relaxes a required output field. No other nullability
-  change and no ref-to-union change is authorized.
+  that works today breaks, because the wire shape is unchanged. With the
+  2026-11-15 `notificationView.rootPost` entry, these are the only exceptions
+  that relax a required output field. No other nullability change and no
+  ref-to-union change is authorized.
 
 Accepted 2026-10-13, input-loosening:
 
@@ -118,6 +121,14 @@ Accepted 2026-10-17, owner-approved hard switch:
   switched in the same change. A request still sending `bio` is accepted and
   the field is ignored.
 
+Accepted 2026-11-15, output-loosening (owner-approved):
+
+- `notification.defs#notificationView` dropped `rootPost` from `required` so
+  the `communityInvitation` reason, which has no post, can be served. `goat
+  lex breaking` flags it as `[object-required]`. Every pre-existing reason
+  still serves `rootPost`, and the web client skips rows with an unknown
+  reason. Step 4b runs with `--update` for `notification/defs.json`.
+
 ## Published and held back
 
 Published: `richtext.*`, `embed.*`, `actor.*` except
@@ -133,23 +144,40 @@ release, 2026-11-05). Once the moderation release runs, also the reviewed modera
 `moderation/listActions.json`, `moderation/listAdminActions.json`,
 `moderation/getSubjectState.json`, plus `actor/getViewerAuthority.json`, which
 tells clients whether the viewer is an instance admin and ships with them, and
-the community ban record `moderation/ban.json`, which Tidepool writes to a
-community's repo and the AppView indexes; and,
-once the media release below runs, `media/uploadImage.json`.
+the community ban record `moderation/ban.json`, which Coves moderators (through
+`community.banAccount`) and Tidepool write to a community's repo and the
+AppView indexes;
+once the media release below runs, `media/uploadImage.json`; and, once the
+community roster release below runs, `community/getModerators.json`,
+`community/getActorRoles.json`, `moderation/getCommunityState.json` and the
+two roster procedures `community/resignModerator.json` and
+`community/removeModerator.json`, with the invitation schemas
+`community/inviteModerator.json`, `community/offerOwnership.json`,
+`community/acceptInvitation.json`, `community/declineInvitation.json`,
+`community/listInvitations.json` and `community/listViewerInvitations.json`,
+the post procedures `community/removePost.json` and
+`community/restorePost.json`, and the comment procedures
+`community/removeComment.json` and `community/restoreComment.json`, and the
+ban procedures and query `community/banAccount.json`,
+`community/unbanAccount.json` and `community/listBans.json`.
+
+Additive change awaiting publication: `notification/defs.json` gained the
+`communityReport` value in `#reason` `knownValues` and the optional
+`notificationView.reportCount` (integer, minimum 1), the open report count of
+the community a `communityReport` names. Both are additive, so step 4b's
+`--update` republish of `notification/defs.json` carries them; it has not run.
 
 Held back, because the governance and tribunal design has not landed. Paths
 are relative to `internal/atproto/lexicon/social/coves/`, and the test fails if
 a publish command names any of them:
 
-- `moderation/banUser.json`
-- `moderation/getBanStatus.json`
-- `moderation/listBans.json`
-- `moderation/unbanUser.json`
 - `moderation/ruleProposal.json`
 - `moderation/tribunalVote.json`
 - `moderation/vote.json`
 - `community/rules.json`
-- `community/moderator.json`
+- `community/moderator.json` (redesigned for the community roster: a record in
+  the community's repo at the subject's derived key, carrying `subject`, `role`
+  and `createdAt`; awaiting publication)
 
 `goat lex publish` sweeps every schema in a directory operand, so the commands
 below name files, never the `actor`, `moderation` or `community` directory.
@@ -192,8 +220,8 @@ adds `_lexicon.notification`. `--include-media` adds `_lexicon.media`.
 ## Publish and update workflow
 
 Step 0 runs on every publish. Steps 1 and 2 republish the live namespaces.
-Step 3 is the moderation release, step 4 the notifications release and step 5 the media release, each
-run once in the order given. Step 6 verifies. Every
+Step 3 is the moderation release, step 4 the notifications release, step 5 the media release and
+step 6 the community roster release, each run once in the order given. Step 7 verifies. Every
 operand is an explicit file.
 
 ```sh
@@ -361,7 +389,53 @@ goat lex publish \
   internal/atproto/lexicon/social/coves/media/uploadImage.json
 goat lex resolve social.coves.media.uploadImage
 
-# 6. Verify resolution end-to-end, and unpublish anything retired.
+# 6. Community roster release (once). The two roster queries, the
+#    community state query for owners, moderators and admins, the two
+#    roster procedures (a moderator resigns; the owner or an admin removes a
+#    moderator), and the invitation procedures and queries (invite a
+#    moderator, offer ownership, accept, decline, and the community's and the
+#    viewer's pending invitations), the post procedures (a moderator
+#    removes a post from the community or restores it), and the comment
+#    procedures (a moderator removes a comment or restores it), and the ban
+#    procedures and query (a moderator bans or unbans an account, and lists
+#    the community's bans), and the report queue query and procedure (a
+#    moderator lists the community's reported posts and comments, and
+#    dismisses an entry); the community.moderator record they read and
+#    write stays held back.
+#    moderation.getCommunityState needs the _lexicon.moderation DNS authority
+#    from step 3a first, so run this step after step 3a. The invitation
+#    schemas reference community.defs#invitationView, which step 2 publishes.
+goat lex publish \
+  internal/atproto/lexicon/social/coves/community/getModerators.json \
+  internal/atproto/lexicon/social/coves/community/getActorRoles.json \
+  internal/atproto/lexicon/social/coves/moderation/getCommunityState.json \
+  internal/atproto/lexicon/social/coves/community/resignModerator.json \
+  internal/atproto/lexicon/social/coves/community/removeModerator.json \
+  internal/atproto/lexicon/social/coves/community/inviteModerator.json \
+  internal/atproto/lexicon/social/coves/community/offerOwnership.json \
+  internal/atproto/lexicon/social/coves/community/acceptInvitation.json \
+  internal/atproto/lexicon/social/coves/community/declineInvitation.json \
+  internal/atproto/lexicon/social/coves/community/listInvitations.json \
+  internal/atproto/lexicon/social/coves/community/listViewerInvitations.json \
+  internal/atproto/lexicon/social/coves/community/removePost.json \
+  internal/atproto/lexicon/social/coves/community/restorePost.json \
+  internal/atproto/lexicon/social/coves/community/removeComment.json \
+  internal/atproto/lexicon/social/coves/community/restoreComment.json \
+  internal/atproto/lexicon/social/coves/community/banAccount.json \
+  internal/atproto/lexicon/social/coves/community/unbanAccount.json \
+  internal/atproto/lexicon/social/coves/community/listBans.json \
+  internal/atproto/lexicon/social/coves/community/listReports.json \
+  internal/atproto/lexicon/social/coves/community/dismissReports.json
+goat lex resolve social.coves.community.getModerators
+goat lex resolve social.coves.moderation.getCommunityState
+goat lex resolve social.coves.community.removeModerator
+goat lex resolve social.coves.community.acceptInvitation
+goat lex resolve social.coves.community.listViewerInvitations
+goat lex resolve social.coves.community.removePost
+goat lex resolve social.coves.community.removeComment
+goat lex resolve social.coves.community.banAccount
+
+# 7. Verify resolution end-to-end, and unpublish anything retired.
 goat lex check-dns internal/atproto/lexicon/social/coves
 goat lex status internal/atproto/lexicon/social/coves
 goat lex resolve social.coves.community.post
@@ -375,6 +449,14 @@ first, always. Anything `breaking` flags that is not in the accepted
 exceptions needs a new NSID, not an `--update`.
 
 ## Retired schemas
+
+The unrouted community ban schemas `moderation/banUser.json`,
+`moderation/getBanStatus.json`, `moderation/listBans.json` and
+`moderation/unbanUser.json` were deleted on 2026-11-16, replaced by
+`community/banAccount.json`, `community/unbanAccount.json` and
+`community/listBans.json` (a ban's state is in `moderation.getCommunityState`
+and the `community.get` viewer state). They were never published; the test
+still refuses them in a publish command.
 
 `goat lex publish` writes only what it is given, so a schema whose file was
 deleted stays live until it is explicitly removed with

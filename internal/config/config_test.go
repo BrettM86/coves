@@ -11,9 +11,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
 )
 
 // validSealSecret is a well-formed OAUTH_SEAL_SECRET: base64 of exactly 32
@@ -213,6 +216,11 @@ func TestLoad_RejectsExplicitlyDisabledGuards(t *testing.T) {
 			name: "zero session coordination conns leaves that pool unbounded",
 			key:  "DB_SESSION_COORDINATION_MAX_OPEN_CONNS", value: "0",
 			wantText: "DB_SESSION_COORDINATION_MAX_OPEN_CONNS must be greater than 0",
+		},
+		{
+			name: "zero community action conns leaves that pool unbounded",
+			key:  "DB_COMMUNITY_ACTION_MAX_OPEN_CONNS", value: "0",
+			wantText: "DB_COMMUNITY_ACTION_MAX_OPEN_CONNS must be greater than 0",
 		},
 	}
 	for _, tc := range tests {
@@ -596,6 +604,7 @@ func TestLoad_MalformedValuesAreRejected(t *testing.T) {
 		{"DB_MAX_OPEN_CONNS", "lots"},
 		{"DB_MAX_OPEN_CONNS", "-1"},
 		{"DB_SESSION_COORDINATION_MAX_OPEN_CONNS", "-1"},
+		{"DB_COMMUNITY_ACTION_MAX_OPEN_CONNS", "-1"},
 		{"HTTP_READ_TIMEOUT", "30"}, // missing a unit
 		{"IDENTITY_CACHE_TTL", "forever"},
 		{"SKIP_DID_WEB_VERIFICATION", "1.5"},
@@ -639,7 +648,7 @@ func TestLoad_IdleConnsMayNotExceedOpenConns(t *testing.T) {
 func TestValidate_ReportsAllProblems(t *testing.T) {
 	cfg := &Config{
 		IsDevEnv:     false,
-		Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25, SessionCoordinationMaxOpenConns: 5},
+		Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25, SessionCoordinationMaxOpenConns: 5, CommunityActionMaxOpenConns: 5},
 		Server:       ServerConfig{Port: "8080", ReadHeaderTimeout: 10 * time.Second},
 		Instance:     InstanceConfig{DID: "did:plc:abc"}, // no Domain
 		CursorSecret: devCursorSecret,
@@ -662,8 +671,7 @@ func TestValidate_ReportsAllProblems(t *testing.T) {
 func TestLoad_CSVListsAreTrimmed(t *testing.T) {
 	clearEnv(t)
 	prodEnv(t)
-	t.Setenv("COMMUNITY_CREATORS", " did:plc:one , did:plc:two ,, ")
-	t.Setenv("TRUSTED_BRIDGE_PDS_HOSTS", "https://bridge.example.com")
+	t.Setenv("MODERATION_ADMINS", " did:plc:one , did:plc:two ,, ")
 
 	cfg, err := Load()
 	if err != nil {
@@ -671,25 +679,86 @@ func TestLoad_CSVListsAreTrimmed(t *testing.T) {
 	}
 
 	want := []string{"did:plc:one", "did:plc:two"}
-	got := cfg.Instance.AllowedCommunityCreators
+	got := cfg.Moderation.Admins
 	if len(got) != len(want) {
-		t.Fatalf("AllowedCommunityCreators = %v, want %v", got, want)
+		t.Fatalf("Moderation.Admins = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("AllowedCommunityCreators[%d] = %q, want %q", i, got[i], want[i])
+			t.Errorf("Moderation.Admins[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
+}
 
-	// nil vs empty matters: nil means "unrestricted", not "nobody".
-	t.Setenv("COMMUNITY_CREATORS", "")
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
+// unsetCommunityCreation removes COMMUNITY_CREATION for the rest of the test,
+// restoring the caller's value afterwards.
+func unsetCommunityCreation(t *testing.T) {
+	t.Helper()
+	t.Setenv("COMMUNITY_CREATION", "")
+	if err := os.Unsetenv("COMMUNITY_CREATION"); err != nil {
+		t.Fatalf("unsetting COMMUNITY_CREATION: %v", err)
 	}
-	if cfg.Instance.AllowedCommunityCreators != nil {
-		t.Errorf("AllowedCommunityCreators = %v, want nil when unset (unrestricted)",
-			cfg.Instance.AllowedCommunityCreators)
+}
+
+// TestLoad_CommunityCreation pins how COMMUNITY_CREATION resolves: unset or
+// empty means instance-admins, and the two named values are taken as given.
+// A leftover COMMUNITY_CREATORS allowlist neither opens nor changes it.
+func TestLoad_CommunityCreation(t *testing.T) {
+	tests := []struct {
+		name     string
+		unset    bool
+		value    string
+		creators string
+		want     communities.CreationPolicy
+	}{
+		{name: "unset means instance-admins", unset: true, want: "instance-admins"},
+		{name: "empty means instance-admins", value: "", want: "instance-admins"},
+		{name: "anyone", value: "anyone", want: "anyone"},
+		{name: "instance-admins", value: "instance-admins", want: "instance-admins"},
+		{name: "leftover COMMUNITY_CREATORS with COMMUNITY_CREATION unset stays instance-admins", unset: true, creators: "did:plc:someone", want: "instance-admins"},
+		{name: "leftover COMMUNITY_CREATORS with COMMUNITY_CREATION=anyone stays anyone", value: "anyone", creators: "did:plc:someone", want: "anyone"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			prodEnv(t)
+			if tc.unset {
+				unsetCommunityCreation(t)
+			} else {
+				t.Setenv("COMMUNITY_CREATION", tc.value)
+			}
+			if tc.creators != "" {
+				t.Setenv("COMMUNITY_CREATORS", tc.creators)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() returned error: %v", err)
+			}
+			if cfg.Instance.CommunityCreation != tc.want {
+				t.Fatalf("Instance.CommunityCreation = %q, want %q", cfg.Instance.CommunityCreation, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_CommunityCreationRejectsUnknownValues: a value that is neither
+// policy is a configuration error naming the variable, never a silent default.
+func TestLoad_CommunityCreationRejectsUnknownValues(t *testing.T) {
+	for _, value := range []string{"bogus", "Anyone", "admins"} {
+		t.Run(value, func(t *testing.T) {
+			clearEnv(t)
+			prodEnv(t)
+			t.Setenv("COMMUNITY_CREATION", value)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() accepted COMMUNITY_CREATION=%q", value)
+			}
+			if !strings.Contains(err.Error(), "COMMUNITY_CREATION") {
+				t.Fatalf("error should name COMMUNITY_CREATION; got:\n%s", err.Error())
+			}
+		})
 	}
 }
 

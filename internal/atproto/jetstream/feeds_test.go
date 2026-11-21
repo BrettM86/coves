@@ -134,6 +134,12 @@ func TestWantedCollections_PostsIncludeCommunityBans(t *testing.T) {
 	assert.Contains(t, wanted, "social.coves.moderation.ban")
 }
 
+func TestWantedCollections_CommunitiesIncludeCommunityRoles(t *testing.T) {
+	wanted, err := WantedCollections(ConsumerCommunities)
+	require.NoError(t, err)
+	assert.Contains(t, wanted, "social.coves.community.moderator")
+}
+
 func TestConsumedCollections_MatchesEveryConsumersFilters(t *testing.T) {
 	consumed := ConsumedCollections()
 

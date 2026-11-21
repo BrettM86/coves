@@ -118,22 +118,37 @@ func TestMigration067DownRefusesWhileCommentRemovalMappingsExist(t *testing.T) {
 	}
 }
 
-// moderation_actions refuses an empty actor_did except on the one system
-// action that has no actor: the re-application of a community comment removal
-// after the comment moved back under the removing community's post.
-func TestModerationActionsEmptyActorOnlyForSubjectMovedSystemAction(t *testing.T) {
+// moderation_actions refuses an empty actor_did except on actions that have no
+// actor: the subject-moved system actions, and a community comment removal or
+// its retraction indexed from the community's repo (scope community, origin
+// inherited, any reason).
+func TestModerationActionsEmptyActorOnlyForActorlessCommunityActions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		actor   string
-		reason  sql.NullString
-		refused bool
+		name      string
+		actor     string
+		reason    sql.NullString
+		origin    string // default inherited
+		scopeKind string // default community
+		refused   bool
 	}{
-		{name: "empty actor with no reason", actor: "", refused: true},
+		{name: "empty actor with no reason on an inherited community removal", actor: ""},
 		{
-			name: "empty actor with another reason", actor: "",
-			reason: sql.NullString{String: "social.coves.moderation.defs#reasonMisinformation", Valid: true}, refused: true,
+			name: "empty actor with a mapped reason on an inherited community removal", actor: "",
+			reason: sql.NullString{String: "social.coves.moderation.defs#reasonSpam", Valid: true},
+		},
+		{
+			name: "empty actor on a local community removal", actor: "", origin: "local",
+			reason: sql.NullString{String: "social.coves.moderation.defs#reasonSpam", Valid: true}, refused: true,
+		},
+		{
+			name: "empty actor on an instance-scope removal", actor: "", scopeKind: "instance",
+			reason: sql.NullString{String: "social.coves.moderation.defs#reasonSpam", Valid: true}, refused: true,
+		},
+		{
+			name: "actor DID on an instance-scope removal", actor: "did:plc:emptyactoradmin", scopeKind: "instance",
+			reason: sql.NullString{String: "social.coves.moderation.defs#reasonSpam", Valid: true},
 		},
 		{
 			name: "empty actor on the subject-moved system action", actor: "",
@@ -146,20 +161,30 @@ func TestModerationActionsEmptyActorOnlyForSubjectMovedSystemAction(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			db := testkit.DB(t)
+			origin, scopeKind := tt.origin, tt.scopeKind
+			if origin == "" {
+				origin = "inherited"
+			}
+			if scopeKind == "" {
+				scopeKind = "community"
+			}
+			scopeCommunity := sql.NullString{String: "did:plc:emptyactorcommunity", Valid: scopeKind == "community"}
 			_, err := db.ExecContext(context.Background(), `INSERT INTO moderation_actions
 				(id, actor_did, authority_did, scope_kind, scope_community_did, subject_uri, subject_collection,
 				 action, reason, origin, created_at)
-				VALUES ('emptyactoraction', $1, 'did:plc:emptyactorcommunity', 'community',
-				        'did:plc:emptyactorcommunity', 'at://did:plc:emptyactorauthor/social.coves.community.comment/3lsubject',
-				        'social.coves.community.comment', 'apply-removal', $2, 'inherited', NOW())`, tt.actor, tt.reason)
+				VALUES ('emptyactoraction', $1, 'did:plc:emptyactorcommunity', $3,
+				        $4, 'at://did:plc:emptyactorauthor/social.coves.community.comment/3lsubject',
+				        'social.coves.community.comment', 'apply-removal', $2, $5, NOW())`,
+				tt.actor, tt.reason, scopeKind, scopeCommunity, origin)
 
 			if !tt.refused {
 				require.NoError(t, err)
 				return
 			}
 			var pqErr *pq.Error
-			require.ErrorAs(t, err, &pqErr, "an empty actor outside the subject-moved system action must be refused")
+			require.ErrorAs(t, err, &pqErr, "an empty actor outside the actorless actions must be refused")
 			assert.Equal(t, pqerror.Code("23514"), pqErr.Code, "the refusal must be a check violation")
+			assert.Equal(t, "moderation_action_actor_present", pqErr.Constraint, "the actor check refuses it")
 		})
 	}
 }

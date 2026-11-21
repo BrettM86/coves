@@ -17,6 +17,7 @@ import (
 
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/bridgedvotes"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/media"
 
@@ -197,6 +198,20 @@ type ModerationConfig struct {
 	Admins                 []string
 	IdempotencyRetention   time.Duration
 	MaxLiveIdempotencyKeys int
+
+	// CommunityRemovalsPerModerator caps one moderator's community post
+	// removals per hour (COMMUNITY_REMOVALS_PER_MODERATOR_PER_HOUR).
+	CommunityRemovalsPerModerator int
+	// CommunityRemovalsPerCommunity caps one community's post removals per
+	// hour (COMMUNITY_REMOVALS_PER_COMMUNITY_PER_HOUR).
+	CommunityRemovalsPerCommunity int
+
+	// CommunityBansPerModerator caps one moderator's community bans per hour
+	// (COMMUNITY_BANS_PER_MODERATOR_PER_HOUR).
+	CommunityBansPerModerator int
+	// CommunityBansPerCommunity caps one community's bans per hour
+	// (COMMUNITY_BANS_PER_COMMUNITY_PER_HOUR).
+	CommunityBansPerCommunity int
 }
 
 // DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
@@ -213,8 +228,9 @@ type DatabaseConfig struct {
 	// PostgreSQL's default max_connections of 100 so operators and the
 	// backfill/reindex tools can still connect during a spike.
 	//
-	// OAuth session coordination does not draw on this pool: see
-	// SessionCoordinationMaxOpenConns, which adds to the server's total.
+	// OAuth session coordination and community action transactions do not
+	// draw on this pool: see SessionCoordinationMaxOpenConns and
+	// CommunityActionMaxOpenConns, which add to the server's total.
 	MaxOpenConns int
 
 	// SessionCoordinationMaxOpenConns caps a second, dedicated pool that OAuth
@@ -227,6 +243,15 @@ type DatabaseConfig struct {
 	// Small on purpose: when it is exhausted only PDS writes queue for a
 	// connection, and reads keep flowing.
 	SessionCoordinationMaxOpenConns int
+
+	// CommunityActionMaxOpenConns caps the dedicated pool that community
+	// action transactions (roster removals and the intent sweep) run on. Each
+	// holds its connection while it waits on or holds a community's roster
+	// and account locks; the lock holder's other reads and the intent write
+	// use the main pool. Separating them means waiters queued on one
+	// community's lock cannot take the connections the holder needs to
+	// finish. When it is exhausted, only community actions queue.
+	CommunityActionMaxOpenConns int
 
 	// MaxIdleConns caps connections retained for reuse. The database/sql
 	// default is 2, which forces a fresh connection and PostgreSQL startup
@@ -353,9 +378,11 @@ type InstanceConfig struct {
 	// !leagueoflegends@riotgames.com and impersonate another operator.
 	Domain string
 
-	// AllowedCommunityCreators restricts community creation to these DIDs.
-	// Nil means any authenticated user may create a community.
-	AllowedCommunityCreators []string
+	// CommunityCreation says who may create a community (COMMUNITY_CREATION):
+	// "anyone" lets any signed-in account create one, "instance-admins"
+	// restricts creation to MODERATION_ADMINS. Unset or empty means
+	// instance-admins; any other value fails Validate.
+	CommunityCreation communities.CreationPolicy
 
 	// TrustedBridgePDSHosts may assert bridged vote aggregates
 	// (bridgedStats) for the repos they host. Every other repo is
@@ -770,6 +797,10 @@ func (c *Config) loadDatabase() error {
 	if err != nil {
 		return err
 	}
+	communityActionMaxOpen, err := intVar("DB_COMMUNITY_ACTION_MAX_OPEN_CONNS", 5)
+	if err != nil {
+		return err
+	}
 	connMaxLifetime, err := durationVar("DB_CONN_MAX_LIFETIME", 30*time.Minute)
 	if err != nil {
 		return err
@@ -789,6 +820,7 @@ func (c *Config) loadDatabase() error {
 		MaxOpenConns:                    maxOpen,
 		MaxIdleConns:                    maxIdle,
 		SessionCoordinationMaxOpenConns: sessionCoordinationMaxOpen,
+		CommunityActionMaxOpenConns:     communityActionMaxOpen,
 		ConnMaxLifetime:                 connMaxLifetime,
 		ConnMaxIdleTime:                 connMaxIdleTime,
 		StatementTimeout:                statementTimeout,
@@ -1081,16 +1113,21 @@ func (c *Config) loadInstance() error {
 		domain = lookup("INSTANCE_DOMAIN")
 	}
 
+	communityCreation := communities.CreationPolicy(lookup("COMMUNITY_CREATION"))
+	if communityCreation == "" {
+		communityCreation = communities.CreationInstanceAdmins
+	}
+
 	c.Instance = InstanceConfig{
-		DID:                      did,
-		Domain:                   domain,
-		AllowedCommunityCreators: csvVar("COMMUNITY_CREATORS"),
-		TrustedBridgePDSHosts:    csvVar("TRUSTED_BRIDGE_PDS_HOSTS"),
-		SkipDIDWebVerification:   skipDIDWeb,
-		BridgedVotePollInterval:  bridgedVotePollInterval,
-		BridgedVotePollLookback:  bridgedVotePollLookback,
-		BridgedVotePollSweepCap:  bridgedVotePollSweepCap,
-		AtprotoPublicKey:         atprotoPublicKey,
+		DID:                     did,
+		Domain:                  domain,
+		CommunityCreation:       communityCreation,
+		TrustedBridgePDSHosts:   csvVar("TRUSTED_BRIDGE_PDS_HOSTS"),
+		SkipDIDWebVerification:  skipDIDWeb,
+		BridgedVotePollInterval: bridgedVotePollInterval,
+		BridgedVotePollLookback: bridgedVotePollLookback,
+		BridgedVotePollSweepCap: bridgedVotePollSweepCap,
+		AtprotoPublicKey:        atprotoPublicKey,
 	}
 	return nil
 }
@@ -1211,10 +1248,42 @@ func (c *Config) loadModeration() error {
 	if maxKeys <= 0 {
 		return fmt.Errorf("MODERATION_IDEMPOTENCY_MAX_LIVE_KEYS must be greater than 0 (got %d)", maxKeys)
 	}
+	perModerator, err := intVar("COMMUNITY_REMOVALS_PER_MODERATOR_PER_HOUR", 60)
+	if err != nil {
+		return err
+	}
+	if perModerator <= 0 {
+		return fmt.Errorf("COMMUNITY_REMOVALS_PER_MODERATOR_PER_HOUR must be greater than 0 (got %d)", perModerator)
+	}
+	perCommunity, err := intVar("COMMUNITY_REMOVALS_PER_COMMUNITY_PER_HOUR", 300)
+	if err != nil {
+		return err
+	}
+	if perCommunity <= 0 {
+		return fmt.Errorf("COMMUNITY_REMOVALS_PER_COMMUNITY_PER_HOUR must be greater than 0 (got %d)", perCommunity)
+	}
+	bansPerModerator, err := intVar("COMMUNITY_BANS_PER_MODERATOR_PER_HOUR", 60)
+	if err != nil {
+		return err
+	}
+	if bansPerModerator <= 0 {
+		return fmt.Errorf("COMMUNITY_BANS_PER_MODERATOR_PER_HOUR must be greater than 0 (got %d)", bansPerModerator)
+	}
+	bansPerCommunity, err := intVar("COMMUNITY_BANS_PER_COMMUNITY_PER_HOUR", 300)
+	if err != nil {
+		return err
+	}
+	if bansPerCommunity <= 0 {
+		return fmt.Errorf("COMMUNITY_BANS_PER_COMMUNITY_PER_HOUR must be greater than 0 (got %d)", bansPerCommunity)
+	}
 	c.Moderation = ModerationConfig{
-		Admins:                 csvVar("MODERATION_ADMINS"),
-		IdempotencyRetention:   retention,
-		MaxLiveIdempotencyKeys: maxKeys,
+		Admins:                        csvVar("MODERATION_ADMINS"),
+		IdempotencyRetention:          retention,
+		MaxLiveIdempotencyKeys:        maxKeys,
+		CommunityRemovalsPerModerator: perModerator,
+		CommunityRemovalsPerCommunity: perCommunity,
+		CommunityBansPerModerator:     bansPerModerator,
+		CommunityBansPerCommunity:     bansPerCommunity,
 	}
 	return nil
 }
@@ -1292,6 +1361,14 @@ func (c *Config) Validate() error {
 			problems = append(problems, "IMAGE_PROXY_CDN_URL must be an absolute http(s) URL when CDN purge is configured")
 		}
 	}
+	// Load maps an unset COMMUNITY_CREATION to instance-admins; the zero value
+	// is accepted here because the create handler already fails closed on it.
+	switch c.Instance.CommunityCreation {
+	case "", communities.CreationAnyone, communities.CreationInstanceAdmins:
+	default:
+		problems = append(problems, fmt.Sprintf("COMMUNITY_CREATION must be %q or %q (got %q)",
+			communities.CreationAnyone, communities.CreationInstanceAdmins, c.Instance.CommunityCreation))
+	}
 	for _, did := range c.Moderation.Admins {
 		if _, err := syntax.ParseDID(did); err != nil {
 			problems = append(problems, "MODERATION_ADMINS must contain only valid DIDs")
@@ -1308,6 +1385,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Database.SessionCoordinationMaxOpenConns == 0 {
 		problems = append(problems, "DB_SESSION_COORDINATION_MAX_OPEN_CONNS must be greater than 0 "+
+			"(an unbounded pool can exhaust PostgreSQL's max_connections)")
+	}
+	if c.Database.CommunityActionMaxOpenConns == 0 {
+		problems = append(problems, "DB_COMMUNITY_ACTION_MAX_OPEN_CONNS must be greater than 0 "+
 			"(an unbounded pool can exhaust PostgreSQL's max_connections)")
 	}
 	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {

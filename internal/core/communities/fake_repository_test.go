@@ -35,6 +35,9 @@ type fakeCommunityRepo struct {
 	byDID    map[string]*communities.Community
 	byHandle map[string]*communities.Community
 
+	// provisioning holds saved and seeded provisioning accounts by handle.
+	provisioning map[string]*communities.ProvisioningAccount
+
 	// Canned answers for the read methods that have no in-memory model. A test
 	// that cares about the value sets it; a test that only cares that the call
 	// was forwarded leaves it nil.
@@ -438,15 +441,50 @@ var errRepositoryUnavailable = errors.New("connection pool exhausted")
 // rather than making this file fail to build.
 var _ communities.Repository = (*fakeCommunityRepo)(nil)
 
-func (*fakeCommunityRepo) SaveProvisioningAccount(context.Context, *communities.ProvisioningAccount) error {
+// SaveProvisioningAccount stores the account like the real repository,
+// refusing a second account for the same handle.
+func (f *fakeCommunityRepo) SaveProvisioningAccount(_ context.Context, account *communities.ProvisioningAccount) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.provisioning[account.Handle]; ok {
+		return communities.ErrProvisioningAccountExists
+	}
+	if f.provisioning == nil {
+		f.provisioning = map[string]*communities.ProvisioningAccount{}
+	}
+	f.provisioning[account.Handle] = account
 	return nil
 }
 
-func (*fakeCommunityRepo) GetProvisioningAccountByHandle(context.Context, string) (*communities.ProvisioningAccount, error) {
+// GetProvisioningAccountByHandle answers from the accounts saved by the service
+// or seeded with seedProvisioningAccount, which is how a test stands up an
+// interrupted create.
+func (f *fakeCommunityRepo) GetProvisioningAccountByHandle(_ context.Context, handle string) (*communities.ProvisioningAccount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if account, ok := f.provisioning[handle]; ok {
+		return account, nil
+	}
 	return nil, communities.ErrProvisioningAccountNotFound
 }
 
-func (*fakeCommunityRepo) DeleteProvisioningAccount(context.Context, string) error { return nil }
+func (f *fakeCommunityRepo) DeleteProvisioningAccount(_ context.Context, handle string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.provisioning, handle)
+	return nil
+}
+
+// seedProvisioningAccount stores the provisioning account an interrupted
+// create left behind.
+func (f *fakeCommunityRepo) seedProvisioningAccount(account *communities.ProvisioningAccount) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.provisioning == nil {
+		f.provisioning = map[string]*communities.ProvisioningAccount{}
+	}
+	f.provisioning[account.Handle] = account
+}
 
 func (*fakeCommunityRepo) AttachHostedCredentials(context.Context, *communities.Community) error {
 	return communities.ErrCommunityNotFound

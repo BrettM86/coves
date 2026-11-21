@@ -18,6 +18,15 @@ const (
 	// elsewhere (a community's removal record) taking and losing effect here.
 	ActionApplyRemoval   = "apply-removal"
 	ActionRetractRemoval = "retract-removal"
+	// ActionRemoveRole records a community role record's removal: a
+	// moderator's resignation or an owner's or admin's removal of a moderator.
+	ActionRemoveRole = "remove-role"
+	// ActionGrantRole records a community role record being indexed: the
+	// owner record a community's creation writes, or a role record written
+	// outside this instance.
+	ActionGrantRole = "grant-role"
+	// ActionTransferOwnership records an accepted ownership offer.
+	ActionTransferOwnership = "transfer-ownership"
 
 	// LabelNSFW is the only content label value the local classification
 	// procedures accept.
@@ -83,6 +92,8 @@ type Action struct {
 	// SubjectKind is the kind of an at://<did> subject, empty for a record
 	// subject. Not serialized, so stored idempotency results keep their shape.
 	SubjectKind SubjectKind `json:"-"`
+	AdminActing bool        `json:",omitempty"`
+	Role        string      `json:",omitempty"`
 }
 
 // SubjectKind is the kind of an at://<did> moderation subject, recorded on

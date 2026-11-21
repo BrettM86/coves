@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base32"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -159,6 +160,13 @@ func removalRecord(postURI, postCID, code string) map[string]any {
 		"code":      code,
 		"createdAt": time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+// removalRecordWithReason is removalRecord carrying the community's reason.
+func removalRecordWithReason(postURI, postCID, code, reason string) map[string]any {
+	record := removalRecord(postURI, postCID, code)
+	record["reason"] = reason
+	return record
 }
 
 // awaitStatus waits for getStatus to report want, and returns the view it saw.
@@ -560,4 +568,61 @@ func applyWrites(t *testing.T, community provisionedCommunity, writes []map[stri
 	require.NoErrorf(t, err,
 		"com.atproto.repo.applyWrites was refused. The removal commit must carry the acceptance's delete and the removal's create TOGETHER (§3.3); "+
 			"splitting them into two commits would let a consumer that cannot order them pass this contract")
+}
+
+// A community removes an author's accepted post with code "spam" and a reason.
+// The author, signed in, reads the post through post.get and sees the code and
+// the reason on their own postView. Another signed-in account reads the same URI
+// and gets the #removedPost tombstone, with the reason nowhere in it.
+func TestCommunityRemovalReasonReachesOnlyTheAuthor(t *testing.T) {
+	p := newPipeline(t)
+
+	author := p.IndexedAccount(t, "rr")
+	other := p.IndexedAccount(t, "ro")
+	community := indexedCommunity(t, p, "rr", author.DID)
+
+	rkey := testkit.TID()
+	uri := authorPostURI(author.DID, rkey)
+	record := author.PutRecord(t, postV2Collection, rkey,
+		postV2Record(community.DID, "removed with a reason "+testkit.UniqueID(t), "the same link again"))
+	awaitStatus(t, p, uri, community.DID, "pending", "the post to be indexed")
+
+	subject := subjectRkey(uri)
+	community.PutRecord(t, acceptanceCollection, subject, acceptanceRecord(uri, record.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted", "the post to be accepted before it is removed")
+
+	applyWrites(t, community, []map[string]any{
+		{"$type": "com.atproto.repo.applyWrites#delete", "collection": acceptanceCollection, "rkey": subject},
+		{
+			"$type":      "com.atproto.repo.applyWrites#create",
+			"collection": removalCollection,
+			"rkey":       subject,
+			"value":      removalRecordWithReason(uri, record.CID, "spam", "Posting the same link in every thread"),
+		},
+	})
+	awaitStatus(t, p, uri, community.DID, "removed", "the removal commit with a reason to take the post down")
+
+	readPost := func(t *testing.T, viewer *testkit.AppView) (map[string]any, string) {
+		t.Helper()
+		var response struct {
+			Posts []json.RawMessage `json:"posts"`
+		}
+		require.NoError(t, viewer.Query(context.Background(), "social.coves.community.post.get",
+			url.Values{"uris": {uri}}, &response))
+		require.Len(t, response.Posts, 1, "post.get returns one union member for one URI")
+		var member map[string]any
+		require.NoError(t, json.Unmarshal(response.Posts[0], &member))
+		return member, string(response.Posts[0])
+	}
+
+	authorPost, _ := readPost(t, p.AppView.As(p.AppView.SignIn(t, author)))
+	assert.Equal(t, uri, authorPost["uri"])
+	assert.Equal(t, "removed", authorPost["status"], "the author reads their own post as removed")
+	assert.Equal(t, map[string]any{"code": "spam", "reason": "Posting the same link in every thread"}, authorPost["communityRemoval"],
+		"the author's postView carries the community's code and reason")
+
+	otherPost, otherJSON := readPost(t, p.AppView.As(p.AppView.SignIn(t, other)))
+	assert.Equal(t, map[string]any{"uri": uri, "removed": true, "code": "spam"}, otherPost,
+		"another account gets the #removedPost tombstone with the code only")
+	assert.NotContains(t, otherJSON, "Posting the same link in every thread", "the reason never reaches another account")
 }

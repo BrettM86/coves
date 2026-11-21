@@ -31,9 +31,14 @@ func RegisterCommunityFeedRoutes(
 	// identifies this instance's own removals and labels.
 	authority moderation.Authority,
 	instanceDID string,
+	opts ...ViewerModerationRouteOption,
 ) {
+	cfg := newViewerModerationRouteConfig(opts)
 	searchPostsHandler := communityFeed.NewSearchPostsHandler(feedService, voteService, blueskyService).
 		WithViewerModeration(authority, instanceDID)
+	if cfg.communityViewer != nil {
+		searchPostsHandler.WithCommunityViewerModeration(cfg.communityViewer)
+	}
 	postSearchLimiter := middleware.NewNamedRateLimiter("postSearch", postSearchRateLimit, postSearchRateWindow)
 
 	// GET /xrpc/social.coves.feed.searchPosts

@@ -53,24 +53,31 @@ type PostRepository struct {
 //
 // The author origin columns are COALESCEd to an empty string so a NULL (native author)
 // and a cleared column both scan to "", which omitempty drops.
-var postViewSelectColumns = postViewColumns("a.status", "c.avatar_cid")
+var postViewSelectColumns = postViewColumns("a.status", "c.avatar_cid", "NULL::text", "NULL::text")
 
 // authorPostViewSelectColumns is postViewSelectColumns for the queries that
 // filter with authorVisiblePostsJoin: a post in a community under an active
 // instance removal made by the authority authorityExpr names reads with
 // status "removed", the only way its author can see it, and without the
 // removed community's avatar, which the community's own view withholds too.
+// A post the community itself removed carries that removal's code and reason
+// (postView.communityRemoval); one shown as removed only because the community
+// is instance-removed carries neither.
 func authorPostViewSelectColumns(authorityExpr string) string {
 	communityRemoved := communityRemovedSQL("p.community_did", authorityExpr)
+	removedByCommunity := `CASE WHEN ` + communityRemoved + ` THEN NULL WHEN a.status = '` + string(posts.AdmissionStatusRemoved) + `' THEN `
 	return postViewColumns(
 		`CASE WHEN `+communityRemoved+` THEN '`+string(posts.AdmissionStatusRemoved)+`' ELSE a.status END`,
-		`CASE WHEN `+communityRemoved+` THEN NULL ELSE c.avatar_cid END`)
+		`CASE WHEN `+communityRemoved+` THEN NULL ELSE c.avatar_cid END`,
+		removedByCommunity+`a.decision_code END`,
+		removedByCommunity+`a.removal_reason END`)
 }
 
 // postViewColumns is the postViewSelectColumns list with admissionStatusExpr
-// as the admission_status column and communityAvatarExpr as the
-// community_avatar column.
-func postViewColumns(admissionStatusExpr, communityAvatarExpr string) string {
+// as the admission_status column, communityAvatarExpr as the community_avatar
+// column, and removalCodeExpr and removalReasonExpr as the community removal
+// columns.
+func postViewColumns(admissionStatusExpr, communityAvatarExpr, removalCodeExpr, removalReasonExpr string) string {
 	return `
 		p.uri, p.cid, p.rkey,
 		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
@@ -80,6 +87,7 @@ func postViewColumns(admissionStatusExpr, communityAvatarExpr string) string {
 		p.created_at, p.edited_at, p.indexed_at,
 		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
 		` + admissionStatusExpr + ` AS admission_status, a.acceptance_uri AS admission_acceptance_uri,
+		` + removalCodeExpr + ` AS community_removal_code, ` + removalReasonExpr + ` AS community_removal_reason,
 		(SELECT jsonb_agg(jsonb_build_object('value', labels.value, 'sources', labels.sources) ORDER BY labels.value)
 		 FROM (
 			SELECT d.value,
@@ -298,7 +306,8 @@ func (r *PostRepository) ActiveRemovalsByURIs(ctx context.Context, uris []string
 // the AppView has never seen. Rows also carry community handle/name when the
 // community exists; a missing community must not hide an indexed post. Rows
 // carry the community's instance removal and the author's account restriction
-// (accountRestrictedSQL), both under the repository's authority.
+// (accountRestrictedSQL), both under the repository's authority, and the
+// post's admission status in its own community ("" with no admission row).
 func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
 	result := make(map[string]*posts.Post, len(uris))
 	if len(uris) == 0 {
@@ -310,9 +319,11 @@ func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 	// cached regardless of batch size.
 	query := `SELECT` + rawIndexedRowColumns + `, c.handle, c.name,
 			` + communityRemovedSQL("p.community_did", "$2") + `,
-			` + accountRestrictedSQL("p.author_did", "$2") + `
+			` + accountRestrictedSQL("p.author_did", "$2") + `,
+			COALESCE(a.status, '')
 		FROM posts p
 		LEFT JOIN communities c ON c.did = p.community_did
+		LEFT JOIN community_post_admissions a ON a.community_did = p.community_did AND a.post_uri = p.uri
 		WHERE p.uri = ANY($1)`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), r.authorityDID)
@@ -360,7 +371,7 @@ func scanRawIndexedRow(row rowScanner, withCommunity bool) (*posts.Post, error) 
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
 	}
 	if withCommunity {
-		columns = append(columns, &communityHandle, &communityName, &post.CommunityRemoved, &post.AuthorRestricted)
+		columns = append(columns, &communityHandle, &communityName, &post.CommunityRemoved, &post.AuthorRestricted, &post.CommunityStatus)
 	}
 	err := row.Scan(columns...)
 	if err != nil {
@@ -727,6 +738,8 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityOrigin   sql.NullString
 		admissionStatus   sql.NullString
 		acceptanceURI     sql.NullString
+		removalCode       sql.NullString
+		removalReason     sql.NullString
 		activeLabelsJSON  sql.NullString
 	)
 
@@ -738,7 +751,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
-		&admissionStatus, &acceptanceURI, &activeLabelsJSON,
+		&admissionStatus, &acceptanceURI, &removalCode, &removalReason, &activeLabelsJSON,
 	}
 	dest = append(dest, extraDest...)
 
@@ -796,6 +809,10 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	}
 	if acceptanceURI.Valid {
 		postView.AcceptanceURI = acceptanceURI.String
+	}
+	// Selected only on the author's own view of a post its community removed.
+	if removalCode.Valid {
+		postView.CommunityRemoval = &posts.CommunityRemoval{Code: removalCode.String, Reason: removalReason.String}
 	}
 	if activeLabelsJSON.Valid {
 		var labels []posts.ContentLabelView

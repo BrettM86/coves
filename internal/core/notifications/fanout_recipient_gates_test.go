@@ -114,3 +114,44 @@ func TestFanoutCommentCreate_BridgeHostedActorStillNotifiesNativeRecipient(t *te
 		RootPostURI: comment.RootURI, RecordCreatedAt: createdAt,
 	}}, intents, "a bridge-hosted actor must not suppress a reply to a native-PDS recipient")
 }
+
+func TestFanoutCommunityReport_RecipientSet(t *testing.T) {
+	const communityDID = "did:plc:reportcommunity"
+	const reporterDID = "did:plc:reportreporter"
+	const ownerDID = "did:plc:reportowner"
+	const firstModeratorDID = "did:plc:reportmoderator1"
+	const secondModeratorDID = "did:plc:reportmoderator2"
+	const unindexedDID = "did:plc:reportunindexed"
+	const erasedDID = "did:plc:reporterased"
+	const aggregatorDID = "did:plc:reportaggregator"
+	const bridgedDID = "did:plc:reportbridged"
+	const bridgePDSURL = "https://bridge.test"
+	lookups := commentFanoutLookups{
+		indexedUsers: map[string]bool{
+			reporterDID: true, ownerDID: true, firstModeratorDID: true, secondModeratorDID: true,
+			erasedDID: true, aggregatorDID: true, bridgedDID: true,
+		},
+		erasedAccounts:     map[string]bool{erasedDID: true},
+		aggregatorAccounts: map[string]bool{aggregatorDID: true},
+		userPDSURLs:        map[string]string{bridgedDID: bridgePDSURL},
+		// The reporter is not an actor on the row, so blocks in either
+		// direction with the reporter must not drop a recipient.
+		blocks: map[commentFanoutBlock]bool{
+			{blockerDID: ownerDID, blockedDID: reporterDID}:          true,
+			{blockerDID: reporterDID, blockedDID: firstModeratorDID}: true,
+		},
+	}
+	bridgeHosts := &notificationTestBridgeHosts{trustedURLs: map[string]bool{bridgePDSURL: true}}
+	candidates := []string{
+		ownerDID, firstModeratorDID, secondModeratorDID, reporterDID,
+		unindexedDID, erasedDID, aggregatorDID, bridgedDID, firstModeratorDID,
+	}
+
+	intents, err := FanoutCommunityReport(context.Background(), lookups, bridgeHosts, reporterDID, communityDID, candidates)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []CommunityReportGroupIntent{
+		{RecipientDID: "did:plc:reportowner", SubjectURI: "at://did:plc:reportcommunity"},
+		{RecipientDID: "did:plc:reportmoderator1", SubjectURI: "at://did:plc:reportcommunity"},
+		{RecipientDID: "did:plc:reportmoderator2", SubjectURI: "at://did:plc:reportcommunity"},
+	}, intents, "the owner and both moderators get one group each; the reporter, unindexed, erased, aggregator and trusted-bridge candidates get none")
+}

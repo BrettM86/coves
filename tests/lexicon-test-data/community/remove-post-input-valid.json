@@ -1,0 +1,8 @@
+{
+  "$type": "social.coves.community.removePost#input",
+  "subject": "at://did:plc:postauthor1/social.coves.community.postv2/3kjzl5kcb2s2v",
+  "code": "spam",
+  "reason": "selling followers",
+  "expectedVersion": 4,
+  "idempotencyKey": "remove-post-1"
+}

@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.restoreComment#input",
+  "expectedVersion": 5,
+  "idempotencyKey": "restore-comment-1"
+}

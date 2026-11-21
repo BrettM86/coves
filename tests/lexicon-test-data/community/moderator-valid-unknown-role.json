@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.moderator",
+  "subject": "did:plc:trustedmoderator",
+  "role": "admin",
+  "createdAt": "2026-11-01T10:00:00Z"
+}

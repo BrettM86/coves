@@ -29,7 +29,7 @@ import (
 func TestBuildApplicationRejectsInvalidMediaUploadConcurrency(t *testing.T) {
 	app, err := buildApplication(context.Background(), &config.Config{
 		Media: config.MediaConfig{Upload: media.Config{MaxConcurrent: 0}},
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil)
 	assert.Nil(t, app)
 	require.ErrorIs(t, err, media.ErrInvalidConfig)
 }
@@ -94,7 +94,7 @@ func TestBuildApplicationCommunityServiceCarriesMediaPipeline(t *testing.T) {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 	require.Zero(t, connector.attempts.Load(), "building the application must not connect to the database")
@@ -121,7 +121,7 @@ func TestBuildApplicationPostServiceCarriesMediaPipeline(t *testing.T) {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 
@@ -162,7 +162,7 @@ func TestRegisterXRPCRoutesUploadImageLoadsStoredSession(t *testing.T) {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 	require.NotNil(t, app.apiKeyService)
@@ -226,7 +226,7 @@ func TestBuildApplicationUploadServiceEnforcesConfiguredLimit(t *testing.T) {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 	require.NotNil(t, app.mediaUploads)

@@ -143,6 +143,9 @@ type Admission struct {
 	DecisionCode *string
 	DecisionAt   *time.Time
 
+	// RemovalReason is the community removal record's reason.
+	RemovalReason *string
+
 	// EvaluatedCID is the exact content CID the AppView has indexed for this
 	// post — what the next decision will judge, and what an acceptance's pinned
 	// CID is compared against.
@@ -228,6 +231,10 @@ type ApplyAcceptanceCommand struct {
 	AcceptanceRkey string
 	PinnedCID      string
 	Watermark      CommunityWatermark
+	// RecordCID is the acceptance record's CID when the firehose delivered it,
+	// so an open restore intent whose acceptance this is can complete; empty
+	// from the AppView's own writers.
+	RecordCID string
 }
 
 // ApplyRemovalCommand applies a community removal record write. A removal with
@@ -237,6 +244,26 @@ type ApplyRemovalCommand struct {
 	CommunityDID string
 	PostURI      string
 	DecisionCode string
+	// Reason is the removal record's reason; empty stores NULL.
+	Reason    string
+	Watermark CommunityWatermark
+}
+
+// ApplyRemovalRecordCommand is a community removal record's create or update
+// as the firehose carries it: the removal, the record's key and CID, the CID
+// of the post version the record names, and the record's createdAt.
+type ApplyRemovalRecordCommand struct {
+	ApplyRemovalCommand
+	RecordKey, RecordCID, SubjectCID string
+	CreatedAt                        string
+}
+
+// ApplyRemovalRecordDeleteCommand is a community removal record's delete as
+// the firehose carries it: the community, the record's key and the commit's
+// watermark. The record's subject is resolved from the index.
+type ApplyRemovalRecordDeleteCommand struct {
+	CommunityDID string
+	RecordKey    string
 	Watermark    CommunityWatermark
 }
 

@@ -1,9 +1,6 @@
 {
   "$type": "social.coves.community.moderator",
-  "user": "did:plc:trustedmoderator",
-  "community": "did:plc:programmingcommunity",
+  "subject": "did:plc:trustedmoderator",
   "role": "moderator",
-  "permissions": ["remove-posts", "remove-comments", "manage-wiki"],
-  "createdAt": "2024-06-15T10:00:00Z",
-  "createdBy": "did:plc:communityowner"
+  "createdAt": "2026-11-01T10:00:00Z"
 }

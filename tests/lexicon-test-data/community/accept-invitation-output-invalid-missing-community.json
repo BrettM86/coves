@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.acceptInvitation#output",
+  "subject": "did:plc:rosterinvitee",
+  "version": 8
+}

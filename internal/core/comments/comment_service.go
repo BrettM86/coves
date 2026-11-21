@@ -64,6 +64,12 @@ type Service interface {
 
 	// DeleteComment soft-deletes a comment
 	DeleteComment(ctx context.Context, session *oauth.ClientSessionData, req DeleteCommentRequest) error
+
+	// GetCommentViewsByURIs returns the views of the indexed comments among
+	// uris for viewerDID, keyed by URI; a URI with no indexed comment has no
+	// entry. A comment whose author viewerDID has blocked has no view and is
+	// in blocked instead.
+	GetCommentViewsByURIs(ctx context.Context, uris []string, viewerDID string) (views map[string]*CommentView, blocked map[string]bool, err error)
 }
 
 // GetCommentsRequest defines the parameters for fetching comments
@@ -818,6 +824,8 @@ func (s *commentService) buildCommentView(
 		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
 		IndexedAt: comment.IndexedAt.Format(time.RFC3339),
 		Stats:     stats,
+
+		CommunityDID: comment.CommunityDID,
 	}
 }
 
@@ -878,6 +886,7 @@ func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView 
 		IsDeleted:      true,
 		DeletionReason: comment.DeletionReason,
 		DeletedAt:      deletedAtStr,
+		CommunityDID:   comment.CommunityDID,
 	}
 }
 
@@ -1522,6 +1531,44 @@ func (s *commentService) buildPostRecord(post *posts.Post) map[string]interface{
 	// These fields are stored as JSONB in the database and need proper deserialization
 
 	return record
+}
+
+// GetCommentViewsByURIs returns the views of the indexed comments among uris
+// for viewerDID, keyed by URI; a URI with no indexed comment has no entry. A
+// deleted, removed or hidden comment gets the placeholder view a thread shows.
+// A comment whose author viewerDID has blocked gets no view and is reported in
+// blocked, the block rule the thread read paths apply.
+func (s *commentService) GetCommentViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*CommentView, map[string]bool, error) {
+	views := make(map[string]*CommentView, len(uris))
+	if len(uris) == 0 {
+		return views, map[string]bool{}, nil
+	}
+	byURI, err := s.commentRepo.GetByURIsBatch(ctx, uris)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetching comments by URI: %w", err)
+	}
+	blocked, err := s.commentRepo.BlockedCommentURIs(ctx, viewerDID, uris)
+	if err != nil {
+		return nil, nil, fmt.Errorf("checking viewer blocks on comments: %w", err)
+	}
+	found := make([]*Comment, 0, len(byURI))
+	for _, uri := range uris {
+		if comment, ok := byURI[uri]; ok && comment != nil && !blocked[uri] {
+			found = append(found, comment)
+		}
+	}
+	var viewer *string
+	if viewerDID != "" {
+		viewer = &viewerDID
+	}
+	threadViews, err := s.buildLevelViews(ctx, found, 0, viewer)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, threadView := range threadViews {
+		views[threadView.Comment.URI] = threadView.Comment
+	}
+	return views, blocked, nil
 }
 
 // GetActorComments retrieves comments by a user for their profile page

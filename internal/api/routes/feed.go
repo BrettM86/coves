@@ -27,9 +27,14 @@ func RegisterFeedRoutes(
 	// identifies this instance's own removals and labels.
 	authority moderation.Authority,
 	instanceDID string,
+	opts ...ViewerModerationRouteOption,
 ) {
+	cfg := newViewerModerationRouteConfig(opts)
 	getFeedHandler := feed.NewGetFeedHandler(feedService, communityService, voteService, blueskyService).
 		WithViewerModeration(authority, instanceDID)
+	if cfg.communityViewer != nil {
+		getFeedHandler.WithCommunityViewerModeration(cfg.communityViewer)
+	}
 
 	// GET /xrpc/social.coves.feed.getFeed
 	// Public with optional auth; scope home requires a signed-in viewer.

@@ -47,7 +47,7 @@ func TestCreateHandler_AcceptsARealisticAvatarUpload(t *testing.T) {
 			received = req
 			return &communities.Community{DID: "did:plc:test", Handle: "c-test.coves.social"}, nil
 		},
-	}, nil)
+	}, communities.CreationAnyone, adminSet{})
 
 	rec := postCommunity(t, handler.HandleCreate, "/xrpc/social.coves.community.create", map[string]any{
 		"name":           "photography",
@@ -74,7 +74,7 @@ func TestCreateHandler_OversizedBodyIsRefusedBeforeTheService(t *testing.T) {
 			t.Error("the service was called for a body over the image tier")
 			return nil, nil
 		},
-	}, nil)
+	}, communities.CreationAnyone, adminSet{})
 
 	// 8MB raw becomes ~10.7MB of base64 — past LimitImage.
 	rec := postCommunity(t, handler.HandleCreate, "/xrpc/social.coves.community.create", map[string]any{

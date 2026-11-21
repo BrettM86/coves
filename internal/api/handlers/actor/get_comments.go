@@ -23,6 +23,7 @@ type GetCommentsHandler struct {
 	voteService    votes.Service
 	authority      moderation.Authority
 	instanceDID    string
+	communities    moderation.CommunityViewer
 }
 
 // NewGetCommentsHandler creates a new actor comments handler
@@ -103,6 +104,7 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	h.populateViewerVoteState(r, response)
 	if response != nil {
 		common.PopulateCommentViewerModeration(r, h.authority, h.instanceDID, response.Comments)
+		common.PopulateCommentCommunityViewerModeration(r, h.communities, response.Comments)
 	}
 
 	// Pre-encode response to buffer before writing headers
@@ -213,4 +215,15 @@ type validationError struct {
 
 func (e *validationError) Error() string {
 	return e.message
+}
+
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each comment.
+func (h *GetCommentsHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *GetCommentsHandler {
+	if viewer == nil {
+		panic("actor.GetCommentsHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
+	return h
 }

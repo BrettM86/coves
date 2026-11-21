@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.restorePost#input",
+  "expectedVersion": 5,
+  "idempotencyKey": "restore-post-1"
+}

@@ -21,6 +21,10 @@ var (
 	// ErrReportNotFound indicates the requested report does not exist
 	ErrReportNotFound = errors.New("report not found")
 
+	// ErrReporterErased indicates the reporter's account has been erased, so
+	// no report by it may be stored.
+	ErrReporterErased = errors.New("reporter account has been erased")
+
 	// ErrInvalidTargetType indicates the target type is not a valid value
 	ErrInvalidTargetType = errors.New("invalid target type: must be one of post, comment")
 )

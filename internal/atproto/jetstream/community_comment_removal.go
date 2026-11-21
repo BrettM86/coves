@@ -31,6 +31,7 @@ func (c *PostEventConsumer) recordCommunityCommentRemoval(
 	outcome, err := c.communityCommentRemovals.RecordRemoval(ctx, moderation.CommunityCommentRemoval{
 		RepositoryDID: communityDID, RecordKey: commit.RKey, RecordCID: commit.CID, Rev: commit.Rev,
 		SubjectURI: decision.Subject.URI, SubjectCID: decision.Subject.CID,
+		Code: decision.Code, Reason: decision.Reason,
 	})
 	if err != nil {
 		return fmt.Errorf("recording the removal of comment %s by %s: %w", decision.Subject.URI, communityDID, err)

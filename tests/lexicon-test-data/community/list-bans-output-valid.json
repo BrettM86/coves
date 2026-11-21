@@ -1,0 +1,24 @@
+{
+  "$type": "social.coves.community.listBans#output",
+  "bans": [
+    {
+      "subject": "did:plc:bansubject1",
+      "uri": "at://did:plc:bancommunity1/social.coves.moderation.ban/4wp3kb2ytwnxjfr4bwgk7xcmvl2ysx2a4ta4ofeu46axolswyxra",
+      "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+      "reason": "Spamming invite links",
+      "expiresAt": "2026-11-20T12:00:00Z",
+      "createdAt": "2026-10-25T08:00:00Z",
+      "indexedAt": "2026-10-25T08:00:05Z",
+      "active": true
+    },
+    {
+      "subject": "did:plc:bansubject2",
+      "uri": "at://did:plc:bancommunity1/social.coves.moderation.ban/xdqpbfbtnqgsrsx3sz3o4dlhsnv2ukq2qf3mbj5c5dtmpvlnwdna",
+      "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+      "expiresAt": "2026-11-01T12:00:00Z",
+      "indexedAt": "2026-10-20T08:00:00Z",
+      "active": false
+    }
+  ],
+  "cursor": "next-page-1"
+}

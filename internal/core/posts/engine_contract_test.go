@@ -411,6 +411,48 @@ func TestEngine_ApplyAcceptanceTwiceAtTheSameRevIsASkipThatChangesNothing(t *tes
 			"how a replay looks like a fresh decision in the moderation log")
 }
 
+// B6 (a): the engine's local acceptance advances the post's community version;
+// the pending seed does not, and the firehose copy of the same acceptance
+// commit is refused by the watermark and advances nothing. The copy is applied
+// the way the post consumer applies it (authorpost.go applyAcceptance): the
+// same acceptance record and the commit rev as the watermark.
+func TestEngine_LocalAcceptanceAndItsFirehoseCopyAdvanceThePostVersionOnce(t *testing.T) {
+	t.Parallel()
+
+	f := newEngineFixture(t)
+	ctx := context.Background()
+
+	post := f.publishPost(t, "a post accepted locally, then seen on the firehose")
+	f.seedPending(t, post.URI, post.CID)
+	outcome, err := f.process(t, post.URI)
+	require.NoError(t, err)
+	require.Equal(t, posts.EngineAccepted, outcome)
+
+	row, err := f.admissions.Get(ctx, f.community.DID, post.URI)
+	require.NoError(t, err)
+	require.NotNil(t, row.LastCommunityEvent)
+	require.NotNil(t, row.AcceptanceURI)
+	require.NotNil(t, row.AcceptanceRkey)
+
+	result, err := f.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   f.community.DID,
+		PostURI:        post.URI,
+		AcceptanceURI:  *row.AcceptanceURI,
+		AcceptanceRkey: *row.AcceptanceRkey,
+		PinnedCID:      post.CID,
+		Watermark:      posts.CommunityWatermark{Rev: row.LastCommunityEvent.Rev},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionSkippedStale, result.Outcome, "the firehose copy carries the commit rev the engine stamped")
+
+	state, err := postgres.NewCommunitySubjectStateReader(f.db).ReadCommunitySubjectState(ctx, f.community.DID, post.URI, "post")
+	require.NoError(t, err)
+	require.NotNil(t, state, "the reader must return the post's community state")
+	assert.Equal(t, "accepted", state.AdmissionStatus)
+	assert.Equal(t, int64(1), state.Version,
+		"one acceptance is one change: the pending seed and the firehose copy must not advance the version")
+}
+
 // stampFailingAdmissions fails ApplyAcceptance a scripted number of times and
 // then delegates — the database blip that strikes AFTER the PDS commit landed.
 type stampFailingAdmissions struct {

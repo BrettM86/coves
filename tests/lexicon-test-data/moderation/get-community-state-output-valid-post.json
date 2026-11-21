@@ -1,0 +1,10 @@
+{
+  "$type": "social.coves.moderation.getCommunityState#output",
+  "community": "did:plc:communityalpha",
+  "subject": "at://did:plc:authoralice/social.coves.community.postv2/3kabcalphapost",
+  "kind": "post",
+  "version": 3,
+  "post": {
+    "status": "accepted"
+  }
+}

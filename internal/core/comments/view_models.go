@@ -24,6 +24,8 @@ type CommentView struct {
 	DeletionReason *string             `json:"deletionReason,omitempty"`
 	DeletedAt      *string             `json:"deletedAt,omitempty"`
 	Moderation     *ModerationView     `json:"moderation,omitempty"`
+	// CommunityDID is the community the comment's thread belongs to. Not serialized.
+	CommunityDID string `json:"-"`
 }
 
 // ThreadViewComment represents a comment with its nested replies
@@ -60,12 +62,15 @@ type CommentViewerState struct {
 	// Moderation lists the moderation actions the viewer may take on the
 	// comment, as modlog action tokens. Omitted when there are none.
 	Moderation []string `json:"moderation,omitempty"`
+	// CommunityModeration lists the community moderation actions the viewer
+	// may take on the comment. Omitted when there are none.
+	CommunityModeration []string `json:"communityModeration,omitempty"`
 }
 
 // IsEmpty reports whether the viewer state carries no field, so the viewer
 // object can be omitted from the comment view.
 func (s *CommentViewerState) IsEmpty() bool {
-	return s.Vote == nil && s.VoteURI == nil && len(s.Moderation) == 0
+	return s.Vote == nil && s.VoteURI == nil && len(s.Moderation) == 0 && len(s.CommunityModeration) == 0
 }
 
 // GetCommentsResponse represents the response for fetching comments on a post

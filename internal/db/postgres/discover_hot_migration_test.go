@@ -35,6 +35,36 @@ func TestMigration048DiscoverHotSnapshots(t *testing.T) {
 	_, err := db.ExecContext(ctx, `CREATE TABLE discover_hot_migration_sentinel (id BIGINT PRIMARY KEY)`)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
+
+		"093 (community report notifications) must be rolled back first")
+
+	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
+		"092 (community report dismissals) must be rolled back first")
+	require.EqualValues(t, 91, testkit.MigrateDownOne(t, db, 91),
+		"091 (moderation action role) must be rolled back first")
+	require.EqualValues(t, 90, testkit.MigrateDownOne(t, db, 90),
+
+		"090 (community ban actions) must be rolled back first")
+
+	require.EqualValues(t, 89, testkit.MigrateDownOne(t, db, 89),
+		"089 (community comment actions) must be rolled back first")
+	require.EqualValues(t, 88, testkit.MigrateDownOne(t, db, 88),
+
+		"088 (community post actions) must be rolled back first")
+
+	require.EqualValues(t, 87, testkit.MigrateDownOne(t, db, 87),
+		"087 (community post removal reasons) must be rolled back first")
+	require.EqualValues(t, 86, testkit.MigrateDownOne(t, db, 86),
+		"086 (community role record deletes) must be rolled back first")
+	require.EqualValues(t, 85, testkit.MigrateDownOne(t, db, 85),
+		"085 (community role invitations) must be rolled back first")
+	require.EqualValues(t, 84, testkit.MigrateDownOne(t, db, 84),
+		"084 (community write intents) must be rolled back first")
+	require.EqualValues(t, 83, testkit.MigrateDownOne(t, db, 83),
+		"083 (community subject versions) must be rolled back first")
+	require.EqualValues(t, 82, testkit.MigrateDownOne(t, db, 82),
+		"082 (community roles) must be rolled back first")
 	require.EqualValues(t, 81, testkit.MigrateDownOne(t, db, 81),
 		"081 (community subscription favorite) must be rolled back first")
 	require.EqualValues(t, 80, testkit.MigrateDownOne(t, db, 80),

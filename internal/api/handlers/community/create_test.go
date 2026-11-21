@@ -109,120 +109,75 @@ func (m *mockCommunityService) GetByDID(ctx context.Context, did string) (*commu
 	return nil, nil
 }
 
-func TestCreateHandler_AllowlistRestriction(t *testing.T) {
-	mockService := &mockCommunityService{}
+// adminSet is an InstanceAdminChecker that recognizes exactly the DIDs it holds.
+type adminSet map[string]bool
+
+func (a adminSet) IsInstanceAdmin(did string) bool { return a[did] }
+
+// TestCreateHandler_CreationPolicy pins who the COMMUNITY_CREATION policy lets
+// through: anyone lets an ordinary account create, instance-admins refuses it
+// with CommunityCreationRestricted before the service is reached, and a zero
+// policy (nothing configured) fails closed rather than open.
+func TestCreateHandler_CreationPolicy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		adminDID  = "did:plc:creationadmin"
+		memberDID = "did:plc:creationmember"
+	)
 
 	tests := []struct {
-		name           string
-		requestDID     string
-		expectedError  string
-		allowedDIDs    []string
-		expectedStatus int
+		name               string
+		policy             communities.CreationPolicy
+		callerDID          string
+		wantStatus         int
+		wantError          string
+		wantServiceReached bool
 	}{
-		{
-			name:           "allowed DID can create community",
-			allowedDIDs:    []string{"did:plc:allowed123"},
-			requestDID:     "did:plc:allowed123",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "non-allowed DID is forbidden",
-			allowedDIDs:    []string{"did:plc:allowed123"},
-			requestDID:     "did:plc:notallowed456",
-			expectedStatus: http.StatusForbidden,
-			expectedError:  "CommunityCreationRestricted",
-		},
-		{
-			name:           "empty allowlist allows anyone",
-			allowedDIDs:    nil,
-			requestDID:     "did:plc:anyuser789",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "multiple allowed DIDs - first DID",
-			allowedDIDs:    []string{"did:plc:admin1", "did:plc:admin2", "did:plc:admin3"},
-			requestDID:     "did:plc:admin1",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "multiple allowed DIDs - last DID",
-			allowedDIDs:    []string{"did:plc:admin1", "did:plc:admin2", "did:plc:admin3"},
-			requestDID:     "did:plc:admin3",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "multiple allowed DIDs - not in list",
-			allowedDIDs:    []string{"did:plc:admin1", "did:plc:admin2"},
-			requestDID:     "did:plc:randomuser",
-			expectedStatus: http.StatusForbidden,
-			expectedError:  "CommunityCreationRestricted",
-		},
-		{
-			name:           "allowlist with empty strings filtered - valid DID works",
-			allowedDIDs:    []string{"did:plc:admin1", "", "did:plc:admin2"},
-			requestDID:     "did:plc:admin1",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name:           "allowlist with empty strings filtered - invalid DID blocked",
-			allowedDIDs:    []string{"did:plc:admin1", "", "did:plc:admin2"},
-			requestDID:     "did:plc:notallowed",
-			expectedStatus: http.StatusForbidden,
-			expectedError:  "CommunityCreationRestricted",
-		},
-		{
-			name:           "all empty strings allows anyone",
-			allowedDIDs:    []string{"", "", ""},
-			requestDID:     "did:plc:anyuser",
-			expectedStatus: http.StatusOK,
-		},
+		{name: "anyone lets a non-admin create", policy: communities.CreationAnyone, callerDID: memberDID, wantStatus: http.StatusOK, wantServiceReached: true},
+		{name: "instance-admins refuses a non-admin", policy: communities.CreationInstanceAdmins, callerDID: memberDID, wantStatus: http.StatusForbidden, wantError: "CommunityCreationRestricted", wantServiceReached: false},
+		{name: "instance-admins lets an admin create", policy: communities.CreationInstanceAdmins, callerDID: adminDID, wantStatus: http.StatusOK, wantServiceReached: true},
+		{name: "unset policy fails closed for a non-admin", policy: "", callerDID: memberDID, wantStatus: http.StatusForbidden, wantError: "CommunityCreationRestricted", wantServiceReached: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := NewCreateHandler(mockService, tc.allowedDIDs)
+			t.Parallel()
 
-			// Create request body
-			reqBody := map[string]interface{}{
-				"name":                   "testcommunity",
-				"displayName":            "Test Community",
-				"description":            "Test description",
-				"visibility":             "public",
-				"allowExternalDiscovery": true,
-			}
-			bodyBytes, err := json.Marshal(reqBody)
+			reached := false
+			handler := NewCreateHandler(&mockCommunityService{
+				createFunc: func(context.Context, communities.CreateCommunityRequest) (*communities.Community, error) {
+					reached = true
+					return &communities.Community{DID: "did:plc:created", Handle: "c-gardening.coves.social"}, nil
+				},
+			}, tc.policy, adminSet{adminDID: true})
+
+			bodyBytes, err := json.Marshal(map[string]any{"name": "gardening", "visibility": "public"})
 			if err != nil {
-				t.Fatalf("Failed to marshal request: %v", err)
+				t.Fatalf("encoding the request body: %v", err)
 			}
-
-			// Create HTTP request
-			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create", bytes.NewBuffer(bodyBytes))
+			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
+			req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, tc.callerDID))
 
-			// Inject user DID into context (simulates auth middleware)
-			ctx := context.WithValue(req.Context(), middleware.UserDIDKey, tc.requestDID)
-			req = req.WithContext(ctx)
-
-			// Execute handler
 			w := httptest.NewRecorder()
 			handler.HandleCreate(w, req)
 
-			// Check status code
-			if w.Code != tc.expectedStatus {
-				t.Errorf("Expected status %d, got %d. Body: %s", tc.expectedStatus, w.Code, w.Body.String())
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, w.Code, w.Body.String())
 			}
-
-			// Check error response if expected
-			if tc.expectedError != "" {
+			if reached != tc.wantServiceReached {
+				t.Fatalf("service reached = %v, want %v", reached, tc.wantServiceReached)
+			}
+			if tc.wantError != "" {
 				var errResp struct {
-					Error   string `json:"error"`
-					Message string `json:"message"`
+					Error string `json:"error"`
 				}
 				if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
-					t.Fatalf("Failed to decode error response: %v", err)
+					t.Fatalf("decoding the error response: %v", err)
 				}
-				if errResp.Error != tc.expectedError {
-					t.Errorf("Expected error %s, got %s", tc.expectedError, errResp.Error)
+				if errResp.Error != tc.wantError {
+					t.Fatalf("expected error %q, got %q", tc.wantError, errResp.Error)
 				}
 			}
 		})
@@ -231,7 +186,7 @@ func TestCreateHandler_AllowlistRestriction(t *testing.T) {
 
 func TestCreateHandler_RequiresAuth(t *testing.T) {
 	mockService := &mockCommunityService{}
-	handler := NewCreateHandler(mockService, nil)
+	handler := NewCreateHandler(mockService, communities.CreationAnyone, adminSet{})
 
 	// Create request without auth context
 	reqBody := map[string]interface{}{
@@ -301,7 +256,7 @@ func createdBy(t *testing.T, userDID string, body map[string]any) (communities.C
 				PDSRefreshToken: "refresh-jwt",
 			}, nil
 		},
-	}, nil)
+	}, communities.CreationAnyone, adminSet{})
 
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -410,7 +365,7 @@ func TestCreateHandler_MalformedBody(t *testing.T) {
 			t.Error("the service was called with an undecodable request body")
 			return nil, nil
 		},
-	}, nil)
+	}, communities.CreationAnyone, adminSet{})
 
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create",
 		bytes.NewReader([]byte("{not json")))
@@ -439,8 +394,9 @@ func TestCreateHandler_InvalidVisibilityIsABadRequest(t *testing.T) {
 	service := communities.NewCommunityServiceWithPDSFactory(
 		nil, unparseablePDSURL, "did:web:coves.example", "coves.example",
 		communities.NewPDSAccountProvisioner("coves.example", unparseablePDSURL, communities.PrivateHostOptions(true)...),
-		nil, nil, nil, communities.PrivateHostOptions(true)...)
-	handler := NewCreateHandler(service, nil)
+		nil, nil, nil, append(communities.PrivateHostOptions(true),
+			communities.WithRoleAuthorization(unusedRoleIndex{}, viewerRoles{}))...)
+	handler := NewCreateHandler(service, communities.CreationAnyone, adminSet{})
 
 	encoded, err := json.Marshal(map[string]any{
 		"name":        "gardening",
@@ -460,4 +416,30 @@ func TestCreateHandler_InvalidVisibilityIsABadRequest(t *testing.T) {
 	if w.Code != 400 {
 		t.Errorf("expected 400 for visibility \"secret\", got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+// unusedRoleIndex is a role index for a create that validation refuses before
+// any role is written.
+type unusedRoleIndex struct{}
+
+func (unusedRoleIndex) ListCommunityRoles(context.Context, string) ([]communities.CommunityRole, error) {
+	return nil, nil
+}
+
+func (unusedRoleIndex) ListRolesBySubject(context.Context, string) ([]communities.CommunityRole, error) {
+	return nil, nil
+}
+
+func (unusedRoleIndex) UpsertCommunityRole(context.Context, communities.CommunityRole) error {
+	return nil
+}
+
+func (unusedRoleIndex) DeleteCommunityRole(context.Context, string, string) error { return nil }
+
+func (unusedRoleIndex) UpsertCommunityRoleAtRev(context.Context, communities.CommunityRole, string) (bool, error) {
+	return false, nil
+}
+
+func (unusedRoleIndex) ApplyRoleRecordEvent(context.Context, communities.RoleRecordEvent) (bool, error) {
+	return false, nil
 }

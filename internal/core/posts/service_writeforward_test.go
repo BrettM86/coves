@@ -17,6 +17,7 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
+	"Coves/tests/fixtures/communityrolefixture"
 	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -326,7 +327,7 @@ func newPostFixture(t *testing.T) *postFixture {
 		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
 		nil, nil,
-		communities.PrivateHostOptions(true)...,
+		append(communities.PrivateHostOptions(true), communityrolefixture.Authorization(db))...,
 	)
 
 	authorRepos := newAuthorRepoRegistry(pdsServer)

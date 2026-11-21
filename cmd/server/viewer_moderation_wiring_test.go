@@ -29,6 +29,9 @@ import (
 const (
 	viewerModerationInstanceDID = "did:web:coves.test"
 	viewerModerationAdminDID    = "did:plc:viewermoderationadmin"
+	// viewerModerationCommunityDID is the community the served posts and
+	// comments belong to.
+	viewerModerationCommunityDID = "did:plc:viewermoderationcommunity"
 )
 
 // viewerModerationSessions returns the OAuth fakes holding one sealed session
@@ -42,22 +45,31 @@ func viewerModerationSessions(did string) (wiringSessionUnsealer, *wiringOAuthSt
 	return unsealer, store, token
 }
 
-// oneLiveCommentService answers every getComments with a single live comment.
+// oneLiveCommentService answers every getComments and actor.getComments with a
+// single live comment, by an author with no role, in a thread of
+// viewerModerationCommunityDID.
 type oneLiveCommentService struct{ comments.Service }
 
+func oneLiveComment() *comments.CommentView {
+	return &comments.CommentView{
+		URI:          "at://did:plc:commentauthor/social.coves.community.comment/3lcommentlive",
+		CID:          "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi",
+		Author:       &posts.AuthorView{DID: "did:plc:commentauthor", Handle: "commentauthor.test"},
+		Record:       map[string]any{"$type": "social.coves.community.comment", "content": "live comment"},
+		Post:         &comments.CommentRef{URI: "at://did:plc:postauthor/social.coves.community.post/3lpost", CID: "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"},
+		Stats:        &comments.CommentStats{},
+		CreatedAt:    "2026-10-04T00:00:00Z",
+		IndexedAt:    "2026-10-04T00:00:00Z",
+		CommunityDID: viewerModerationCommunityDID,
+	}
+}
+
 func (oneLiveCommentService) GetComments(context.Context, *comments.GetCommentsRequest) (*comments.GetCommentsResponse, error) {
-	return &comments.GetCommentsResponse{Comments: []*comments.ThreadViewComment{{
-		Comment: &comments.CommentView{
-			URI:       "at://did:plc:commentauthor/social.coves.community.comment/3lcommentlive",
-			CID:       "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi",
-			Author:    &posts.AuthorView{DID: "did:plc:commentauthor", Handle: "commentauthor.test"},
-			Record:    map[string]any{"$type": "social.coves.community.comment", "content": "live comment"},
-			Post:      &comments.CommentRef{URI: "at://did:plc:postauthor/social.coves.community.post/3lpost", CID: "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"},
-			Stats:     &comments.CommentStats{},
-			CreatedAt: "2026-10-04T00:00:00Z",
-			IndexedAt: "2026-10-04T00:00:00Z",
-		},
-	}}}, nil
+	return &comments.GetCommentsResponse{Comments: []*comments.ThreadViewComment{{Comment: oneLiveComment()}}}, nil
+}
+
+func (oneLiveCommentService) GetActorComments(context.Context, *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error) {
+	return &comments.GetActorCommentsResponse{Comments: []*comments.CommentView{oneLiveComment()}}, nil
 }
 
 // TestRegisterCommentQueryRouteHydratesViewerModeration proves the getComments
@@ -102,7 +114,9 @@ func TestRegisterCommentQueryRouteHydratesViewerModeration(t *testing.T) {
 type unreachableUserBlockService struct{ userblocks.Service }
 
 // unreachableUserService satisfies the Bluesky import handlers' non-nil guards;
-// no request in this package's route wiring tests reaches it.
+// no request in this package's route wiring tests reaches it. The zero
+// CommunityStateService these partial applications carry plays the same role
+// for the getCommunityState route.
 type unreachableUserService struct{ users.UserService }
 
 // TestRegisterXRPCRoutesServesGetViewerAuthority proves the production XRPC
@@ -115,14 +129,15 @@ func TestRegisterXRPCRoutesServesGetViewerAuthority(t *testing.T) {
 	authority := moderation.NewAllowlistAuthority([]string{viewerModerationAdminDID})
 	clientConfig := indigooauth.NewLocalhostConfig("http://127.0.0.1:0/oauth/callback", []string{"atproto"})
 	app := &application{
-		cfg:                 &config.Config{Instance: config.InstanceConfig{DID: viewerModerationInstanceDID}},
-		oauthClient:         &oauth.OAuthClient{ClientApp: indigooauth.NewClientApp(&clientConfig, nil)},
-		authMiddleware:      middleware.NewOAuthAuthMiddleware(unsealer, store),
-		instanceAdminAuth:   middleware.NewInstanceAdminMiddleware(unsealer, store, nil, authority),
-		moderationAuthority: authority,
-		mediaPipeline:       pipeline,
-		userBlockService:    unreachableUserBlockService{},
-		userService:         unreachableUserService{},
+		cfg:                   &config.Config{Instance: config.InstanceConfig{DID: viewerModerationInstanceDID}},
+		oauthClient:           &oauth.OAuthClient{ClientApp: indigooauth.NewClientApp(&clientConfig, nil)},
+		authMiddleware:        middleware.NewOAuthAuthMiddleware(unsealer, store),
+		instanceAdminAuth:     middleware.NewInstanceAdminMiddleware(unsealer, store, nil, authority),
+		moderationAuthority:   authority,
+		mediaPipeline:         pipeline,
+		userBlockService:      unreachableUserBlockService{},
+		userService:           unreachableUserService{},
+		communityStateService: &moderation.CommunityStateService{},
 	}
 	router := chi.NewRouter()
 	registerXRPCRoutes(router, app)
@@ -162,14 +177,15 @@ func TestRegisterXRPCRoutesPanicsWithoutViewerModerationWiring(t *testing.T) {
 			unsealer, store, _ := viewerModerationSessions(viewerModerationAdminDID)
 			clientConfig := indigooauth.NewLocalhostConfig("http://127.0.0.1:0/oauth/callback", []string{"atproto"})
 			app := &application{
-				cfg:                 &config.Config{Instance: config.InstanceConfig{DID: test.instanceDID}},
-				oauthClient:         &oauth.OAuthClient{ClientApp: indigooauth.NewClientApp(&clientConfig, nil)},
-				authMiddleware:      middleware.NewOAuthAuthMiddleware(unsealer, store),
-				instanceAdminAuth:   middleware.NewInstanceAdminMiddleware(unsealer, store, nil, moderation.NewAllowlistAuthority(nil)),
-				moderationAuthority: test.authority,
-				mediaPipeline:       pipeline,
-				userBlockService:    unreachableUserBlockService{},
-				userService:         unreachableUserService{},
+				cfg:                   &config.Config{Instance: config.InstanceConfig{DID: test.instanceDID}},
+				oauthClient:           &oauth.OAuthClient{ClientApp: indigooauth.NewClientApp(&clientConfig, nil)},
+				authMiddleware:        middleware.NewOAuthAuthMiddleware(unsealer, store),
+				instanceAdminAuth:     middleware.NewInstanceAdminMiddleware(unsealer, store, nil, moderation.NewAllowlistAuthority(nil)),
+				moderationAuthority:   test.authority,
+				mediaPipeline:         pipeline,
+				userBlockService:      unreachableUserBlockService{},
+				userService:           unreachableUserService{},
+				communityStateService: &moderation.CommunityStateService{},
 			}
 			assert.Panics(t, func() { registerXRPCRoutes(chi.NewRouter(), app) })
 		})

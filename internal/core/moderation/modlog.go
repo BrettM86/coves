@@ -70,6 +70,11 @@ func privateSubject(action Action) bool {
 	return hiddenAction(action) || restrictedSubject(action)
 }
 
+// rosterActionKind reports an action that changes a community's roster.
+func rosterActionKind(kind string) bool {
+	return kind == ActionGrantRole || kind == ActionRemoveRole || kind == ActionTransferOwnership
+}
+
 // ActionView is the public defs#actionView projection of an action.
 type ActionView struct {
 	Ref          ActionRefView   `json:"ref"`
@@ -82,7 +87,12 @@ type ActionView struct {
 	Reason       string          `json:"reason,omitempty"`
 	LabelValue   string          `json:"labelValue,omitempty"`
 	Actor        *ActorRefView   `json:"actor,omitempty"`
-	Reverses     *ActionRefView  `json:"reverses,omitempty"`
+	// AdminActing marks a community-scope action an instance admin took
+	// without a usable community role that permits the action.
+	AdminActing bool `json:"adminActing,omitempty"`
+	// Role is the community role a roster action granted, removed or transferred.
+	Role     string         `json:"role,omitempty"`
+	Reverses *ActionRefView `json:"reverses,omitempty"`
 	// ExpiresAt is a temporary account ban's expiry.
 	ExpiresAt string `json:"expiresAt,omitempty"`
 	// ContentSnapshot is present only while the subject is public and not deleted by its author.
@@ -165,12 +175,16 @@ func NewActionView(action Action) ActionView {
 			view.ContentSnapshot = newContentSnapshotView(action.ContentSnapshot)
 		}
 	}
-	if restrictedSubject(action) {
-		// A community scope would tie the restricted subject to its community.
+	if privateSubject(action) {
+		// A community scope would tie the withheld subject to its community.
 		view.Scope.CommunityDID = ""
 	}
 	if action.ActorDID != "" {
 		view.Actor = &ActorRefView{DID: action.ActorDID}
+	}
+	view.AdminActing = action.AdminActing
+	if rosterActionKind(action.Action) {
+		view.Role = action.Role
 	}
 	if action.ReversesActionID != "" {
 		view.Reverses = &ActionRefView{ServiceDID: action.AuthorityDID, ActionID: action.ReversesActionID}
@@ -365,8 +379,11 @@ func (s *service) actionListQuery(ctx context.Context, params ListActionsParams,
 		query.Before = &cursor.key
 	}
 	// A filter that selects by subject, collection or community would confirm
-	// what the projection withholds, so such rows are not listed at all.
-	query.ExcludeHidden = !admin && (params.Subject != "" || params.Collection != "" || params.Community != "")
+	// what the projection withholds, so such rows are not listed at all. A
+	// community-scope action's authority is its community, so an authority
+	// filter naming any DID other than this instance's selects by community too.
+	communityAuthority := query.AuthorityDID != "" && query.AuthorityDID != s.config.InstanceDID
+	query.ExcludeHidden = !admin && (params.Subject != "" || params.Collection != "" || params.Community != "" || communityAuthority)
 	query.ExcludeRestricted = query.ExcludeHidden
 	query.ExcludeLabelActions = !admin
 	return query, digest, nil

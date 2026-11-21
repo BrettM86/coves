@@ -122,7 +122,7 @@ func startLoopbackServer(t *testing.T) *loopbackServer {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { assert.NoError(t, db.Close()) })
 
-	app, err := buildApplication(context.Background(), cfg, db, db, db, credentialciphertest.Fixed())
+	app, err := buildApplication(context.Background(), cfg, db, db, db, db, credentialciphertest.Fixed())
 	require.NoError(t, err)
 	t.Cleanup(app.Close)
 

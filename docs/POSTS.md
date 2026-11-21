@@ -46,9 +46,11 @@ Removal is URI-scoped and terminal across author edits (§5.5). The pinned CID i
 
 `code` is `knownValues` with `maxLength: 64`. It must never become an `enum`: peers may send codes this AppView has not seen, and their records must still validate.
 
+`reason` (at most 1000 graphemes and 10000 bytes) is stored for a post subject and shown only to the post's author, on their own `postView` as `communityRemoval` with the code. Every other viewer gets the `#removedPost` tombstone, which carries the code and never the reason. A post hidden by an instance removal of its community carries no `communityRemoval`. A removal whose code or reason exceeds the lexicon bounds is refused. A comment subject's reason is checked against the same bounds but not stored.
+
 Rejection at submission time writes no record, so spam cannot bloat the community repo. Rejection is AppView-local (§5.6) and readable through `post.getStatus`.
 
-Today removal records have two production writers: the acceptance engine, on a failed re-acceptance, and server-admin removals in communities hosted on this instance, which write and undo their own removal records through `InstanceRemovalWriter` (see [MODERATION.md](MODERATION.md) § Scope). `RestoreAcceptance` has no production caller, and there is no community-moderator remove or restore endpoint.
+Removal records have three production writers: the acceptance engine, on a failed re-acceptance; server-admin removals in communities hosted on this instance, which write and undo their own removal records through `InstanceRemovalWriter` (see [MODERATION.md](MODERATION.md) § Scope); and community moderators, through `social.coves.community.removePost` and `restorePost` ([MODERATION.md](MODERATION.md) § Post remove and restore). A moderator remove calls `WriteRemoval` and a moderator restore calls `RestoreAcceptance`, each with `CreatedAt` (the intent's time, used when the stand record is created; an update keeps the standing record's `createdAt`) and `BeforeCommit`, which records the guard head, the stand record's CID before the write and the exact body before each batch is sent. A `BeforeCommit` error sends nothing.
 
 ### 3.4 XRPC surface
 
@@ -144,7 +146,7 @@ The engine takes no lease. The queue driver, firehose redelivery and the fast pa
 | `rejected` | AppView-local refusal; no record exists |
 | `removed` | Removal record stands |
 
-`evaluated_cid` is the CID the last decision judged. `redrivable` is false only while a policy refusal stands; every transition that reopens evaluation resets it to true. `last_community_rev`/`last_community_op_rank` are the §5.2 watermark, with a CHECK holding the op rank to 0 or 1.
+`evaluated_cid` is the CID the last decision judged. `redrivable` is false only while a policy refusal stands; every transition that reopens evaluation resets it to true. `last_community_rev`/`last_community_op_rank` are the §5.2 watermark, with a CHECK holding the op rank to 0 or 1. `decision_code` holds the removal or rejection code. `removal_reason` (migration 087) holds the removal record's reason; a CHECK allows it only while the status is `removed`, and every transition out of `removed` clears it.
 
 ### 6.2 Visibility
 

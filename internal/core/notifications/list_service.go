@@ -89,6 +89,9 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 		} else {
 			add(row.ActorDID, actors, &actorDIDs)
 		}
+		if row.Reason == ReasonCommunityInvitation || row.Reason == ReasonCommunityReport {
+			continue
+		}
 		if row.RootPost.State == ReferenceLive {
 			add(row.RootPostURI, postsSeen, &postURIs)
 		}
@@ -161,6 +164,14 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 
 	var omissions omittedRows
 	for _, row := range page.Notifications {
+		if row.Reason == ReasonCommunityInvitation {
+			output.Notifications = append(output.Notifications, invitationNotificationView(row, profiles))
+			continue
+		}
+		if row.Reason == ReasonCommunityReport {
+			output.Notifications = append(output.Notifications, communityReportNotificationView(row))
+			continue
+		}
 		record, root := commentViews[row.RecordURI], postViews[row.RootPostURI]
 		postMention := row.Reason == ReasonMention && posts.IsPostCollection(posts.CollectionOfPostURI(row.RecordURI))
 		switch {
@@ -299,6 +310,32 @@ func (s listService) ListNotifications(ctx context.Context, recipientDID, cursor
 	}
 	omissions.log(ctx)
 	return output, nil
+}
+
+// invitationNotificationView is a communityInvitation: the inviter as its
+// author and the inviting community; it has no root post, subject or record.
+func invitationNotificationView(row ListedNotification, profiles map[string]*users.User) NotificationView {
+	author := notificationProfileView(row.ActorDID, profiles)
+	view := NotificationView{
+		Reason: row.Reason, SortAt: notificationTime(row.SortAt), IsRead: row.IsRead, Author: &author,
+	}
+	if row.Community != nil {
+		view.Community = &posts.CommunityRef{DID: row.Community.DID, Handle: row.Community.Handle, Name: row.Community.Name}
+	}
+	return view
+}
+
+// communityReportNotificationView is a communityReport: the community whose
+// queue holds open reports and their count; it names no reporter and has no
+// author, root post, subject or record.
+func communityReportNotificationView(row ListedNotification) NotificationView {
+	view := NotificationView{
+		Reason: row.Reason, SortAt: notificationTime(row.SortAt), IsRead: row.IsRead, ReportCount: row.ReportCount,
+	}
+	if row.Community != nil {
+		view.Community = &posts.CommunityRef{DID: row.Community.DID, Handle: row.Community.Handle, Name: row.Community.Name}
+	}
+	return view
 }
 
 func notificationProfileView(did string, profiles map[string]*users.User) ProfileView {

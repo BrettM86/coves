@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.acceptInvitation#output",
+  "community": "did:plc:rosteralpha",
+  "subject": "did:plc:rosterinvitee",
+  "version": 8
+}

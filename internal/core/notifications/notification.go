@@ -12,7 +12,19 @@ const (
 	ReasonCommentReply Reason = "commentReply"
 	ReasonMention      Reason = "mention"
 	ReasonUpvote       Reason = "upvote"
+	// ReasonCommunityInvitation: the recipient was invited to a community
+	// role; the subject is at://<community DID>.
+	ReasonCommunityInvitation Reason = "communityInvitation"
+	// ReasonCommunityReport: the community's report queue holds open reports;
+	// the subject is at://<community DID>.
+	ReasonCommunityReport Reason = "communityReport"
 )
+
+// CommunityReportGroupIntent is one recipient's communityReport group to bump.
+type CommunityReportGroupIntent struct {
+	RecipientDID string
+	SubjectURI   string
+}
 
 // Intent is one record-keyed notification a fan-out wants written: the record
 // (a reply or a mention) that notifies RecipientDID. Writes are idempotent on

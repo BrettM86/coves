@@ -1,0 +1,4 @@
+{
+  "$type": "social.coves.community.comment.defs#commentViewerState",
+  "communityModeration": ["remove", 7]
+}

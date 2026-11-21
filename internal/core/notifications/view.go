@@ -20,6 +20,10 @@ type NotificationView struct {
 	Author         *ProfileView  `json:"author,omitempty"`
 	UpvoteCount    int           `json:"upvoteCount,omitempty"`
 	RecentUpvoters []ProfileView `json:"recentUpvoters,omitempty"`
+	// Community is the inviting community of a communityInvitation.
+	Community *posts.CommunityRef `json:"community,omitempty"`
+	// ReportCount is a communityReport's open report count.
+	ReportCount int `json:"reportCount,omitempty"`
 }
 
 // RootPostView is the thread's root post.

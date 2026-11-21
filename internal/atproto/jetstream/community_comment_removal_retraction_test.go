@@ -196,7 +196,7 @@ func TestCommunityCommentRemoval_Retraction(t *testing.T) {
 			require.Len(t, retractions, 1, "exactly one retract-removal is logged")
 			assert.Equal(t, ccrRetraction{
 				action:         "retract-removal",
-				actor:          "did:plc:acccommunity",
+				actor:          "",
 				authority:      "did:plc:acccommunity",
 				scopeKind:      "community",
 				scopeCommunity: sql.NullString{String: "did:plc:acccommunity", Valid: true},

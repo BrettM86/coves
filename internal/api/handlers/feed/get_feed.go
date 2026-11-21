@@ -41,6 +41,7 @@ type GetFeedHandler struct {
 	blueskyService blueskypost.Service
 	authority      moderation.Authority
 	instanceDID    string
+	communities    moderation.CommunityViewer
 }
 
 // NewGetFeedHandler creates a getFeed handler.
@@ -64,6 +65,17 @@ func (h *GetFeedHandler) WithViewerModeration(authority moderation.Authority, in
 	}
 	h.authority = authority
 	h.instanceDID = instanceDID
+	return h
+}
+
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each post.
+func (h *GetFeedHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *GetFeedHandler {
+	if viewer == nil {
+		panic("feed.GetFeedHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
 	return h
 }
 
@@ -125,6 +137,7 @@ func (h *GetFeedHandler) serve(w http.ResponseWriter, r *http.Request, req feedg
 
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 	common.PopulateViewerModeration(r, h.authority, h.instanceDID, response.Feed)
+	common.PopulateCommunityViewerModeration(r, h.communities, response.Feed)
 	for _, item := range response.Feed {
 		if item.Post != nil {
 			posts.TransformBlobRefsToURLs(item.Post)

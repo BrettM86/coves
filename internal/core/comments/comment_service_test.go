@@ -250,6 +250,10 @@ func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (ma
 	return result, nil
 }
 
+func (m *mockCommentRepo) BlockedCommentURIs(ctx context.Context, viewerDID string, uris []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func (m *mockCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error) {
 	if m.activeRemovalsErr != nil {
 		return nil, m.activeRemovalsErr

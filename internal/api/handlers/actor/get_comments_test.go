@@ -51,6 +51,10 @@ func (m *mockCommentService) DeleteComment(ctx context.Context, session *oauthli
 	return nil
 }
 
+func (m *mockCommentService) GetCommentViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*comments.CommentView, map[string]bool, error) {
+	return nil, nil, nil
+}
+
 // mockUserServiceForComments implements users.UserService for testing getComments
 type mockUserServiceForComments struct {
 	resolveHandleToDIDFunc func(ctx context.Context, handle string) (string, error)

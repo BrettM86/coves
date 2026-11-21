@@ -74,9 +74,12 @@ func TestService_UpdateProfileReadFailureStopsBeforeImageSideEffects(t *testing.
 			})
 			pipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 2, MaxLongEdge: media.DefaultMaxLongEdge})
 			require.NoError(t, err)
+			authz := newRoleAuthorizationFixture(
+				ownerRow(mediaCommunityDID, community.CreatedByDID, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+			authz.hosted[mediaCommunityDID] = true
 			service := communities.NewCommunityService(repo, server.URL, fakeInstanceDID, fakeInstanceDomain,
 				communities.NewPDSAccountProvisioner(fakeInstanceDomain, server.URL, communities.PrivateHostOptions(true)...),
-				nil, blobService, pipeline, communities.PrivateHostOptions(true)...)
+				nil, blobService, pipeline, append(communities.PrivateHostOptions(true), authz.option())...)
 			description := "Read failure must stop this edit"
 			_, err = service.UpdateCommunity(context.Background(), communities.UpdateCommunityRequest{
 				CommunityDID: community.DID, UpdatedByDID: community.CreatedByDID, Description: &description,

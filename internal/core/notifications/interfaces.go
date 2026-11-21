@@ -147,6 +147,15 @@ type ListedNotification struct {
 	Record            ListedReference
 	UpvoteCount       int
 	RecentUpvoterDIDs []string
+	// Community is a communityInvitation's community; nil for other reasons.
+	Community *ListedCommunity
+	// ReportCount is a communityReport's open community-visible report count.
+	ReportCount int
+}
+
+// ListedCommunity is the indexed community a communityInvitation names.
+type ListedCommunity struct {
+	DID, Handle, Name string
 }
 
 // ListedReference is one referenced item's read-time state and current CID.

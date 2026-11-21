@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.removeModerator#output",
+  "community": "did:plc:rosteralpha",
+  "subject": "did:plc:troublemaker456",
+  "version": 8
+}

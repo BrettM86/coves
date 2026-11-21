@@ -11,6 +11,8 @@ type CommunityCommentRemoval struct {
 	Rev           string
 	SubjectURI    string
 	SubjectCID    string
+	Code          string // the record's removal code
+	Reason        string // the record's optional reason
 }
 
 // ReasonSubjectMoved is the reason of the system actions that end and restore

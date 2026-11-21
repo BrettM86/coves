@@ -51,6 +51,13 @@ type communityService struct {
 	// mediaPipeline sanitizes avatar and banner bytes before upload.
 	mediaPipeline *media.Pipeline
 
+	// roles is the community role index the creator's owner role is indexed
+	// into; authorizer decides who may change a community. Both come from
+	// WithRoleAuthorization, and CreateCommunity and UpdateCommunity refuse to
+	// run without them.
+	roles      RoleRepository
+	authorizer RoleAuthorizer
+
 	// OAuth client for user PDS authentication (DPoP-based)
 	oauthClient      *oauthclient.OAuthClient
 	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
@@ -61,6 +68,11 @@ type communityService struct {
 	// so this field is what stands between a credential and an address someone
 	// else chose. See newPDSHTTPClient.
 	pdsHTTPClient *http.Client
+
+	// pdsClientOptions are the SSRF options for the pds clients this service
+	// builds on a community's session (the owner record's commit-returning
+	// write). They carry the same hatch as pdsHTTPClient.
+	pdsClientOptions []pds.ClientOption
 
 	// Token refresh concurrency control
 	// Each community gets its own mutex to prevent concurrent refresh attempts
@@ -117,17 +129,24 @@ func NewCommunityService(
 		}
 	}
 
+	cfg := &pdsClientConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return &communityService{
-		repo:           repo,
-		pdsURL:         pdsURL,
-		instanceDID:    instanceDID,
-		instanceDomain: instanceDomain,
-		provisioner:    provisioner,
-		oauthClient:    oauthClient,
-		blobService:    blobService,
-		mediaPipeline:  pipeline,
-		pdsHTTPClient:  newPDSHTTPClient(opts...),
-		refreshMutexes: make(map[string]*sync.Mutex),
+		repo:             repo,
+		pdsURL:           pdsURL,
+		instanceDID:      instanceDID,
+		instanceDomain:   instanceDomain,
+		provisioner:      provisioner,
+		oauthClient:      oauthClient,
+		blobService:      blobService,
+		mediaPipeline:    pipeline,
+		pdsHTTPClient:    newPDSHTTPClient(opts...),
+		pdsClientOptions: pds.PrivateHostOptions(cfg.allowPrivateHosts),
+		refreshMutexes:   make(map[string]*sync.Mutex),
+		roles:            cfg.roles,
+		authorizer:       cfg.roleAuthorizer,
 	}
 }
 
@@ -142,6 +161,10 @@ func NewCommunityServiceWithPDSFactory(
 	pipeline *media.Pipeline,
 	opts ...PDSClientOption,
 ) Service {
+	cfg := &pdsClientConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	return &communityService{
 		repo:             repo,
 		pdsURL:           pdsURL,
@@ -152,7 +175,10 @@ func NewCommunityServiceWithPDSFactory(
 		blobService:      blobService,
 		mediaPipeline:    pipeline,
 		pdsHTTPClient:    newPDSHTTPClient(opts...),
+		pdsClientOptions: pds.PrivateHostOptions(cfg.allowPrivateHosts),
 		refreshMutexes:   make(map[string]*sync.Mutex),
+		roles:            cfg.roles,
+		authorizer:       cfg.roleAuthorizer,
 	}
 }
 
@@ -192,6 +218,10 @@ func (s *communityService) getPDSClient(ctx context.Context, session *oauth.Clie
 // - We store PDS credentials to act on behalf of the community
 // - Community can migrate to other instances (future V2.1 with rotation keys)
 func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommunityRequest) (*Community, error) {
+	if err := s.requireRoleAuthorization(); err != nil {
+		return nil, err
+	}
+
 	// Apply defaults before validation
 	if req.Visibility == "" {
 		req.Visibility = "public"
@@ -337,6 +367,15 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("failed to create community profile record: %w", err)
 	}
 
+	// The creator's owner record follows the profile, written as the community
+	// and, on a resumed account that may already hold it, with putRecord. A
+	// failure fails the create; the provisioning account stays, so a retry by
+	// the same creator resumes and writes it.
+	ownerRole, ownerRev, err := s.writeCreatorOwnerRecord(ctx, pdsAccount, req.CreatedByDID, resumed)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build Community object with PDS credentials AND cryptographic keys
 	community := &Community{
 		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
@@ -380,7 +419,86 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("failed to persist community with credentials: %w", err)
 	}
 
+	// Index the owner role now, at the commit rev that wrote it, so the creator
+	// can change the community before the firehose copy of the record lands.
+	// The rev gate makes the local index and that copy one roster change. A
+	// resumed create whose identical put committed nothing has no rev: the
+	// earlier attempt's commit reaches the firehose and indexes it under the
+	// gate, and an ungated write here could resurrect an owner a newer change
+	// deleted. The community and its owner record exist by this point and the
+	// firehose indexes the record anyway, so a failure here is logged rather
+	// than failing a create a retry could not repeat.
+	if ownerRev != "" {
+		if _, err := s.roles.UpsertCommunityRoleAtRev(ctx, ownerRole, ownerRev); err != nil {
+			log.Printf("[COMMUNITY_CREATE] failed to index the owner role of community %s locally; the firehose will index it: %v",
+				community.DID, err)
+		}
+	}
+
 	return community, nil
+}
+
+// errRoleAuthorizationNotConfigured fails a create or update on a service
+// built without WithRoleAuthorization closed.
+var errRoleAuthorizationNotConfigured = errors.New("community role authorization is not configured")
+
+func (s *communityService) requireRoleAuthorization() error {
+	if s.roles == nil || s.authorizer == nil {
+		return errRoleAuthorizationNotConfigured
+	}
+	return nil
+}
+
+// ownerRecordClient is the commit-reporting writes the owner record goes
+// through. The concrete pds client satisfies it.
+type ownerRecordClient interface {
+	CreateRecordWithCommit(ctx context.Context, collection, rkey string, record any) (*pds.RecordCommit, error)
+	ReplaceRecordWithCommit(ctx context.Context, collection, rkey string, record any) (*pds.RecordCommit, error)
+}
+
+// writeCreatorOwnerRecord writes the creator's owner role record into the new
+// community's repo at the creator's role record key, and returns the role to
+// index with the rev of the commit that wrote it. A resumed account may already
+// hold the record from the interrupted create, so it is written with putRecord,
+// which replaces it; when the bytes are identical the PDS commits nothing, and
+// the rev is empty.
+func (s *communityService) writeCreatorOwnerRecord(ctx context.Context, account *CommunityPDSAccount, creatorDID string, resumed bool) (CommunityRole, string, error) {
+	createdAt := time.Now().UTC().Truncate(time.Second)
+	recordKey := RoleRecordKey(creatorDID)
+	record := map[string]interface{}{
+		"$type":     RoleCollection,
+		"subject":   creatorDID,
+		"role":      RoleOwner,
+		"createdAt": createdAt.Format(time.RFC3339),
+	}
+	generic, err := pds.NewFromAccessToken(s.pdsURL, account.DID, account.AccessToken, s.pdsClientOptions...)
+	if err != nil {
+		return CommunityRole{}, "", fmt.Errorf("failed to create the community owner record: %w", err)
+	}
+	client, ok := generic.(ownerRecordClient)
+	if !ok {
+		return CommunityRole{}, "", errors.New("failed to create the community owner record: the PDS client does not report commits")
+	}
+	var written *pds.RecordCommit
+	if resumed {
+		written, err = client.ReplaceRecordWithCommit(ctx, RoleCollection, recordKey, record)
+	} else {
+		written, err = client.CreateRecordWithCommit(ctx, RoleCollection, recordKey, record)
+	}
+	// ErrNoCommit carries the accepted record's URI and CID: the record stands,
+	// but there is no rev to index it at.
+	if err != nil && !errors.Is(err, pds.ErrNoCommit) {
+		return CommunityRole{}, "", fmt.Errorf("failed to create the community owner record: %w", err)
+	}
+	return CommunityRole{
+		CommunityDID:    account.DID,
+		SubjectDID:      creatorDID,
+		Role:            RoleOwner,
+		RecordKey:       recordKey,
+		RecordCID:       written.CID,
+		RecordCreatedAt: createdAt,
+		IndexedAt:       time.Now().UTC(),
+	}, written.CommitRev, nil
 }
 
 // provisionOrResumeCommunityAccount returns the PDS account for a community
@@ -706,6 +824,9 @@ func (s *communityService) GetByDID(ctx context.Context, did string) (*Community
 
 // UpdateCommunity updates a community via write-forward to PDS
 func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommunityRequest) (*Community, error) {
+	if err := s.requireRoleAuthorization(); err != nil {
+		return nil, err
+	}
 	if req.CommunityDID == "" {
 		return nil, NewValidationError("communityDid", "required")
 	}
@@ -724,11 +845,11 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		return nil, err
 	}
 
-	// Authorization: verify user is the creator BEFORE any expensive operations
-	// This prevents unauthorized users from uploading orphaned blobs (DoS vector)
-	// TODO(Communities-Auth): Add moderator check when moderation system is implemented
-	if existing.CreatedByDID != req.UpdatedByDID {
-		return nil, ErrUnauthorized
+	// Authorization: the indexed owner, or an instance admin acting for the
+	// community, BEFORE any expensive operation, so a refused caller cannot
+	// upload orphaned blobs. createdBy is history, not authority.
+	if _, err := s.authorizer.Authorize(ctx, existing.DID, req.UpdatedByDID, RoleOwner); err != nil {
+		return nil, err
 	}
 
 	// CRITICAL: Ensure fresh PDS access token before write operation

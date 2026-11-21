@@ -275,18 +275,31 @@ func writeOpOfResult(unionType string) WriteOp {
 // clobbered in exactly the window the pre-read opened. Callers wanting the
 // lenient, unguarded write still have PutRecord.
 func (c *client) PutRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord string) (*RecordCommit, error) {
-	return c.putRecordWithCommit(ctx, collection, rkey, record, swapRecord, "")
+	return c.putRecordWithCommit(ctx, collection, rkey, record, swapRecord, "", true)
+}
+
+// ReplaceRecordWithCommit is the UNGUARDED put with the commit rev retained: it
+// writes the record whatever stands at the key. It is for a writer that owns
+// the key outright and is re-establishing its own record, such as a resumed
+// community create rewriting the creator's owner record, which has no CID to
+// swap against without a pre-read. It is on the concrete client only, not on
+// CommitClient. An identical rewrite commits nothing and is ErrNoCommit with
+// the record's URI and CID.
+func (c *client) ReplaceRecordWithCommit(ctx context.Context, collection, rkey string, record any) (*RecordCommit, error) {
+	return c.putRecordWithCommit(ctx, collection, rkey, record, "", "", false)
 }
 
 // PutRecordGuardedByCommit is PutRecordWithCommit additionally guarded by
 // swapCommit: the PDS refuses the put unless the repo is still at that commit.
 func (c *client) PutRecordGuardedByCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string) (*RecordCommit, error) {
-	return c.putRecordWithCommit(ctx, collection, rkey, record, swapRecord, swapCommit)
+	return c.putRecordWithCommit(ctx, collection, rkey, record, swapRecord, swapCommit, true)
 }
 
 // putRecordWithCommit is the guarded put behind PutRecordWithCommit and
-// PutRecordGuardedByCommit. An empty swapCommit omits the commit guard.
-func (c *client) putRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string) (*RecordCommit, error) {
+// PutRecordGuardedByCommit, and the unguarded put behind
+// ReplaceRecordWithCommit when guardRecord is false. An empty swapCommit omits
+// the commit guard.
+func (c *client) putRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord, swapCommit string, guardRecord bool) (*RecordCommit, error) {
 	payload := map[string]any{
 		"repo":       c.did,
 		"collection": collection,
@@ -298,7 +311,7 @@ func (c *client) putRecordWithCommit(ctx context.Context, collection, rkey strin
 
 	if swapRecord != "" {
 		payload["swapRecord"] = swapRecord
-	} else {
+	} else if guardRecord {
 		// Explicit JSON null, NOT an absent key. Absent means "overwrite
 		// whatever is there"; null means "expect nothing to be there", which is
 		// what makes a concurrent create a detected ErrSwapConflict rather than

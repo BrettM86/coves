@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.removeModerator#input",
+  "community": "did:plc:rosteralpha",
+  "expectedVersion": 7,
+  "idempotencyKey": "remove-1"
+}

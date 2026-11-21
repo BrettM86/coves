@@ -43,6 +43,7 @@ import (
 	"Coves/internal/validation"
 
 	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
+	moderationhandlers "Coves/internal/api/handlers/moderation"
 	postgresRepo "Coves/internal/db/postgres"
 
 	indigoauth "github.com/bluesky-social/indigo/atproto/auth"
@@ -91,7 +92,10 @@ type application struct {
 	// identityRefreshLockDB is the dedicated pool identity refreshes hold
 	// their per-DID locks on; see openIdentityRefreshLockDatabase.
 	identityRefreshLockDB *sql.DB
-	credentialCipher      *credentialcipher.Cipher
+	// communityActionDB is the dedicated pool community action transactions
+	// hold connections from; see openCommunityActionDatabase.
+	communityActionDB *sql.DB
+	credentialCipher  *credentialcipher.Cipher
 
 	// Identity and authentication
 	identityResolver         identity.Resolver
@@ -142,7 +146,22 @@ type application struct {
 	// Domain services
 	userService      users.UserService
 	communityService communities.Service
-	postService      posts.Service
+	// communityRoleAuthorizer decides community owner and moderator authority
+	// over the role index; the community service and the community.get and
+	// getViewerAuthority reads share it.
+	communityRoleAuthorizer communities.RoleAuthorizer
+	// communityStateService serves social.coves.moderation.getCommunityState.
+	// It is an interface so an unwired field is a nil interface and route
+	// registration panics on it.
+	communityStateService moderationhandlers.CommunityStateGetter
+	// communityActionService runs the community roster actions (resign,
+	// remove) and the expired community write intent sweep.
+	communityActionService *moderation.CommunityActionService
+	// communityInvitations serves the community invitation procedures and
+	// queries over the invitation service and the action service's accept.
+	communityInvitations moderationhandlers.CommunityInvitationActions
+
+	postService posts.Service
 	// postStatusService answers post.getStatus. Separate from postService
 	// because a status query needs the admissions store and nothing else, and
 	// widening the write-path interface to reach it would make every test
@@ -159,20 +178,24 @@ type application struct {
 	instanceRemovalWriter posts.InstanceRemovalWriter
 	// acceptanceQueue walks the undecided backlog. nil when the driver is
 	// disabled (ACCEPTANCE_QUEUE_INTERVAL=0).
-	acceptanceQueue            *posts.QueueDriver
-	voteService                votes.Service
-	commentService             comments.Service
-	notificationService        notifications.Service
-	notificationListService    notifications.ListService
-	preferencesService         notifications.PreferencesService
-	userBlockService           userblocks.Service
-	adminReportService         adminreports.Service
+	acceptanceQueue         *posts.QueueDriver
+	voteService             votes.Service
+	commentService          comments.Service
+	notificationService     notifications.Service
+	notificationListService notifications.ListService
+	preferencesService      notifications.PreferencesService
+	userBlockService        userblocks.Service
+	adminReportService      adminreports.Service
+	// communityReportQueue serves a hosted community's report queue to its
+	// owner, moderators and instance admins.
+	communityReportQueue       *adminreports.CommunityQueueService
 	moderationService          moderation.Service
 	labelPublisher             *labels.Publisher // nil when LABEL_SIGNING_KEY is unset
 	labelStream                *labels.Stream    // nil when LABEL_SIGNING_KEY is unset; Close ends its subscriptions
 	mediaReconciler            *moderation.MediaReconciler
 	cdnPurgeQueue              *moderation.CDNPurgeQueue
 	communityRecordWriteQueue  *moderation.CommunityRecordWriteQueue
+	roleRecordDeleteQueue      *moderation.RoleRecordDeleteQueue
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	feedGeneratorService       feedgen.Service
@@ -226,6 +249,7 @@ func buildApplication(
 	db *sql.DB,
 	sessionCoordinationDB *sql.DB,
 	identityRefreshLockDB *sql.DB,
+	communityActionDB *sql.DB,
 	credentialCipher *credentialcipher.Cipher,
 ) (app *application, err error) {
 	app = &application{
@@ -233,6 +257,7 @@ func buildApplication(
 		db:                    db,
 		sessionCoordinationDB: sessionCoordinationDB,
 		identityRefreshLockDB: identityRefreshLockDB,
+		communityActionDB:     communityActionDB,
 		credentialCipher:      credentialCipher,
 		stopImageProxyCleanup: func() {},
 	}
@@ -445,6 +470,14 @@ func oauthScopes() []string {
 }
 
 func (a *application) buildRepositories() {
+	a.bridgeTrust = jetstream.NewBridgeTrust(a.cfg.Instance.TrustedBridgePDSHosts)
+	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
+		slog.Info("bridgedStats provenance configured",
+			"trusted_bridge_hosts", len(a.cfg.Instance.TrustedBridgePDSHosts))
+	} else {
+		slog.Info("no trusted bridge PDS hosts configured; bridgedStats will be ignored")
+	}
+
 	// Content of an account under this instance's in-force account ban is
 	// hidden from every other viewer on these read paths.
 	accountRestriction := postgresRepo.WithAccountRestrictionAuthority(a.cfg.Instance.DID)
@@ -483,6 +516,16 @@ func (a *application) buildServices(ctx context.Context) error {
 	// is indexed, by either door: the firehose's IndexUser and the OAuth
 	// callback's IndexAuthenticatedUser share that tail.
 	a.accountBans = postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)
+	// An erasure queues guarded deletes of the account's role records in
+	// hosted communities; the queue attempts them right after the erasure
+	// commits. The community service it opens repos through is built below,
+	// and is read per attempt, after the build is done.
+	a.roleRecordDeleteQueue = moderation.NewRoleRecordDeleteQueue(
+		postgresRepo.NewRoleRecordDeleteRepository(a.db),
+		newRoleRecordDeleterFactory(func() posts.CommunityRepoFactory {
+			return posts.NewCommunityRepoFactory(a.communityService, pds.PrivateHostOptions(a.allowPrivateHosts())...)
+		}),
+		moderation.RoleRecordDeleteQueueConfig{})
 	a.userService = users.NewUserService(
 		a.userRepo,
 		a.identityResolver,
@@ -500,6 +543,7 @@ func (a *application) buildServices(ctx context.Context) error {
 		users.WithAccountBans(a.accountBans),
 		// So does an account whose PDS confirmed it takendown or suspended.
 		users.WithAccountStatusRestrictions(postgresRepo.NewAccountStatusRepository(a.db)),
+		users.WithErasureFollowUp(a.roleRecordDeleteQueue),
 	)
 
 	// The OAuth handler indexes users into the AppView after login, so it
@@ -543,6 +587,23 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.cfg.Instance.Domain, a.cfg.PDS.URL,
 		append(communityPDSOptions, communities.WithPDSAdminPassword(a.cfg.PDS.AdminPassword))...,
 	)
+	// Community authority comes from the indexed roster of a community this
+	// instance hosts, suspended by an instance ban or a PDS restriction, with
+	// instance admins acting for any hosted community.
+	a.moderationAuthority = moderation.NewAllowlistAuthority(a.cfg.Moderation.Admins)
+	communityRoles := postgresRepo.NewCommunityRoleRepository(a.db)
+	a.communityRoleAuthorizer = communities.NewRoleAuthorizer(communities.RoleAuthorizerConfig{
+		Hosted:        postgresRepo.NewHostedCommunityQuery(a.db),
+		Removals:      postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID),
+		Roles:         communityRoles,
+		AccountBans:   a.accountBans,
+		AccountStatus: postgresRepo.NewAccountStatusRepository(a.db),
+		Admins:        a.moderationAuthority,
+		Now:           time.Now,
+	})
+	a.communityStateService = moderation.NewCommunityStateService(
+		postgresRepo.NewCommunityBanRepository(a.db), a.communityRoleAuthorizer,
+		postgresRepo.NewCommunitySubjectStateReader(a.db))
 	a.communityService = communities.NewCommunityService(
 		a.communityRepo,
 		a.cfg.PDS.URL,
@@ -551,14 +612,18 @@ func (a *application) buildServices(ctx context.Context) error {
 		provisioner,
 		a.oauthClient,
 		blobService, a.mediaPipeline,
-		communityPDSOptions...,
+		append(communityPDSOptions, communities.WithRoleAuthorization(communityRoles, a.communityRoleAuthorizer))...,
 	)
+	communityActions := postgresRepo.NewCommunityActionRepository(a.db, a.communityActionDB)
+	a.communityActionService = moderation.NewCommunityActionService(a.communityActionConfig(communityActions))
+	a.communityInvitations = newCommunityInvitationActions(a.communityRoleAuthorizer, communityActions,
+		postgresRepo.NewCommunityInvitationRepository(a.db), a.userService, a.communityActionService,
+		a.cfg.Moderation.IdempotencyRetention)
 
 	a.aggregatorService = aggregators.NewAggregatorService(a.aggregatorRepo, a.communityService)
 	a.apiKeyService = aggregators.NewAPIKeyService(a.aggregatorRepo, a.oauthClient.ClientApp)
 
 	a.buildDualAuth()
-	a.moderationAuthority = moderation.NewAllowlistAuthority(a.cfg.Moderation.Admins)
 	a.instanceAdminAuth = buildInstanceAdminMiddleware(a.moderationAuthority, a.oauthClient, a.oauthStore, a.serviceAuthValidator)
 	slog.Info("instance moderation admins configured", "admin_count", len(a.cfg.Moderation.Admins))
 
@@ -687,7 +752,11 @@ func (a *application) buildServices(ctx context.Context) error {
 		return err
 	}
 	a.adminReportService = adminreports.NewService(
-		postgresRepo.NewAdminReportRepository(a.db), adminReportOptions...,
+		postgresRepo.NewAdminReportRepository(a.db, a.cfg.Instance.DID, a.bridgeTrust),
+		adminReportOptions...,
+	)
+	a.communityReportQueue = adminreports.NewCommunityQueueService(
+		postgresRepo.NewCommunityReportQueueRepository(a.db), a.communityRoleAuthorizer,
 	)
 	a.communitySuggestionService = communitysuggestions.NewService(
 		postgresRepo.NewCommunitySuggestionRepository(a.db),
@@ -1080,14 +1149,6 @@ func (a *application) buildJetstreamInfrastructure() {
 	a.accountStatusStore = postgresRepo.NewAccountStatusRepository(a.db)
 	a.accountStatusConfirmer = jetstream.NewPDSRepoStatusConfirmer(a.uncachedIdentityResolver,
 		jetstream.PrivateRepoStatusConfirmerOptions(a.allowPrivateHosts())...)
-
-	a.bridgeTrust = jetstream.NewBridgeTrust(a.cfg.Instance.TrustedBridgePDSHosts)
-	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
-		slog.Info("bridgedStats provenance configured",
-			"trusted_bridge_hosts", len(a.cfg.Instance.TrustedBridgePDSHosts))
-	} else {
-		slog.Info("no trusted bridge PDS hosts configured; bridgedStats will be ignored")
-	}
 }
 
 // buildBridgedVotePoller constructs the poller under the same non-empty guard

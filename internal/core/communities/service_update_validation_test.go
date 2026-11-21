@@ -148,9 +148,12 @@ func TestUpdateCommunity_ValidatesFieldsBeforeWritingToThePDS(t *testing.T) {
 				PDSRefreshToken: "refresh-token",
 				CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			})
+			authz := newRoleAuthorizationFixture(
+				ownerRow(seededCommunityDID, updateValidationCreatorDID, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+			authz.hosted[seededCommunityDID] = true
 			service := communities.NewCommunityServiceWithPDSFactory(
 				repo, pdsURL, fakeInstanceDID, fakeInstanceDomain, nil, nil, nil, nil,
-				communities.PrivateHostOptions(true)...)
+				append(communities.PrivateHostOptions(true), authz.option())...)
 
 			updated, err := service.UpdateCommunity(context.Background(), communities.UpdateCommunityRequest{
 				CommunityDID:   seededCommunityDID,

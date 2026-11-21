@@ -12,7 +12,7 @@ import (
 
 // RegisterCommunitySuggestionRoutes registers community suggestion XRPC endpoints on the router
 // Implements social.coves.community.suggestion.* endpoints for community suggestions and voting
-// adminDIDs restricts who can update suggestion status (reuses COMMUNITY_CREATORS env var)
+// adminDIDs restricts who can update suggestion status (the instance admins, MODERATION_ADMINS)
 func RegisterCommunitySuggestionRoutes(
 	r chi.Router,
 	service communitysuggestions.Service,

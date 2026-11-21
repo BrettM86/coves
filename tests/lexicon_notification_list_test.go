@@ -164,7 +164,6 @@ func TestNotificationListLexicon_Contract(t *testing.T) {
 		{"missing reason", "reason", "view"},
 		{"missing sortAt", "sortAt", "view"},
 		{"missing isRead", "isRead", "view"},
-		{"missing rootPost", "rootPost", "view"},
 		{"missing record cid", "cid", "record"},
 		{"missing subject cid", "cid", "subject"},
 		{"missing rootPost cid", "cid", "rootPost"},

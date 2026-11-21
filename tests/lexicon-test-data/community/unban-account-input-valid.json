@@ -1,0 +1,7 @@
+{
+  "$type": "social.coves.community.unbanAccount#input",
+  "community": "did:plc:bancommunity1",
+  "subject": "did:plc:bansubject1",
+  "expectedVersion": 5,
+  "idempotencyKey": "unban-1"
+}

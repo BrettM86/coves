@@ -43,6 +43,8 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"ban-invalid-non-did-subject.json":                       "DID syntax didn't validate via regex",
 	"comment-invalid-content.json":                           "content",
 	"moderated-post-invalid-missing-moderation.json":         "moderation",
+	"moderator-invalid-role-empty.json":                      "string length outside specified range",
+	"moderator-invalid-role-too-long.json":                   "string length outside specified range",
 	"label-content-input-invalid-empty-label-value.json":     "string length outside specified range",
 	"list-actions-output-invalid-too-many-actions.json":      "array length out of bounds",
 	"post-invalid-missing-community.json":                    "community",
@@ -101,9 +103,39 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"post-viewer-state-invalid-moderation-item-not-string.json":           "expected a string",
 	"comment-viewer-state-invalid-moderation-item-not-string.json":        "expected a string",
 	"moderated-post-invalid-viewer-not-object.json":                       "expected an object",
+	// Community viewer actions (viewer.communityModeration).
+	"post-viewer-state-invalid-community-moderation-item-not-string.json":           "expected a string",
+	"moderated-post-viewer-state-invalid-community-moderation-item-not-string.json": "expected a string",
+	"removed-post-invalid-viewer-community-moderation-item-not-string.json":         "expected a string",
+	"comment-viewer-state-invalid-community-moderation-item-not-string.json":        "expected a string",
+	"community-viewer-state-invalid-community-moderation-item-not-string.json":      "expected a string",
 	// Modlog content snapshots and comment thread roots.
 	"action-view-invalid-snapshot-missing-captured-cid.json": "required field missing: capturedCid",
 	"action-view-invalid-root-uri-not-at-uri.json":           "AT-URI syntax",
+	// Community roster procedures (resignModerator and removeModerator).
+	"remove-moderator-input-invalid-missing-subject.json":   "required field missing: subject",
+	"resign-moderator-input-invalid-missing-community.json": "required field missing: community",
+	// Community post procedures (removePost and restorePost).
+	"remove-post-input-invalid-missing-code.json":     "required field missing: code",
+	"restore-post-input-invalid-missing-subject.json": "required field missing: subject",
+	// Community comment procedures (removeComment and restoreComment).
+	"remove-comment-input-invalid-missing-code.json":     "required field missing: code",
+	"restore-comment-input-invalid-missing-subject.json": "required field missing: subject",
+	// Community invitations (invite, offer, accept, decline and the two lists).
+	"invite-moderator-input-invalid-missing-subject.json":                "required field missing: subject",
+	"invite-moderator-output-invalid-missing-version.json":               "required field missing: version",
+	"offer-ownership-input-invalid-missing-expected-version.json":        "required field missing: expectedVersion",
+	"offer-ownership-output-invalid-invitation-missing-expires-at.json":  "required field missing: expiresAt",
+	"accept-invitation-input-invalid-missing-invitation.json":            "required field missing: invitation",
+	"accept-invitation-output-invalid-missing-community.json":            "required field missing: community",
+	"decline-invitation-input-invalid-missing-expected-version.json":     "required field missing: expectedVersion",
+	"decline-invitation-output-invalid-missing-invitation.json":          "required field missing: invitation",
+	"list-invitations-output-invalid-missing-invitations.json":           "required field missing: invitations",
+	"list-viewer-invitations-output-invalid-missing-roster-version.json": "required field missing: rosterVersion",
+	// Community bans (banAccount, unbanAccount and listBans).
+	"ban-account-input-invalid-non-did-subject.json":            "DID syntax didn't validate via regex",
+	"unban-account-input-invalid-missing-expected-version.json": "required field missing: expectedVersion",
+	"list-bans-output-invalid-missing-active.json":              "required field missing: active",
 	// Feed generators (feed.generator, getFeed and the generator-facing endpoints).
 	"generator-invalid-missing-kind.json":                                 "required field missing: kind",
 	"generator-invalid-scopes-wrong-type.json":                            "expected a string",
@@ -442,6 +474,8 @@ func TestLexiconRecordShapes(t *testing.T) {
 			"illegal-content",
 			"author-banned",
 			"moderator-discretion",
+			"harassment",
+			"doxing",
 		}, code.KnownValues, "removal code knownValues must document the common codes")
 
 		reason := requireStringProperty(t, record, "reason")

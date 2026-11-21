@@ -58,6 +58,10 @@ type Post struct {
 	// Set by the batched raw read: the post's author is account-restricted on
 	// this instance, so post.get serves it to non-authors as notFound.
 	AuthorRestricted bool `json:"-"`
+
+	// Set by the batched raw read: the post's admission status in its own
+	// community, "" when it has no admission row.
+	CommunityStatus string `json:"-"`
 }
 
 // CreatePostRequest represents input for creating a new post
@@ -203,6 +207,16 @@ type RemovedPost struct {
 	URI     string `json:"uri"`
 	Removed bool   `json:"removed"` // Always true (const per lexicon); discriminates the union on the wire
 	Code    string `json:"code,omitempty"`
+	// Viewer carries the community moderation actions the viewer may take on
+	// the removed post. Omitted when there are none.
+	Viewer *RemovedPostViewerState `json:"viewer,omitempty"`
+	// CommunityDID is the community that removed the post. Not serialized.
+	CommunityDID string `json:"-"`
+}
+
+// RemovedPostViewerState is the viewer state on a community removal tombstone.
+type RemovedPostViewerState struct {
+	CommunityModeration []string `json:"communityModeration,omitempty"`
 }
 
 // RemovalSource attributes one active removal decision on a post.
@@ -255,13 +269,16 @@ type ModeratedPost struct {
 	URI        string                    `json:"uri"`
 	AuthorDID  string                    `json:"authorDid,omitempty"`
 	Viewer     *ModeratedPostViewerState `json:"viewer,omitempty"`
+	// CommunityStatus is the post's admission status in its community. Not serialized.
+	CommunityStatus string `json:"-"`
 }
 
 // ModeratedPostViewerState is the viewer state on a removal tombstone. It
 // carries only moderation actions: the tombstone has no content to vote on,
 // save, or tag.
 type ModeratedPostViewerState struct {
-	Moderation []string `json:"moderation,omitempty"`
+	Moderation          []string `json:"moderation,omitempty"`
+	CommunityModeration []string `json:"communityModeration,omitempty"`
 }
 
 // MarshalJSON identifies this tombstone as the moderatedPost union member.
@@ -300,8 +317,8 @@ func notFoundResult(uri string) *PostResult {
 
 // removedResult builds a removedPost union member with its const discriminator set,
 // carrying the community's removal code so the client can explain the takedown.
-func removedResult(uri, code string) *PostResult {
-	return &PostResult{Removed: &RemovedPost{URI: uri, Removed: true, Code: code}}
+func removedResult(uri, code, communityDID string) *PostResult {
+	return &PostResult{Removed: &RemovedPost{URI: uri, Removed: true, Code: code, CommunityDID: communityDID}}
 }
 
 // moderatedResult builds a content-free removal tombstone from indexed metadata.
@@ -314,7 +331,7 @@ func moderatedResult(post *Post, sources []RemovalSource) *PostResult {
 		})
 	}
 	result := &ModeratedPost{
-		URI: post.URI, AuthorDID: post.AuthorDID,
+		URI: post.URI, AuthorDID: post.AuthorDID, CommunityStatus: post.CommunityStatus,
 		Moderation: &ModerationView{State: ModerationViewStateRemoved, Sources: viewSources},
 	}
 	if post.CommunityDID != "" && post.CommunityName != "" {
@@ -431,13 +448,20 @@ type PostView struct {
 	// postView carries status "accepted" (and the acceptance URI), while an
 	// author's own non-accepted post carries "pending"/"removed"/etc.; a
 	// legacy/bridged row that holds no admission omits them entirely.
-	Status        string `json:"status,omitempty"`
-	AcceptanceURI string `json:"acceptanceUri,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	AcceptanceURI    string            `json:"acceptanceUri,omitempty"`
+	CommunityRemoval *CommunityRemoval `json:"communityRemoval,omitempty"`
 
 	UpvoteCount   int `json:"-"`
 	DownvoteCount int `json:"-"`
 	Score         int `json:"-"`
 	CommentCount  int `json:"-"`
+}
+
+// CommunityRemoval is the community removal code and reason on the author's own view of a removed post.
+type CommunityRemoval struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // AuthorView represents author information in post views
@@ -494,7 +518,10 @@ type ViewerState struct {
 	// Moderation lists the moderation actions the viewer may take on the post,
 	// as modlog action tokens. Omitted when there are none.
 	Moderation []string `json:"moderation,omitempty"`
-	Saved      bool     `json:"saved"`
+	// CommunityModeration lists the community moderation actions the viewer
+	// may take on the post. Omitted when there are none.
+	CommunityModeration []string `json:"communityModeration,omitempty"`
+	Saved               bool     `json:"saved"`
 }
 
 // Filter constants for GetAuthorPosts

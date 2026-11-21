@@ -24,6 +24,7 @@ type GetCommentsHandler struct {
 	voteService votes.Service
 	authority   moderation.Authority
 	instanceDID string
+	communities moderation.CommunityViewer
 }
 
 // Service defines the interface for comment business logic
@@ -226,7 +227,20 @@ func (h *GetCommentsHandler) populateViewerState(r *http.Request, response *comm
 	}
 	common.PopulateCommentViewerVoteState(r, h.voteService, views)
 	common.PopulateCommentViewerModeration(r, h.authority, h.instanceDID, views)
-	if header, ok := response.Post.(*posts.PostView); ok && header != nil {
+	header, _ := response.Post.(*posts.PostView)
+	if header != nil {
 		common.PopulateViewerModeration(r, h.authority, h.instanceDID, []*posts.FeedViewPost{{Post: header}})
 	}
+	common.PopulateThreadCommunityViewerModeration(r, h.communities, views, header)
+}
+
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each comment.
+func (h *GetCommentsHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *GetCommentsHandler {
+	if viewer == nil {
+		panic("comments.GetCommentsHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
+	return h
 }

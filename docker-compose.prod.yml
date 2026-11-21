@@ -139,16 +139,22 @@ services:
       # Whitelist PDS issuer(s) allowed to use HS256 (no kid)
       HS256_ISSUERS: ${HS256_ISSUERS}
 
-      # Restrict community creation to instance DID only
-      COMMUNITY_CREATORS: did:web:coves.social
+      # Who may call community.create: anyone or instance-admins (MODERATION_ADMINS).
+      COMMUNITY_CREATION: ${COMMUNITY_CREATION:-instance-admins}
 
       # Trusted aggregators (bypass per-community authorization check)
       # Comma-separated list of DIDs
       TRUSTED_AGGREGATOR_DIDS: ${TRUSTED_AGGREGATOR_DIDS:-}
 
       # Instance moderation admins (comma-separated DIDs). Empty grants nobody
-      # admin authority. Independent of COMMUNITY_CREATORS.
+      # admin authority. COMMUNITY_CREATION=instance-admins limits community.create to them.
       MODERATION_ADMINS: ${MODERATION_ADMINS:-}
+      # Community post removals per moderator and per community per hour (instance admins exempt).
+      COMMUNITY_REMOVALS_PER_MODERATOR_PER_HOUR: ${COMMUNITY_REMOVALS_PER_MODERATOR_PER_HOUR:-60}
+      COMMUNITY_REMOVALS_PER_COMMUNITY_PER_HOUR: ${COMMUNITY_REMOVALS_PER_COMMUNITY_PER_HOUR:-300}
+      # Community bans per moderator and per community per hour (instance admins exempt).
+      COMMUNITY_BANS_PER_MODERATOR_PER_HOUR: ${COMMUNITY_BANS_PER_MODERATOR_PER_HOUR:-60}
+      COMMUNITY_BANS_PER_COMMUNITY_PER_HOUR: ${COMMUNITY_BANS_PER_COMMUNITY_PER_HOUR:-300}
 
       # Signed label publication (docs/MODERATION.md, "Published labels"). The
       # private LABEL_SIGNING_KEY lives only in .env; its public half is the

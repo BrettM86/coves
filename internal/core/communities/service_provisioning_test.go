@@ -15,6 +15,7 @@ import (
 	"Coves/internal/core/media"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures/communityrolefixture"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -147,7 +148,7 @@ func buildCommunityService(t *testing.T, db *sql.DB, pdsServer *testkit.PDS, opt
 		communities.NewPDSAccountProvisioner(instanceDomain, wiring.provisionerPDSURL, communities.PrivateHostOptions(true)...),
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
 		blobService, pipeline,
-		communities.PrivateHostOptions(true)...,
+		append(communities.PrivateHostOptions(true), communityrolefixture.Authorization(db))...,
 	)
 	return service, repo
 }

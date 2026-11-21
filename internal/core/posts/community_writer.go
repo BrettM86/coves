@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -105,6 +106,29 @@ type CommunityWriteCommand struct {
 	// record's subject is a strongRef, and a strongRef without a CID pins
 	// nothing, which is exactly the guarantee the acceptance exists to make.
 	PostCID string
+
+	// CreatedAt, when non-empty, is the createdAt the acceptance
+	// RestoreAcceptance creates carries instead of the writer clock's. The other
+	// acceptance writers ignore it.
+	CreatedAt string
+
+	// BeforeCommit, when set, runs before every batch RestoreAcceptance sends;
+	// an error aborts the write with nothing sent. The other acceptance writers
+	// ignore it.
+	BeforeCommit func(ctx context.Context, attempt CommunityCommitAttempt) error
+}
+
+// CommunityCommitAttempt describes one WriteRemoval or RestoreAcceptance batch
+// about to be sent: the head it is guarded by (swapCommit), the CID of the
+// record it makes stand as the pre-read found it ("" when the batch creates
+// it), the exact body of that record, and the CID and code of the record the
+// batch deletes as the pre-read found it ("" when it deletes none; the code is
+// a removal's).
+type CommunityCommitAttempt struct {
+	GuardCommitCID, GuardRev string
+	StandCID                 string
+	StandRecord              json.RawMessage
+	ClearCID, ClearCode      string
 }
 
 // CommunityRemovalCommand is a removal: this community no longer carries this
@@ -122,6 +146,23 @@ type CommunityRemovalCommand struct {
 
 	// Reason is the optional human-readable explanation.
 	Reason string
+
+	// CreatedAt, when non-empty, is the createdAt a newly created record
+	// carries instead of the writer clock's.
+	CreatedAt string
+
+	// ReplaceCreatedAtOf, when non-empty, is the CID of a standing record
+	// whose createdAt an update replaces with CreatedAt instead of keeping
+	// it; that record says the same only when it carries CreatedAt too. Any
+	// other standing record is met as without it. A community moderator's
+	// removal over the record the instance outbox wrote uses it: a fresh
+	// createdAt makes the record the community's own, which the outbox's
+	// restore then leaves standing.
+	ReplaceCreatedAtOf string
+
+	// BeforeCommit, when set, runs before every batch is sent; an error aborts
+	// the write with nothing sent.
+	BeforeCommit func(ctx context.Context, attempt CommunityCommitAttempt) error
 }
 
 // CommunityWriteResult describes what reached (or deliberately did not reach)
@@ -630,6 +671,9 @@ func (w *communityRecordWriter) WriteRemoval(ctx context.Context, cmd CommunityR
 		record: func(createdAt string) map[string]any {
 			return removalRecord(cmd, createdAt)
 		},
+		createdAt:          cmd.CreatedAt,
+		replaceCreatedAtOf: cmd.ReplaceCreatedAtOf,
+		beforeCommit:       cmd.BeforeCommit,
 		// A removal is URI-SCOPED: the pinned CID is audit metadata recording
 		// the version present when the post was removed, and the removal applies
 		// to the post across later edits (§5.5). So a standing removal carrying
@@ -637,9 +681,16 @@ func (w *communityRecordWriter) WriteRemoval(ctx context.Context, cmd CommunityR
 		// newer CID would churn the record's CID on every re-fire while changing
 		// nothing anyone reads. The DECISION is what has to match.
 		unchanged: func(standing *standingRecord) bool {
-			return standing.Code == string(cmd.Code) && standing.Reason == cmd.Reason
+			return removalUnchanged(standing, cmd)
 		},
 	})
+}
+
+// removalUnchanged reports whether the standing removal already carries cmd's
+// decision, and, when cmd replaces its createdAt, cmd's createdAt.
+func removalUnchanged(standing *standingRecord, cmd CommunityRemovalCommand) bool {
+	return standing.Code == string(cmd.Code) && standing.Reason == cmd.Reason &&
+		(standing.CID != cmd.ReplaceCreatedAtOf || standing.CreatedAt == cmd.CreatedAt)
 }
 
 func (w *communityRecordWriter) RestoreAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error) {
@@ -655,6 +706,8 @@ func (w *communityRecordWriter) RestoreAcceptance(ctx context.Context, cmd Commu
 		record: func(createdAt string) map[string]any {
 			return acceptanceRecord(cmd.PostURI, cmd.PostCID, createdAt)
 		},
+		createdAt:    cmd.CreatedAt,
+		beforeCommit: cmd.BeforeCommit,
 		unchanged: func(standing *standingRecord) bool {
 			return standing.SubjectCID == cmd.PostCID
 		},
@@ -678,7 +731,8 @@ type pairCommit struct {
 
 	// clearCollection holds the record this commit deletes, IF one is there.
 	// The delete is emitted only on presence: the PDS answers a delete of a
-	// missing record with a 500 and refuses the whole batch with it.
+	// missing record with a 500 and refuses the whole batch with it. Empty
+	// clears nothing: a removal record written on its own (WriteRemovalRecord).
 	clearCollection string
 
 	// record builds the body to write, stamped with the given createdAt.
@@ -687,6 +741,18 @@ type pairCommit struct {
 	// unchanged reports whether the standing record already says what this
 	// commit would say, so an identical re-fire writes nothing.
 	unchanged func(standing *standingRecord) bool
+
+	// createdAt, when non-empty, stamps a newly created record instead of the
+	// writer clock.
+	createdAt string
+
+	// replaceCreatedAtOf, when non-empty, is the CID of a standing record an
+	// update stamps with createdAt too, instead of keeping its createdAt.
+	replaceCreatedAtOf string
+
+	// beforeCommit, when set, sees every batch before it is sent; an error
+	// aborts the commit.
+	beforeCommit func(ctx context.Context, attempt CommunityCommitAttempt) error
 }
 
 // commitPair reads the subject's two records, shapes one commit from what it
@@ -722,9 +788,11 @@ func (w *communityRecordWriter) commitPair(ctx context.Context, spec pairCommit)
 		if err != nil {
 			return CommunityWriteResult{}, err
 		}
-		toClear, err := readStandingRecord(ctx, repo, spec.clearCollection, rkey)
-		if err != nil {
-			return CommunityWriteResult{}, err
+		var toClear *standingRecord
+		if spec.clearCollection != "" {
+			if toClear, err = readStandingRecord(ctx, repo, spec.clearCollection, rkey); err != nil {
+				return CommunityWriteResult{}, err
+			}
 		}
 
 		// Nothing to clear and the standing record already says it: a re-fire of
@@ -745,19 +813,42 @@ func (w *communityRecordWriter) commitPair(ctx context.Context, spec pairCommit)
 			})
 		}
 
-		op, createdAt := pds.WriteOpCreate, w.stamp()
+		op, createdAt, standCID := pds.WriteOpCreate, spec.createdAt, ""
+		if createdAt == "" {
+			createdAt = w.stamp()
+		}
 		if standing != nil {
-			op = pds.WriteOpUpdate
-			if standing.CreatedAt != "" {
+			op, standCID = pds.WriteOpUpdate, standing.CID
+			replace := spec.replaceCreatedAtOf != "" && standing.CID == spec.replaceCreatedAtOf && spec.createdAt != ""
+			if standing.CreatedAt != "" && !replace {
 				createdAt = standing.CreatedAt
 			}
 		}
+		record := spec.record(createdAt)
 		writes = append(writes, pds.Write{
 			Op:         op,
 			Collection: spec.standCollection,
 			RKey:       rkey,
-			Record:     spec.record(createdAt),
+			Record:     record,
 		})
+
+		if spec.beforeCommit != nil {
+			body, err := json.Marshal(record)
+			if err != nil {
+				return CommunityWriteResult{}, fmt.Errorf("encoding %s for %s in %s: %w",
+					spec.standCollection, spec.postURI, spec.communityDID, err)
+			}
+			attempt := CommunityCommitAttempt{
+				GuardCommitCID: head.CID, GuardRev: head.Rev, StandCID: standCID, StandRecord: body,
+			}
+			if toClear != nil {
+				attempt.ClearCID, attempt.ClearCode = toClear.CID, toClear.Code
+			}
+			if err := spec.beforeCommit(ctx, attempt); err != nil {
+				return CommunityWriteResult{}, fmt.Errorf("recording the attempt to commit %s for %s in %s: %w",
+					spec.standCollection, spec.postURI, spec.communityDID, err)
+			}
+		}
 
 		result, err := repo.ApplyWrites(ctx, writes, head.CID)
 		if err == nil {

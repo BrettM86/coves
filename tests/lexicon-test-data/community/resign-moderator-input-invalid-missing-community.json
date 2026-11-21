@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.community.resignModerator#input",
+  "expectedVersion": 7,
+  "idempotencyKey": "resign-1"
+}

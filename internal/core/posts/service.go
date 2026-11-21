@@ -1502,7 +1502,7 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 			results[i] = moderatedResult(postsByURI[uri], removals[uri])
 		default:
 			if code, ok := removed[uri]; ok {
-				results[i] = removedResult(uri, code)
+				results[i] = removedResult(uri, code, postsByURI[uri].CommunityDID)
 			} else {
 				results[i] = notFoundResult(uri)
 			}

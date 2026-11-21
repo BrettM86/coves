@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"time"
 
+	"Coves/internal/api/handlers/adminreport"
 	"Coves/internal/api/handlers/aggregator"
 	"Coves/internal/api/handlers/community"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
 	"Coves/internal/api/routes"
+	"Coves/internal/core/moderation"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
 	defaultavatarhandlers "Coves/internal/api/handlers/defaultavatars"
@@ -84,18 +86,32 @@ func registerImageRoutes(r chi.Router, app *application) {
 
 // registerXRPCRoutes mounts the atProto XRPC surface.
 func registerXRPCRoutes(r chi.Router, app *application) {
+	// communityViewer decides the viewer's community moderation actions
+	// (viewer.communityModeration) on every read serving posts, comments or a
+	// community.
+	communityViewer := app.communityViewer()
 	routes.RegisterUserRoutesWithOptions(r, app.userService, app.authMiddleware,
 		app.oauthClient.ClientApp, app.userRouteOptions())
 
+	communityGetOptions := []community.GetHandlerOption{
+		community.WithCommunityBans(postgresRepo.NewCommunityBanRepository(app.db)),
+		community.WithViewerRole(app.communityRoleAuthorizer),
+		community.WithViewerInvitation(postgresRepo.NewCommunityInvitationRepository(app.db)),
+	}
+	if communityViewer != nil {
+		communityGetOptions = append(communityGetOptions, community.WithCommunityViewerModeration(communityViewer))
+	}
 	routes.RegisterCommunityRoutes(r, app.communityService, app.communityRepo,
-		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators,
-		community.WithCommunityBans(postgresRepo.NewCommunityBanRepository(app.db)))
+		app.authMiddleware, app.cfg.Instance.CommunityCreation, app.moderationAuthority,
+		routes.WithCommunityGetOptions(communityGetOptions...),
+		routes.WithCommunityRoles(postgresRepo.NewCommunityRoleRepository(app.db)))
 
 	// Posts accept dual auth so aggregator bots can publish with a service
 	// JWT or API key rather than a user's OAuth session.
 	routes.RegisterPostRoutes(r, app.postService, app.voteService, app.blueskyService,
 		app.dualAuth, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID,
-		routes.WithPostStatusService(app.postStatusService))
+		routes.WithPostStatusService(app.postStatusService),
+		routes.WithPostCommunityViewerModeration(communityViewer))
 
 	routes.RegisterVoteRoutes(r, app.voteService, app.authMiddleware)
 	routes.RegisterUserBlockRoutes(r, app.userBlockService, app.authMiddleware)
@@ -104,29 +120,40 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterNotificationListRoutes(r, app.notificationListService, app.authMiddleware)
 	routes.RegisterNotificationPreferenceRoutes(r, app.preferencesService, app.authMiddleware)
 	routes.RegisterAdminReportRoutes(r, app.adminReportService, app.authMiddleware)
+	routes.RegisterCommunityReportQueueRoutes(r, app.instanceAdminAuth, app.communityReportQueue,
+		adminreport.NewReportSubjectViewer(app.postService, app.commentService))
 	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
 	routes.RegisterLabelRoutes(r, postgresRepo.NewLabelRepository(app.db))
 	if app.labelStream != nil {
 		routes.RegisterLabelStreamRoutes(r, app.labelStream)
 	}
-	var viewerAuthorityOptions []routes.ViewerAuthorityRouteOption
+	viewerAuthorityOptions := []routes.ViewerAuthorityRouteOption{
+		routes.WithViewerAuthorityCommunityRoles(app.communityRoleAuthorizer),
+	}
 	if app.accountBans != nil {
 		viewerAuthorityOptions = append(viewerAuthorityOptions, routes.WithViewerAuthorityAccountBans(app.accountBans))
 	}
 	routes.RegisterViewerAuthorityRoute(r, app.instanceAdminAuth, app.moderationAuthority, viewerAuthorityOptions...)
+	routes.RegisterCommunityStateRoute(r, app.instanceAdminAuth, app.communityStateService)
+	routes.RegisterCommunityRosterRoutes(r, app.instanceAdminAuth, app.communityActionService)
+	routes.RegisterCommunityPostRoutes(r, app.instanceAdminAuth, app.communityActionService)
+	routes.RegisterCommunityCommentRoutes(r, app.instanceAdminAuth, app.communityActionService)
+	routes.RegisterCommunityBanRoutes(r, app.instanceAdminAuth, app.communityActionService)
+	routes.RegisterCommunityInvitationRoutes(r, app.instanceAdminAuth, app.communityInvitations)
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,
-		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
+		app.authMiddleware, app.cfg.Moderation.Admins)
 
 	// searchPosts, getFeed and its aliases, and actor routes take optional auth: they are
 	// public, but an authenticated viewer additionally gets vote state,
 	// moderation actions, and block filtering.
+	communityViewerOption := routes.WithCommunityViewerModeration(communityViewer)
 	routes.RegisterCommunityFeedRoutes(r, app.feedService, app.voteService,
-		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
+		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID, communityViewerOption)
 	routes.RegisterFeedRoutes(r, app.feedGeneratorService, app.feedRegistry, app.communityService, app.voteService,
-		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
+		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID, communityViewerOption)
 	routes.RegisterFeedGeneratorRoutes(r, app.feedRegistry)
 	routes.RegisterActorRoutes(r, app.postService, app.userService, app.voteService,
-		app.blueskyService, app.commentService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
+		app.blueskyService, app.commentService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID, communityViewerOption)
 
 	// The registration handler fetches .well-known/atproto-did from a domain an
 	// unauthenticated caller supplies, so its client is guarded; the hatch is
@@ -137,7 +164,11 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterAggregatorAPIKeyRoutes(r, app.authMiddleware, app.apiKeyService, app.aggregatorService)
 	routes.RegisterMediaRoutes(r, app.dualAuth, app.mediaUploads, app.authorRepoFactory, app.apiKeyService, app.cfg.Media.UploadReadTimeout, app.cfg.Server.WriteTimeout)
 
-	registerCommentQueryRoute(r, app)
+	var commentQueryOptions []func(*commentsAPI.GetCommentsHandler)
+	if communityViewer != nil {
+		commentQueryOptions = append(commentQueryOptions, func(h *commentsAPI.GetCommentsHandler) { h.WithCommunityViewerModeration(communityViewer) })
+	}
+	registerCommentQueryRoute(r, app, commentQueryOptions...)
 
 	slog.Info("XRPC endpoints registered")
 }
@@ -152,12 +183,16 @@ func (a *application) userRouteOptions() *routes.UserRouteOptions {
 
 // registerCommentQueryRoute mounts the comment tree query separately because
 // it needs both optional authentication (for viewer vote state and moderation
-// actions) and a rate limit stricter than the global one.
-func registerCommentQueryRoute(r chi.Router, app *application) {
+// actions) and a rate limit stricter than the global one. configure applies
+// handler options, such as the community viewer reader.
+func registerCommentQueryRoute(r chi.Router, app *application, configure ...func(*commentsAPI.GetCommentsHandler)) {
 	limiter := middleware.NewNamedRateLimiter("commentQuery",
 		commentQueryRateLimit, commentQueryRateWindow)
 	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(app.commentService), app.voteService,
 		app.moderationAuthority, app.cfg.Instance.DID)
+	for _, apply := range configure {
+		apply(handler)
+	}
 
 	r.Handle(
 		"/xrpc/social.coves.community.comment.getComments",
@@ -231,4 +266,16 @@ func registerHealthRoutes(r chi.Router, app *application, consumers *consumerSet
 		healthOptions = append(healthOptions, withAcceptanceQueue(app.acceptanceQueue))
 	}
 	r.Get("/health/consumers", consumerHealthHandler(consumers.connectors, app.jetstreamState, healthOptions...))
+}
+
+// communityViewer is the community viewer reader over the application's role
+// authorizer, the community role index and the instance admin allowlist. It is nil, and no read serves
+// viewer.communityModeration, only when no role authorizer is wired, as in the
+// minimal route wirings of tests that exercise other surfaces; the server
+// always wires one.
+func (a *application) communityViewer() moderation.CommunityViewer {
+	if a.communityRoleAuthorizer == nil {
+		return nil
+	}
+	return moderation.NewCommunityViewer(a.communityRoleAuthorizer, postgresRepo.NewCommunityRoleRepository(a.db), a.moderationAuthority)
 }

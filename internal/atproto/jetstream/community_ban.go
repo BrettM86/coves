@@ -36,7 +36,9 @@ type banRecord struct {
 // only an indexed community's repo may ban, so any other repo is refused. The
 // record key must be the one derived from the subject, which keeps one ban per
 // community and subject. Writes are rev-gated by record URI, so a stale create
-// replayed after its delete does not bring the ban back.
+// replayed after its delete does not bring the ban back; the gate, the index
+// change, the version and the action commit in one transaction
+// (BanRepository.ApplyBanRecordEvent).
 func (c *PostEventConsumer) handleCommunityBanEvent(ctx context.Context, event *JetstreamEvent, commit *CommitEvent) error {
 	communityDID := event.Did
 
@@ -53,30 +55,16 @@ func (c *PostEventConsumer) handleCommunityBanEvent(ctx context.Context, event *
 			ErrUnresolvedReference, communityDID, commit.Collection)
 	}
 
-	var gate *RevGate
-	if c.db != nil {
-		gate = NewRevGate(c.db)
-	}
-
-	if commit.Operation == "delete" {
-		return applyGated(ctx, gate, "posts", communityDID, commit, func() error {
-			if err := c.communityBans.DeleteCommunityBan(ctx, communityDID, commit.RKey); err != nil {
-				return fmt.Errorf("lifting ban %s/%s: %w", communityDID, commit.RKey, err)
-			}
-			return nil
-		})
-	}
-
-	ban, err := parseBanRecord(communityDID, commit)
-	if err != nil {
-		return err
-	}
-	return applyGated(ctx, gate, "posts", communityDID, commit, func() error {
-		if err := c.communityBans.UpsertCommunityBan(ctx, *ban); err != nil {
-			return fmt.Errorf("indexing ban %s/%s: %w", communityDID, commit.RKey, err)
+	banEvent := communities.BanRecordEvent{CommunityDID: communityDID, RKey: commit.RKey, Rev: commit.Rev}
+	if commit.Operation != "delete" {
+		if banEvent.Ban, err = parseBanRecord(communityDID, commit); err != nil {
+			return err
 		}
-		return nil
-	})
+	}
+	if err := c.communityBans.ApplyBanRecordEvent(ctx, banEvent); err != nil {
+		return fmt.Errorf("applying the %s of ban %s/%s: %w", commit.Operation, communityDID, commit.RKey, err)
+	}
+	return nil
 }
 
 // parseBanRecord validates a ban create or update against the lexicon and the

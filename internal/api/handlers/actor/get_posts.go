@@ -25,6 +25,7 @@ type GetPostsHandler struct {
 	blueskyService blueskypost.Service
 	authority      moderation.Authority
 	instanceDID    string
+	communities    moderation.CommunityViewer
 }
 
 // NewGetPostsHandler creates a new actor posts handler
@@ -107,6 +108,7 @@ func (h *GetPostsHandler) HandleGetPosts(w http.ResponseWriter, r *http.Request)
 	// Populate viewer vote state and moderation actions if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 	common.PopulateViewerModeration(r, h.authority, h.instanceDID, response.Feed)
+	common.PopulateCommunityViewerModeration(r, h.communities, response.Feed)
 
 	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {
@@ -178,4 +180,15 @@ func (h *GetPostsHandler) parseRequest(r *http.Request) (posts.GetAuthorPostsReq
 	}
 
 	return req, nil
+}
+
+// WithCommunityViewerModeration makes the handler report, in
+// viewer.communityModeration, the community moderation actions the viewer may
+// take on each post.
+func (h *GetPostsHandler) WithCommunityViewerModeration(viewer moderation.CommunityViewer) *GetPostsHandler {
+	if viewer == nil {
+		panic("actor.GetPostsHandler.WithCommunityViewerModeration: viewer is required")
+	}
+	h.communities = viewer
+	return h
 }

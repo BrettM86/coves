@@ -62,6 +62,11 @@ type Comment struct {
 	// read, never stored, and set only by the thread reads (replies by parent
 	// and the permalink anchor).
 	CommenterRestricted bool `json:"-" db:"-"`
+
+	// CommunityDID is the community of the indexed post the comment's parent
+	// chain reaches, "" while the chain does not resolve. It is read, never
+	// stored, and set by the thread reads and the actor comment read.
+	CommunityDID string `json:"-" db:"-"`
 }
 
 // CommentRecord represents the atProto record structure indexed from Jetstream
