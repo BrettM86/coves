@@ -42,7 +42,7 @@ func moderationViewFixture(t *testing.T) (Service, *mockCommentRepo, *GetComment
 		return map[string][]*Comment{commentURI: {reply}}, nil
 	}
 	request := &GetCommentsRequest{PostURI: postURI, Sort: "new", Depth: 1, Limit: 10}
-	return NewCommentService(commentRepo, userRepo, postRepo, newMockCommunityRepo(), nil, nil, nil), commentRepo, request, comment, reply
+	return NewCommentService(commentRepo, userRepo, postRepo, newMockCommunityRepo(), nil, nil, nil, withMockCommentFeeds(commentRepo)), commentRepo, request, comment, reply
 }
 
 func TestCommentServiceGetCommentsOverlaysRemovalWithoutLeakingContent(t *testing.T) {

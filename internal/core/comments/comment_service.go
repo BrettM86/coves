@@ -15,6 +15,7 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
@@ -71,10 +72,92 @@ type GetCommentsRequest struct {
 	ViewerDID  *string
 	PostURI    string
 	ParentRkey string // Optional: record key of a comment within the post; scopes the response to its subtree
+	Feed       string // Optional: at-uri of the comment generator; wins over Sort
 	Sort       string
 	Timeframe  string
 	Depth      int
 	Limit      int
+}
+
+// WithFeedRegistry installs the feed generator registry GetComments resolves
+// its comment generator from. GetComments fails without one.
+func WithFeedRegistry(registry *feedgen.Registry) CommentServiceOption {
+	return func(s *commentService) { s.feedRegistry = registry }
+}
+
+// commentsTopRKey is the one comment feed that ranks within a timeframe.
+const commentsTopRKey = "comments-top"
+
+// resolveCommentFeed returns the comment generator a getComments request is
+// served by: req.Feed when set, else the comments-<sort> builtin (sort has
+// been defaulted to hot). A timeframe is accepted only by comments-top.
+func (s *commentService) resolveCommentFeed(req *GetCommentsRequest) (feedgen.CommentGenerator, error) {
+	if s.feedRegistry == nil {
+		return nil, errors.New("comment service has no feed registry configured")
+	}
+	feedURI := req.Feed
+	if feedURI == "" {
+		feedURI = s.feedRegistry.URI("comments-" + req.Sort)
+	}
+	builtin, ok := s.feedRegistry.Lookup(feedURI)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", feedgen.ErrUnknownFeed, feedURI)
+	}
+	if builtin.Kind != feedgen.KindComments || builtin.CommentGenerator == nil {
+		return nil, fmt.Errorf("%w: feed %s does not serve comments", feedgen.ErrUnsupportedFeedScope, feedURI)
+	}
+	if !slices.Contains(builtin.Scopes, feedgen.ScopeThread) {
+		return nil, fmt.Errorf("%w: feed %s does not support scope %q", feedgen.ErrUnsupportedFeedScope, feedURI, feedgen.ScopeThread)
+	}
+	if req.Timeframe != "" && feedURI != s.feedRegistry.URI(commentsTopRKey) {
+		return nil, fmt.Errorf("%w: feed %s", ErrTimeframeNotSupported, feedURI)
+	}
+	return builtin.CommentGenerator, nil
+}
+
+// listReplies returns one page of parentURI's direct replies in generator
+// order, hydrated, and the cursor for the next page (nil when there are no
+// more).
+func (s *commentService) listReplies(
+	ctx context.Context,
+	generator feedgen.CommentGenerator,
+	parentURI string,
+	req *GetCommentsRequest,
+	viewerDID string,
+) ([]*Comment, *string, error) {
+	skeletonReq := feedgen.CommentSkeletonRequest{
+		ViewerDID:      viewerDID,
+		Parents:        []string{parentURI},
+		LimitPerParent: req.Limit,
+		Timeframe:      req.Timeframe,
+	}
+	if req.Cursor != nil {
+		skeletonReq.Cursor = *req.Cursor
+	}
+	page, err := generator.CommentSkeleton(ctx, skeletonReq)
+	if err != nil {
+		return nil, nil, err
+	}
+	var uris []string
+	var nextCursor *string
+	for _, replies := range page.Replies {
+		if replies.Parent != parentURI {
+			continue
+		}
+		uris = append(uris, replies.URIs...)
+		if replies.Cursor != "" {
+			cursor := replies.Cursor
+			nextCursor = &cursor
+		}
+	}
+	if len(uris) == 0 {
+		return []*Comment{}, nextCursor, nil
+	}
+	listed, err := s.commentRepo.HydrateComments(ctx, uris, viewerDID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hydrating comments: %w", err)
+	}
+	return listed, nextCursor, nil
 }
 
 // PostReader is the post-repository surface the comment service depends on, and
@@ -122,6 +205,7 @@ type commentService struct {
 	communityRemovals communities.RemovalReader     // Optional; when set, comments in removed communities are refused.
 	accountBans       accountbans.Reader            // Optional; when set, banned accounts are refused.
 	instanceDID       string                        // This instance's moderation authority, named on restricted-account placeholders.
+	feedRegistry      *feedgen.Registry             // Comment generators getComments resolves feed/sort against.
 }
 
 // NewCommentService creates a new comment service instance
@@ -195,6 +279,12 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// 1a. Resolve the comment generator (feed wins over sort) before any query.
+	generator, err := s.resolveCommentFeed(req)
+	if err != nil {
+		return nil, fmt.Errorf("resolving comment feed: %w", err)
+	}
+
 	// Add timeout to prevent runaway queries with deep nesting
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -225,31 +315,22 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 
 	// 2b. If a parent comment rkey is provided, return only that comment's subtree
 	if req.ParentRkey != "" {
-		return s.getCommentSubtree(ctx, req, postView)
+		return s.getCommentSubtree(ctx, req, postView, generator)
 	}
 
-	// 3. Fetch top-level comments with pagination
-	// Uses repository's hot rank sorting and cursor-based pagination
+	// 3. Fetch top-level comments with pagination, in the generator's order
 	var viewerDIDStr string
 	if req.ViewerDID != nil {
 		viewerDIDStr = *req.ViewerDID
 	}
-	topComments, nextCursor, err := s.commentRepo.ListByParentWithHotRank(
-		ctx,
-		req.PostURI,
-		req.Sort,
-		req.Timeframe,
-		req.Limit,
-		req.Cursor,
-		viewerDIDStr,
-	)
+	topComments, nextCursor, err := s.listReplies(ctx, generator, req.PostURI, req, viewerDIDStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch top-level comments: %w", err)
 	}
 
 	// 4. Build threaded view with nested replies up to depth limit
 	// This iteratively loads child comments and builds the tree structure
-	threadViews, err := s.buildThreadViews(ctx, topComments, req.Depth, req.Sort, req.ViewerDID)
+	threadViews, err := s.buildThreadViews(ctx, topComments, req.Depth, generator, req.ViewerDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build comment threads: %w", err)
 	}
@@ -309,6 +390,7 @@ func (s *commentService) getCommentSubtree(
 	ctx context.Context,
 	req *GetCommentsRequest,
 	postView *posts.PostView,
+	generator feedgen.CommentGenerator,
 ) (*GetCommentsResponse, error) {
 	var viewerDIDStr string
 	if req.ViewerDID != nil {
@@ -328,7 +410,7 @@ func (s *commentService) getCommentSubtree(
 
 	// Build the parent's own view (author, stats, vote state) without loading replies.
 	// A deleted parent is rendered as a "[deleted]" placeholder, preserving its children.
-	parentViews, err := s.buildThreadViews(ctx, []*Comment{parent}, 0, req.Sort, req.ViewerDID)
+	parentViews, err := s.buildThreadViews(ctx, []*Comment{parent}, 0, generator, req.ViewerDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build parent comment view: %w", err)
 	}
@@ -338,21 +420,13 @@ func (s *commentService) getCommentSubtree(
 	// top-level comments, then nest deeper descendants up to the requested depth.
 	var nextCursor *string
 	if req.Depth > 0 {
-		children, cursor, err := s.commentRepo.ListByParentWithHotRank(
-			ctx,
-			parent.URI,
-			req.Sort,
-			req.Timeframe,
-			req.Limit,
-			req.Cursor,
-			viewerDIDStr,
-		)
+		children, cursor, err := s.listReplies(ctx, generator, parent.URI, req, viewerDIDStr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch subtree comments: %w", err)
 		}
 
 		nextCursor = cursor
-		parentView.Replies, err = s.buildThreadViews(ctx, children, req.Depth-1, req.Sort, req.ViewerDID)
+		parentView.Replies, err = s.buildThreadViews(ctx, children, req.Depth-1, generator, req.ViewerDID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build subtree comment threads: %w", err)
 		}
@@ -383,7 +457,7 @@ func (s *commentService) buildThreadViews(
 	ctx context.Context,
 	comments []*Comment,
 	remainingDepth int,
-	sort string,
+	generator feedgen.CommentGenerator,
 	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
@@ -411,13 +485,9 @@ func (s *commentService) buildThreadViews(
 			break
 		}
 
-		repliesByParent, err := s.commentRepo.ListByParentsBatch(
-			ctx,
-			parents,
-			sort,
-			DefaultRepliesPerParent,
-			batchViewerDID,
-		)
+		// Reply levels are unpaged and take no timeframe: every parent at this
+		// depth is ranked in one generator call.
+		repliesByParent, err := s.loadReplyLevel(ctx, generator, parents, batchViewerDID)
 		if err != nil {
 			// Propagate instead of returning a silently truncated tree: a transient DB
 			// error must surface as a failure, not as "no replies" with HasMore=false
@@ -454,6 +524,50 @@ func (s *commentService) buildThreadViews(
 		level, levelViews = nextLevel, nextViews
 	}
 
+	return result, nil
+}
+
+// loadReplyLevel ranks the direct replies of every parent at one depth with
+// one generator call (DefaultRepliesPerParent each), hydrates them all with
+// one HydrateComments call, and returns each parent's replies in generator
+// order. A parent with no visible replies is absent from the map.
+func (s *commentService) loadReplyLevel(
+	ctx context.Context,
+	generator feedgen.CommentGenerator,
+	parents []string,
+	viewerDID string,
+) (map[string][]*Comment, error) {
+	page, err := generator.CommentSkeleton(ctx, feedgen.CommentSkeletonRequest{
+		ViewerDID:      viewerDID,
+		Parents:        parents,
+		LimitPerParent: DefaultRepliesPerParent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var uris []string
+	for _, replies := range page.Replies {
+		uris = append(uris, replies.URIs...)
+	}
+	result := make(map[string][]*Comment, len(page.Replies))
+	if len(uris) == 0 {
+		return result, nil
+	}
+	hydrated, err := s.commentRepo.HydrateComments(ctx, uris, viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("hydrating replies: %w", err)
+	}
+	byURI := make(map[string]*Comment, len(hydrated))
+	for _, comment := range hydrated {
+		byURI[comment.URI] = comment
+	}
+	for _, replies := range page.Replies {
+		for _, uri := range replies.URIs {
+			if comment, found := byURI[uri]; found {
+				result[replies.Parent] = append(result[replies.Parent], comment)
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -613,7 +727,7 @@ func (s *commentService) buildCommentView(
 	usersByDID map[string]*users.User,
 ) *CommentView {
 	// Build author view from comment data with full user hydration
-	// CommenterHandle is hydrated by ListByParentWithHotRank via JOIN (fallback)
+	// CommenterHandle is hydrated by HydrateComments via JOIN (fallback)
 	// Prefer handle from usersByDID map for consistency
 	authorHandle := comment.CommenterHandle
 	if user, found := usersByDID[comment.CommenterDID]; found {

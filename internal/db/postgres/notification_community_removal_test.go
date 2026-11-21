@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -18,23 +19,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// removeNotificationCommunity removes communityDID at the instance through
-// the real moderation service and returns the restore. It mirrors
-// tests/fixtures/communityremovalfixture, which cannot be imported here: it
-// imports this package.
+// removeNotificationCommunity removes communityDID at the instance and returns
+// the restore (removeCommunityAtInstance).
 func removeNotificationCommunity(t *testing.T, f *unreadVisibilityFixture, communityDID string) (restore func()) {
 	t.Helper()
+	return removeCommunityAtInstance(t, f.db, communityDID)
+}
+
+// removeCommunityAtInstance removes communityDID at the instance through the
+// real moderation service and returns the restore. It mirrors
+// tests/fixtures/communityremovalfixture, which cannot be imported here: it
+// imports this package.
+func removeCommunityAtInstance(t *testing.T, db *sql.DB, communityDID string) (restore func()) {
+	t.Helper()
 	service := moderation.NewService(
-		moderation.NewRepositorySubjectReader(NewPostRepository(f.db), NewCommentRepository(f.db)),
-		NewModerationRepository(f.db),
+		moderation.NewRepositorySubjectReader(NewPostRepository(db), NewCommentRepository(db)),
+		NewModerationRepository(db),
 		moderation.Config{
 			InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000,
-			Communities: NewCommunityRepository(f.db, credentialciphertest.Fixed()),
+			Communities: NewCommunityRepository(db, credentialciphertest.Fixed()),
 		},
 	)
 	admin := "did:plc:notificationcommunityremovaladmin"
 	removed, err := service.RemoveCommunity(t.Context(), admin, moderation.RemoveCommunityRequest{
-		Subject: communityDID, ExpectedVersion: "v0", IdempotencyKey: "notification-community-remove",
+		Subject: communityDID, ExpectedVersion: "v0", IdempotencyKey: "community-remove-" + communityDID,
 		Reason: "social.coves.moderation.defs#reasonSpam",
 	})
 	require.NoError(t, err)
@@ -42,7 +50,7 @@ func removeNotificationCommunity(t *testing.T, f *unreadVisibilityFixture, commu
 	return func() {
 		t.Helper()
 		restored, err := service.RestoreCommunity(t.Context(), admin, moderation.RestoreCommunityRequest{
-			Subject: communityDID, ExpectedVersion: removed.State.Version, IdempotencyKey: "notification-community-restore",
+			Subject: communityDID, ExpectedVersion: removed.State.Version, IdempotencyKey: "community-restore-" + communityDID,
 			Reason: "social.coves.moderation.defs#reasonModeratorDiscretion",
 		})
 		require.NoError(t, err)

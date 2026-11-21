@@ -30,7 +30,7 @@ func TestCommentRepo_HotSortSurvivesFutureDatedComment(t *testing.T) {
 		t.Parallel()
 		env, all := seedThread(t)
 
-		listed, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 10, nil, "")
+		listed, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 10, nil, "")
 		require.NoError(t, err,
 			"the thread listing must not error because of one future-dated row")
 		assert.ElementsMatch(t, all, commentURIs(listed))
@@ -40,12 +40,12 @@ func TestCommentRepo_HotSortSurvivesFutureDatedComment(t *testing.T) {
 		t.Parallel()
 		env, all := seedThread(t)
 
-		first, cursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, nil, "")
+		first, cursor, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, nil, "")
 		require.NoError(t, err,
 			"the first thread page must not error because of one future-dated row")
 		require.NotNil(t, cursor, "four comments with a limit of two must produce a second-page cursor")
 
-		second, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, cursor, "")
+		second, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, cursor, "")
 		require.NoError(t, err,
 			"the second thread page must not error because of one future-dated row")
 
@@ -68,7 +68,7 @@ func TestCommentRepo_BatchRepliesSurviveFutureDatedComment(t *testing.T) {
 	ordinaryLow := env.seed(commentSpec{rkey: "batchlow", score: 10, createdAt: now.Add(-2 * time.Minute)})
 	future := env.seed(commentSpec{rkey: "batchfuture", score: 1, createdAt: now.Add(3 * time.Hour)})
 
-	byParent, err := env.repo.ListByParentsBatch(env.ctx, []string{env.root}, "hot", 10, "")
+	byParent, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{env.root}, "hot", 10, "")
 	require.NoError(t, err,
 		"the nested-reply batch path must not error because of one future-dated row")
 	assert.ElementsMatch(t, []string{ordinaryHigh, ordinaryLow, future}, commentURIs(byParent[env.root]))
@@ -81,7 +81,7 @@ func TestCommentRepo_FutureDatedCommentRanksAsBrandNew(t *testing.T) {
 	fresh := env.seed(commentSpec{rkey: "fresh", score: 5, createdAt: now.Add(-time.Minute)})
 	future := env.seed(commentSpec{rkey: "future", score: 1, createdAt: now.Add(90 * time.Minute)})
 
-	listed, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 10, nil, "")
+	listed, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 10, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{fresh, future}, commentURIs(listed),
 		"a future-dated comment must rank as if created now, so the higher-scored fresh comment must win")

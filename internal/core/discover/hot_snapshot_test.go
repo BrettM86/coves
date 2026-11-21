@@ -12,12 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
-	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-
-	discoverhandler "Coves/internal/api/handlers/discover"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,9 +23,7 @@ func TestGetDiscover_HotSort_SnapshotFreezesContinuation(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repository := postgres.NewDiscoverRepository(db, "snapshot-cursor-secret")
-	service := discover.NewDiscoverService(repository)
-	handler := discoverhandler.NewGetDiscoverHandler(service, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, "snapshot-cursor-secret")
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -45,22 +39,22 @@ func TestGetDiscover_HotSort_SnapshotFreezesContinuation(t *testing.T) {
 			fmt.Sprintf("Snapshot candidate %d", i), score, createdAt)
 	}
 
-	requestPage := func(cursor string) discover.DiscoverResponse {
+	requestPage := func(cursor string) discoverPage {
 		t.Helper()
-		requestURL := "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=2"
+		requestURL := "/xrpc/social.coves.feed.getFeed?scope=all&limit=2"
 		if cursor != "" {
 			requestURL += "&cursor=" + url.QueryEscape(cursor)
 		}
 		req := httptest.NewRequest(http.MethodGet, requestURL, nil)
 		rec := httptest.NewRecorder()
-		handler.HandleGetDiscover(rec, req)
+		handler.HandleGetFeed(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, "Discover Hot response: %s", rec.Body.String())
 
-		var response discover.DiscoverResponse
+		var response discoverPage
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 		return response
 	}
-	feedURIs := func(response discover.DiscoverResponse) []string {
+	feedURIs := func(response discoverPage) []string {
 		uris := make([]string, len(response.Feed))
 		for i, item := range response.Feed {
 			uris[i] = item.Post.URI

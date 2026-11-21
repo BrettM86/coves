@@ -13,6 +13,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/userblocks"
@@ -309,6 +310,13 @@ var declaredRoutes = []declaredRoute{
 	// client (testkit.AppView.SignIn, docs/TEST_ARCHITECTURE.md §3.4b).
 	{http.MethodGet, "/xrpc/social.coves.feed.getTimeline", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.feed.getDiscover", authOptional, 0, false},
+	// getFeed (RegisterFeedRoutes) is public like the other feeds; scope home
+	// refuses an anonymous caller in the handler, not the router.
+	{http.MethodGet, "/xrpc/social.coves.feed.getFeed", authOptional, 0, false},
+	// The feed picker queries (RegisterFeedGeneratorRoutes) describe the
+	// instance's registered feeds, which are the same for every caller.
+	{http.MethodGet, "/xrpc/social.coves.feed.describeFeedGenerator", authNone, 0, false},
+	{http.MethodGet, "/xrpc/social.coves.feed.getFeedGenerators", authNone, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getPosts", authOptional, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getComments", authOptional, 0, false},
 
@@ -477,8 +485,11 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterViewerAuthorityRoute(mux, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil), moderation.NewAllowlistAuthority(nil))
 	RegisterCommunitySuggestionRoutes(mux, nil, auth, nil)
 	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
-	RegisterTimelineRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
-	RegisterDiscoverRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	// getTimeline, getDiscover and getCommunity are aliases of getFeed,
+	// registered by RegisterFeedRoutes.
+	feedRegistry := feedgen.NewRegistry("did:plc:testinstance")
+	RegisterFeedRoutes(mux, nil, feedRegistry, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	RegisterFeedGeneratorRoutes(mux, feedRegistry)
 	RegisterActorRoutes(mux, nil, nil, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterAggregatorRoutes(mux, nil, nil, nil, nil)
 	RegisterAggregatorAPIKeyRoutes(mux, auth, nil, nil)

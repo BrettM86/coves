@@ -104,6 +104,14 @@ var invalidFixtureExpectedErrors = map[string]string{
 	// Modlog content snapshots and comment thread roots.
 	"action-view-invalid-snapshot-missing-captured-cid.json": "required field missing: capturedCid",
 	"action-view-invalid-root-uri-not-at-uri.json":           "AT-URI syntax",
+	// Feed generators (feed.generator, getFeed and the generator-facing endpoints).
+	"generator-invalid-missing-kind.json":                                 "required field missing: kind",
+	"generator-invalid-scopes-wrong-type.json":                            "expected a string",
+	"get-feed-output-invalid-feed-context-not-string.json":                "expected a string",
+	"get-feed-skeleton-output-invalid-missing-post.json":                  "required field missing: post",
+	"get-comment-skeleton-output-invalid-missing-parent.json":             "required field missing: parent",
+	"describe-feed-generator-output-invalid-missing-did.json":             "required field missing: did",
+	"get-feed-generators-output-invalid-generator-view-missing-kind.json": "required field missing: kind",
 }
 
 // expectedFixtureFamilies is the closed list of top-level fixture directories
@@ -125,7 +133,7 @@ var expectedFixtureFamilies = []string{
 // familiesRequiringInvalidFixtures lists the families that must also carry at
 // least one rejection case: the records that gate community membership and
 // moderation must prove the validator rejects their malformed forms.
-var familiesRequiringInvalidFixtures = []string{"postv2", "acceptance", "removal", "moderation"}
+var familiesRequiringInvalidFixtures = []string{"postv2", "acceptance", "removal", "moderation", "feed"}
 
 // loadFixtureCatalog builds the catalog every fixture is validated against.
 func loadFixtureCatalog(t *testing.T) *lexicon.BaseCatalog {

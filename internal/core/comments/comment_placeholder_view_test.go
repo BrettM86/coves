@@ -66,7 +66,7 @@ func TestCommentService_buildThreadViews_PlaceholderContract(t *testing.T) {
 				context.Background(),
 				[]*Comment{comment},
 				0,
-				"hot",
+				nil,
 				&viewerDID,
 			)
 			require.NoError(t, err, "building a deleted comment placeholder must not fail the thread")
@@ -163,7 +163,7 @@ func TestCommentService_buildThreadViews_PlaceholderOmitsAuthorOrigin(t *testing
 		context.Background(),
 		[]*Comment{live, deleted, removed},
 		0,
-		"hot",
+		nil,
 		nil,
 	)
 	require.NoError(t, err, "building a level with live and placeholder siblings must not fail the thread")

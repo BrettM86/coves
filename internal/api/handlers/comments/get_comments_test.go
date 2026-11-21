@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/moderation"
+	"Coves/internal/core/posts"
+	"Coves/internal/validation"
 )
 
 // The parameter surface of social.coves.community.comment.getComments.
@@ -85,8 +90,7 @@ func TestGetComments_RejectsBadParameters(t *testing.T) {
 		{"limit cannot be negative", "post=" + testPostURI + "&limit=-5"},
 		{"limit cannot exceed 100", "post=" + testPostURI + "&limit=101"},
 		{"sort must be a known value", "post=" + testPostURI + "&sort=controversial"},
-		{"timeframe requires sort=top", "post=" + testPostURI + "&timeframe=day"},
-		{"timeframe requires sort=top, not sort=new", "post=" + testPostURI + "&sort=new&timeframe=day"},
+		{"feed must be an at-uri", "post=" + testPostURI + "&feed=not-an-at-uri"},
 		{"timeframe must be a known value", "post=" + testPostURI + "&sort=top&timeframe=fortnight"},
 		{"parentRkey must be a valid record key", "post=" + testPostURI + "&parentRkey=not/a/key"},
 	}
@@ -378,5 +382,195 @@ func TestGetComments_UnmappedValidationErrorIs500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500: an error the mapper cannot classify must still produce a "+
 			"well-formed server error (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// fakeCoreCommentService is the core comments.Service behind the real
+// ServiceAdapter: it records the core request the adapter built and answers
+// with a canned response or error. Only GetComments is used.
+type fakeCoreCommentService struct {
+	comments.Service
+	got  *comments.GetCommentsRequest
+	resp *comments.GetCommentsResponse
+	err  error
+}
+
+func (f *fakeCoreCommentService) GetComments(_ context.Context, req *comments.GetCommentsRequest) (*comments.GetCommentsResponse, error) {
+	f.got = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.resp != nil {
+		return f.resp, nil
+	}
+	return &comments.GetCommentsResponse{Comments: []*comments.ThreadViewComment{}}, nil
+}
+
+// getCommentsThroughAdapter issues a GET through the handler wired to the
+// real ServiceAdapter over core, as production wires it.
+func getCommentsThroughAdapter(t *testing.T, query string, core *fakeCoreCommentService) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.comment.getComments?"+query, nil)
+	NewGetCommentsHandler(NewServiceAdapter(core), nil, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance").HandleGetComments(rec, req)
+	return rec
+}
+
+const testCommentFeedURI = "at://did:web:instance.test/social.coves.feed.generator/comments-new"
+
+// B8: the feed parameter reaches the core service through the adapter, sort
+// alongside it; timeframe is no longer gated on sort=top in the handler (the
+// service owns that rule, feed-aware); feed resolution failures keep their
+// lexicon error names.
+func TestGetComments_FeedReachesTheCoreService(t *testing.T) {
+	tests := []struct {
+		name          string
+		query         string
+		wantFeed      string
+		wantSort      string
+		wantTimeframe string
+	}{
+		{
+			name:     "feed and sort both reach the service",
+			query:    "post=" + testPostURI + "&feed=" + testCommentFeedURI + "&sort=top",
+			wantFeed: testCommentFeedURI,
+			wantSort: "top",
+		},
+		{
+			name:          "timeframe with feed and no sort reaches the service",
+			query:         "post=" + testPostURI + "&feed=" + testCommentFeedURI + "&timeframe=week",
+			wantFeed:      testCommentFeedURI,
+			wantTimeframe: "week",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			core := &fakeCoreCommentService{}
+			rec := getCommentsThroughAdapter(t, tt.query, core)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if core.got == nil {
+				t.Fatal("the handler answered 200 without calling the core service")
+			}
+			if core.got.Feed != tt.wantFeed {
+				t.Errorf("core Feed = %q, want %q", core.got.Feed, tt.wantFeed)
+			}
+			if core.got.Sort != tt.wantSort {
+				t.Errorf("core Sort = %q, want %q", core.got.Sort, tt.wantSort)
+			}
+			if core.got.Timeframe != tt.wantTimeframe {
+				t.Errorf("core Timeframe = %q, want %q", core.got.Timeframe, tt.wantTimeframe)
+			}
+		})
+	}
+}
+
+func TestGetComments_FeedResolutionErrorsKeepTheirCodes(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"an unknown feed", fmt.Errorf("resolving comment feed: %w", feedgen.ErrUnknownFeed), "UnknownFeed"},
+		{"a feed that does not serve threads", fmt.Errorf("resolving comment feed: %w", feedgen.ErrUnsupportedFeedScope), "UnsupportedFeedScope"},
+		{"a timeframe on a feed other than comments-top", fmt.Errorf("resolving comment feed: %w", comments.ErrTimeframeNotSupported), "InvalidRequest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			core := &fakeCoreCommentService{err: tt.err}
+			rec := getCommentsThroughAdapter(t, "post="+testPostURI+"&feed="+testCommentFeedURI, core)
+			assertXRPCError(t, rec, http.StatusBadRequest, tt.wantCode)
+		})
+	}
+}
+
+// B11: a getComments response with a header post and top-level comments
+// validates against the lexicon output.
+func TestGetComments_ResponseValidatesAgainstLexiconOutput(t *testing.T) {
+	const (
+		postCID    = "bafyreiglod7oajufkjezuzvum6qoq6epg34443qwt4q4xwvgspgzj3vra4"
+		commentCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+		authorDID  = "did:plc:aaaaaaaacommentauthortst"
+		commentURI = "at://did:plc:aaaaaaaacommentauthortst/social.coves.community.comment/3lbtestcmt001"
+		secondURI  = "at://did:plc:aaaaaaaacommentauthortst/social.coves.community.comment/3lbtestcmt002"
+	)
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	author := &posts.AuthorView{DID: authorDID, Handle: "author.coves.social"}
+	view := func(uri string) *comments.CommentView {
+		return &comments.CommentView{
+			URI:    uri,
+			CID:    commentCID,
+			Author: author,
+			Record: map[string]any{
+				"$type":   "social.coves.community.comment",
+				"content": "a comment",
+				"reply": map[string]any{
+					"root":   map[string]any{"uri": testPostURI, "cid": postCID},
+					"parent": map[string]any{"uri": testPostURI, "cid": postCID},
+				},
+				"createdAt": "2026-01-01T00:00:00Z",
+			},
+			Post:      &comments.CommentRef{URI: testPostURI, CID: postCID},
+			Stats:     &comments.CommentStats{Upvotes: 2, Score: 2, ReplyCount: 1},
+			CreatedAt: "2026-01-01T00:00:00Z",
+			IndexedAt: "2026-01-01T00:00:01Z",
+		}
+	}
+	core := &fakeCoreCommentService{resp: &comments.GetCommentsResponse{
+		Post: &posts.PostView{
+			URI:       testPostURI,
+			CID:       postCID,
+			RKey:      "3lbtestpost01",
+			Author:    author,
+			Community: &posts.CommunityRef{DID: "did:plc:aaaaaaaacommunitytesttt", Handle: "c-test.coves.social", Name: "test"},
+			Record: map[string]any{
+				"$type":     "social.coves.community.post",
+				"community": "did:plc:aaaaaaaacommunitytesttt",
+				"content":   "the post",
+				"createdAt": "2026-01-01T00:00:00Z",
+			},
+			CreatedAt: at,
+			IndexedAt: at,
+		},
+		// Top-level threads only: nested replies are a lexicon union
+		// (threadViewComment | notFoundComment | blockedComment) whose items
+		// must carry $type, which ThreadViewComment does not emit today.
+		Comments: []*comments.ThreadViewComment{
+			{Comment: view(commentURI), HasMore: true},
+			{Comment: view(secondURI)},
+		},
+	}}
+
+	rec := getCommentsThroughAdapter(t, "post="+testPostURI+"&feed="+testCommentFeedURI, core)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	validator, err := validation.NewEmbeddedLexiconValidator(true)
+	if err != nil {
+		t.Fatalf("building lexicon validator: %v", err)
+	}
+	// getComments declares its output inline (no #output def), as an object
+	// requiring comments (threadViewComment refs) and post (a postView ref),
+	// so each part is validated against the def the inline schema names.
+	var body struct {
+		Post     json.RawMessage   `json:"post"`
+		Comments []json.RawMessage `json:"comments"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (body: %s)", err, rec.Body.String())
+	}
+	if body.Post == nil || body.Comments == nil {
+		t.Fatalf("body lacks the required post or comments (body: %s)", rec.Body.String())
+	}
+	if err := validator.ValidateObject([]byte(body.Post), "social.coves.community.post.defs#postView"); err != nil {
+		t.Errorf("post does not validate as postView: %v (post: %s)", err, body.Post)
+	}
+	for i, thread := range body.Comments {
+		if err := validator.ValidateObject([]byte(thread), "social.coves.community.comment.defs#threadViewComment"); err != nil {
+			t.Errorf("comments[%d] does not validate as threadViewComment: %v (%s)", i, err, thread)
+		}
 	}
 }

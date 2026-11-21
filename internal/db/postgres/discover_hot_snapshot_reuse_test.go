@@ -54,12 +54,11 @@ func TestDiscoverRepo_HotConcurrentAnonymousRefreshesCreateOneSnapshot(t *testin
 	start := make(chan struct{})
 	results := make(chan result, requestCount)
 	for i := 0; i < requestCount; i++ {
-		repository := NewDiscoverRepository(db, "snapshot-concurrency-secret")
+		repository := NewDiscoverRepository(db, "snapshot-concurrency-secret").(*postgresDiscoverRepo)
 		go func() {
 			ready <- struct{}{}
 			<-start
-			feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-				Sort:  "hot",
+			feed, cursor, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 				Limit: 4,
 			})
 			results <- result{feed: discoverURIs(feed), cursor: cursor, err: err}
@@ -86,9 +85,8 @@ func TestDiscoverRepo_HotConcurrentSameCursorReplayDeduplicatesCheckpoint(t *tes
 
 	db := testkit.DB(t)
 	expected := seedDiscoverHotSnapshotCandidates(t, db, "concurrent-cursor-replay", []int{400, 300, 200, 100})
-	firstRepository := NewDiscoverRepository(db, "concurrent-cursor-replay-secret")
-	firstPage, inputCursor, err := firstRepository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-		Sort:  "hot",
+	firstRepository := NewDiscoverRepository(db, "concurrent-cursor-replay-secret").(*postgresDiscoverRepo)
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(context.Background(), firstRepository, discoverHotTestRequest{
 		Limit: 1,
 	})
 	require.NoError(t, err)
@@ -105,12 +103,11 @@ func TestDiscoverRepo_HotConcurrentSameCursorReplayDeduplicatesCheckpoint(t *tes
 	start := make(chan struct{})
 	results := make(chan result, requestCount)
 	for range requestCount {
-		repository := NewDiscoverRepository(db, "concurrent-cursor-replay-secret")
+		repository := NewDiscoverRepository(db, "concurrent-cursor-replay-secret").(*postgresDiscoverRepo)
 		go func() {
 			ready <- struct{}{}
 			<-start
-			feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-				Sort:   "hot",
+			feed, cursor, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 				Limit:  1,
 				Cursor: inputCursor,
 			})
@@ -162,8 +159,7 @@ func TestDiscoverRepo_HotInitialSnapshotWorkDeadlineLeavesStateUnchanged(t *test
 	repository.discoverHotWorkDeadline = 20 * time.Millisecond
 	requestContext, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	feed, cursor, err := repository.GetDiscover(requestContext, discover.GetDiscoverRequest{
-		Sort:  "hot",
+	feed, cursor, err := getDiscoverHotViaGenerator(requestContext, repository, discoverHotTestRequest{
 		Limit: 10,
 	})
 
@@ -218,9 +214,8 @@ func seedDiscoverHotSnapshotCandidates(t *testing.T, db *sql.DB, label string, s
 func readDiscoverHotRoot(t *testing.T, repository discover.Repository, viewerDID string, limit int) ([]string, *string) {
 	t.Helper()
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+	feed, cursor, err := getDiscoverHotViaGenerator(context.Background(), repository.(*postgresDiscoverRepo), discoverHotTestRequest{
 		ViewerDID: viewerDID,
-		Sort:      "hot",
 		Limit:     limit,
 	})
 	require.NoError(t, err)

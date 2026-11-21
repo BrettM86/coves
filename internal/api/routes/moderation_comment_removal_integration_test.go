@@ -25,6 +25,7 @@ import (
 
 	actorAPI "Coves/internal/api/handlers/actor"
 	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/tests/fixtures/commentfeedfixture"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
@@ -122,7 +123,8 @@ func TestModerationCommentRemovalAcceptance(t *testing.T) {
 		postgres.NewModerationRepository(db),
 		moderation.Config{InstanceDID: instanceDID, IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000},
 	)
-	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil,
+		comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 
 	adminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "modadmin"))
 	nonAdminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "modother"))

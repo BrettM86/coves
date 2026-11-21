@@ -52,6 +52,10 @@ var (
 	// ErrInvalidCursor indicates a malformed or sort-mismatched pagination cursor
 	ErrInvalidCursor = errors.New("invalid pagination cursor")
 
+	// ErrTimeframeNotSupported indicates a getComments timeframe on a feed
+	// other than comments-top, the only comment feed that ranks within one
+	ErrTimeframeNotSupported = errors.New("timeframe can only be used with the comments-top feed")
+
 	// ErrInvalidEmbed indicates the comment embed fails the lexicon or carries an
 	// image that is not a well-formed image blob ref
 	ErrInvalidEmbed = errors.New("invalid embed")
@@ -90,5 +94,6 @@ func IsValidationError(err error) bool {
 		errors.Is(err, ErrContentEmpty) ||
 		errors.Is(err, ErrInvalidFacets) ||
 		errors.Is(err, ErrInvalidCursor) ||
+		errors.Is(err, ErrTimeframeNotSupported) ||
 		errors.Is(err, ErrInvalidRecord)
 }

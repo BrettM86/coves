@@ -1,0 +1,17 @@
+{
+  "$type": "social.coves.feed.getFeedGenerators#output",
+  "feeds": [
+    {
+      "uri": "at://did:plc:abc123/social.coves.feed.generator/hot",
+      "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+      "did": "did:web:feeds.example.com",
+      "displayName": "Hot This Week",
+      "description": "Posts with the most upvotes in the last seven days.",
+      "avatar": "https://cdn.example.com/feeds/hot.jpg",
+      "kind": "posts",
+      "scopes": ["all", "home", "community"],
+      "acceptsInteractions": true,
+      "indexedAt": "2026-11-18T12:00:01Z"
+    }
+  ]
+}

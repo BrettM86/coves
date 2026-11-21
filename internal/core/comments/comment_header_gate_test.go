@@ -88,7 +88,8 @@ func TestCommentService_GetComments_HiddenHeaderIsRootNotFound(t *testing.T) {
 			postRepo.hideFromHeader(postURI)
 		}
 
-		return NewCommentService(newMockCommentRepo(), newMockUserRepo(), postRepo, newMockCommunityRepo(), nil, nil, nil)
+		commentRepo := newMockCommentRepo()
+		return NewCommentService(commentRepo, newMockUserRepo(), postRepo, newMockCommunityRepo(), nil, nil, nil, withMockCommentFeeds(commentRepo))
 	}
 
 	t.Run("a hidden root is not found, and no header is built", func(t *testing.T) {
@@ -136,7 +137,8 @@ func TestCommentService_GetComments_HiddenHeaderIsRootNotFound(t *testing.T) {
 		post.DeletedAt = &deletedAt
 		require.NoError(t, postRepo.Create(context.Background(), post))
 
-		service := NewCommentService(newMockCommentRepo(), newMockUserRepo(), postRepo, newMockCommunityRepo(), nil, nil, nil)
+		commentRepo := newMockCommentRepo()
+		service := NewCommentService(commentRepo, newMockUserRepo(), postRepo, newMockCommunityRepo(), nil, nil, nil, withMockCommentFeeds(commentRepo))
 		_, err := service.GetComments(context.Background(), &GetCommentsRequest{
 			PostURI: postURI,
 			Sort:    "hot",

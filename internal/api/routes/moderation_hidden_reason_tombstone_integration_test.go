@@ -23,6 +23,7 @@ import (
 	"Coves/tests/testkit"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/tests/fixtures/commentfeedfixture"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,8 @@ func hiddenReasonContentServer(t *testing.T, f *modlogFixture) *httptest.Server 
 		posts.WithSyncAcceptance(postgres.NewAdmissionRepository(f.db), nil),
 	)
 	commentService := comments.NewCommentService(postgres.NewCommentRepository(f.db),
-		postgres.NewUserRepository(f.db), postRepo, communityRepo, nil, nil, nil)
+		postgres.NewUserRepository(f.db), postRepo, communityRepo, nil, nil, nil,
+		comments.WithFeedRegistry(commentfeedfixture.Registry(f.db)))
 	optionalAuth := middleware.NewOAuthAuthMiddleware(f.unsealer, f.oauthStore)
 	mux := chi.NewRouter()
 	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), fixtures.InstanceDID())

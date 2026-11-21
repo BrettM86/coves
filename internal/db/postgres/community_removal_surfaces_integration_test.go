@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"Coves/internal/core/communities"
-	"Coves/internal/core/discover"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -52,7 +52,7 @@ func communityDIDs(list []*communities.Community) []string {
 	return dids
 }
 
-func discoverPostURIs(feed []*discover.FeedViewPost) []string {
+func discoverPostURIs(feed []*feedgen.FeedViewPost) []string {
 	uris := make([]string, 0, len(feed))
 	for _, item := range feed {
 		if item.Post != nil {
@@ -121,10 +121,10 @@ func TestCommunityRemovalHidesPostsFromDiscoverNew(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 	seeded := seedRemovalSurfaceCommunities(t, db, "discovernewremoved", "discovernewlive")
-	repository := postgres.NewDiscoverRepository(db, "community-removal-discover-new", postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
+	repository := postgres.NewDiscoverViaFeed(db, postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
 	read := func(t *testing.T) []string {
 		t.Helper()
-		feed, _, err := repository.GetDiscover(t.Context(), discover.GetDiscoverRequest{Sort: "new", Limit: 50})
+		feed, _, err := repository.GetDiscoverViaFeed(t.Context(), postgres.DiscoverViaFeedRequest{Sort: "new", Limit: 50})
 		require.NoError(t, err)
 		return discoverPostURIs(feed)
 	}
@@ -150,10 +150,10 @@ func TestCommunityRemovalHidesPostsFromDiscoverHot(t *testing.T) {
 	seeded := seedRemovalSurfaceCommunities(t, db, "discoverhotremoved", "discoverhotlive")
 	const viewerDID = "did:plc:removalhotviewer"
 	fixtures.User(t, db, "removalhotviewer.test", viewerDID)
-	repository := postgres.NewDiscoverRepository(db, "community-removal-discover-hot", postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
+	repository := postgres.NewDiscoverViaFeed(db, postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
 	readPageOne := func(t *testing.T, viewer string) []string {
 		t.Helper()
-		feed, _, err := repository.GetDiscover(t.Context(), discover.GetDiscoverRequest{ViewerDID: viewer, Sort: "hot", Limit: 10})
+		feed, _, err := repository.GetDiscoverViaFeed(t.Context(), postgres.DiscoverViaFeedRequest{ViewerDID: viewer, Sort: "hot", Limit: 10})
 		require.NoError(t, err)
 		return discoverPostURIs(feed)
 	}

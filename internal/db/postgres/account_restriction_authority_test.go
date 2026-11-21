@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"Coves/internal/core/comments"
-	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
@@ -69,8 +68,8 @@ func TestAccountRestriction_ForeignAuthorityRemovalRestrictsNothing(t *testing.T
 	}
 	assert.Equal(t, []string{post}, authorPostURIs, "actor.getPosts lists A's post")
 
-	feed, _, err := NewCommunityFeedRepository(f.db, "foreign-removal-secret", WithAccountRestrictionAuthority(fixtures.InstanceDID())).
-		GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+	feed, _, err := newCommunityFeedViaFeed(f.db, WithAccountRestrictionAuthority(fixtures.InstanceDID())).
+		GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: f.community, ViewerDID: viewer, Sort: "new", Timeframe: "all", Limit: 50,
 		})
 	require.NoError(t, err)
@@ -87,12 +86,12 @@ func TestAccountRestriction_ForeignAuthorityRemovalRestrictsNothing(t *testing.T
 
 	commentRepo := NewCommentRepository(f.db, WithAccountRestrictionAuthority(fixtures.InstanceDID()))
 	for _, sort := range []string{"hot", "new"} {
-		replies, _, err := commentRepo.ListByParentWithHotRank(ctx, f.root, sort, "all", 50, nil, viewer)
+		replies, _, err := listByParentViaGenerator(ctx, commentRepo, f.db, f.root, sort, "all", 50, nil, viewer)
 		require.NoError(t, err)
 		require.Len(t, replies, 1, "%s replies list A's comment", sort)
 		assert.False(t, replies[0].CommenterRestricted, "%s replies do not read A as restricted", sort)
 	}
-	batch, err := commentRepo.ListByParentsBatch(ctx, []string{f.root}, "new", 10, viewer)
+	batch, err := listByParentsBatchViaGenerator(ctx, commentRepo, f.db, []string{f.root}, "new", 10, viewer)
 	require.NoError(t, err)
 	require.Len(t, batch[f.root], 1, "the batched replies list A's comment")
 	assert.False(t, batch[f.root][0].CommenterRestricted, "the batched replies do not read A as restricted")

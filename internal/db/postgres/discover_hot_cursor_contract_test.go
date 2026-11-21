@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Coves/internal/core/discover"
+	"Coves/internal/core/feedgen"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -24,32 +25,31 @@ func TestDiscoverHotCursor_RepositoryContract(t *testing.T) {
 	repository := NewDiscoverRepository(db, "discover-hot-cursor-contract-secret").(*postgresDiscoverRepo)
 	const viewerDID = "did:plc:discoverhotcursorviewer"
 
-	read := func(sort, viewer string, cursor *string) ([]*discover.FeedViewPost, *string, error) {
+	read := func(viewer string, cursor *string) ([]*discoverHotTestItem, *string, error) {
 		t.Helper()
-		return repository.GetDiscover(ctx, discover.GetDiscoverRequest{
+		return getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
 			ViewerDID: viewer,
-			Sort:      sort,
 			Limit:     2,
 			Cursor:    cursor,
 		})
 	}
-	requireInvalid := func(name, sort, viewer, cursor string) {
+	requireInvalid := func(name, viewer, cursor string) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
-			feed, next, err := read(sort, viewer, &cursor)
+			feed, next, err := read(viewer, &cursor)
 			assert.ErrorIs(t, err, discover.ErrInvalidCursor)
 			assert.Empty(t, feed, "an invalid cursor must not silently restart from the first page")
 			assert.Nil(t, next, "an invalid cursor must not mint a replacement cursor")
 		})
 	}
 
-	firstPage, cursor, err := read("hot", viewerDID, nil)
+	firstPage, cursor, err := read(viewerDID, nil)
 	require.NoError(t, err)
 	require.Equal(t, expected[:2], discoverURIs(firstPage))
 	require.NotNil(t, cursor, "a partial snapshot page must emit a continuation cursor")
 	assert.LessOrEqual(t, len(*cursor), 500, "Discover Hot cursors must fit the public 500-character contract")
 
-	secondPage, finalCursor, err := read("hot", viewerDID, cursor)
+	secondPage, finalCursor, err := read(viewerDID, cursor)
 	require.NoError(t, err)
 	assert.Equal(t, expected[2:], discoverURIs(secondPage), "the emitted cursor must continue from its snapshot checkpoint")
 	assert.Nil(t, finalCursor, "the final snapshot page must not claim another continuation")
@@ -75,11 +75,28 @@ func TestDiscoverHotCursor_RepositoryContract(t *testing.T) {
 		{name: "legacy pre-snapshot Hot cursor", cursor: legacyHotCursor, viewer: viewerDID},
 		{name: "wrong viewer", cursor: *cursor, viewer: "did:plc:discoverhotcursorwrongviewer"},
 	} {
-		requireInvalid(testCase.name, "hot", testCase.viewer, testCase.cursor)
+		requireInvalid(testCase.name, testCase.viewer, testCase.cursor)
 	}
 
-	requireInvalid("Discover Hot cursor under New", "new", viewerDID, *cursor)
-	requireInvalid("Discover Hot cursor under Top", "top", viewerDID, *cursor)
+	// A Discover Hot cursor is rejected under New and Top. Discover is served
+	// by getFeed, whose cursor names the feed it was issued for; a distinct
+	// viewer keeps the expiry below to the one snapshot referenced above.
+	const crossFeedViewerDID = "did:plc:discoverhotcursorcrossfeed"
+	feeds := newDiscoverViaFeed(db)
+	_, hotFeedCursor, err := feeds.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{ViewerDID: crossFeedViewerDID, Sort: "hot", Limit: 2})
+	require.NoError(t, err)
+	require.NotNil(t, hotFeedCursor, "a partial Discover Hot getFeed page must emit a continuation cursor")
+	for _, testCase := range []struct{ name, sort string }{
+		{name: "Discover Hot cursor under New", sort: "new"},
+		{name: "Discover Hot cursor under Top", sort: "top"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			feed, next, err := feeds.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{ViewerDID: crossFeedViewerDID, Sort: testCase.sort, Limit: 2, Cursor: hotFeedCursor})
+			assert.ErrorIs(t, err, feedgen.ErrInvalidCursor)
+			assert.Empty(t, feed, "an invalid cursor must not silently restart from the first page")
+			assert.Nil(t, next, "an invalid cursor must not mint a replacement cursor")
+		})
+	}
 
 	result, err := db.ExecContext(ctx, `
 		UPDATE discover_hot_snapshots
@@ -90,5 +107,5 @@ func TestDiscoverHotCursor_RepositoryContract(t *testing.T) {
 	affected, err := result.RowsAffected()
 	require.NoError(t, err)
 	require.EqualValues(t, 1, affected, "the fixture must expire exactly the snapshot referenced by the cursor")
-	requireInvalid("expired snapshot", "hot", viewerDID, *cursor)
+	requireInvalid("expired snapshot", viewerDID, *cursor)
 }

@@ -8,10 +8,8 @@ import (
 	"testing"
 
 	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -232,8 +230,9 @@ func TestModerationPostRepositoryRemovalVisibilityAndRestore(t *testing.T) {
 	control := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, title, "")
 	postRepo := postgres.NewPostRepository(db)
 	feedRepo := postgres.NewCommunityFeedRepository(db, "moderation-post-visibility-secret")
-	discoverRepo := postgres.NewDiscoverRepository(db, "moderation-post-visibility-secret")
-	timelineRepo := postgres.NewTimelineRepository(db, "moderation-post-visibility-secret")
+	communityFeedRepo := postgres.NewCommunityFeedViaFeed(db)
+	discoverRepo := postgres.NewDiscoverViaFeed(db)
+	timelineRepo := postgres.NewTimelineViaFeed(db)
 	service := newPostgresModerationService(db)
 
 	check := func(stage string, want []string, count int) {
@@ -275,7 +274,7 @@ func TestModerationPostRepositoryRemovalVisibilityAndRestore(t *testing.T) {
 				return uris
 			}},
 			{"timeline subscriber", func(t *testing.T) []string {
-				feed, _, err := timelineRepo.GetTimeline(t.Context(), timeline.GetTimelineRequest{UserDID: viewerDID, Sort: "new", Limit: 50})
+				feed, _, err := timelineRepo.GetTimeline(t.Context(), postgres.TimelineViaFeedRequest{UserDID: viewerDID, Sort: "new", Limit: 50})
 				require.NoError(t, err)
 				var uris []string
 				for _, item := range feed {
@@ -298,7 +297,7 @@ func TestModerationPostRepositoryRemovalVisibilityAndRestore(t *testing.T) {
 				name string
 				read func(*testing.T) []string
 			}{"community feed " + sort, func(t *testing.T) []string {
-				feed, _, err := feedRepo.GetCommunityFeed(t.Context(), communityFeeds.GetCommunityFeedRequest{Community: communityDID, Sort: sort, Timeframe: "all", Limit: 50})
+				feed, _, err := communityFeedRepo.GetCommunityFeedViaFeed(t.Context(), postgres.CommunityFeedViaFeedRequest{Community: communityDID, Sort: sort, Timeframe: "all", Limit: 50})
 				require.NoError(t, err)
 				var uris []string
 				for _, item := range feed {
@@ -312,7 +311,7 @@ func TestModerationPostRepositoryRemovalVisibilityAndRestore(t *testing.T) {
 				name string
 				read func(*testing.T) []string
 			}{"discover " + sort, func(t *testing.T) []string {
-				feed, _, err := discoverRepo.GetDiscover(t.Context(), discover.GetDiscoverRequest{Sort: sort, Timeframe: "all", Limit: 50})
+				feed, _, err := discoverRepo.GetDiscoverViaFeed(t.Context(), postgres.DiscoverViaFeedRequest{Sort: sort, Timeframe: "all", Limit: 50})
 				require.NoError(t, err)
 				var uris []string
 				for _, item := range feed {

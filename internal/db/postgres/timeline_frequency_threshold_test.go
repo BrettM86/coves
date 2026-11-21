@@ -52,7 +52,7 @@ func TestTimelineFrequency_TiesAtThresholdAllPass(t *testing.T) {
 	// Score and recency agree, so every sort serves the same order.
 	want := []string{tie("t20"), tie("t18a"), tie("t18b"), tie("t18c")}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t, want, readWholeTimeline(t, repo, cast.viewer, read.sort, read.timeframe))
@@ -96,7 +96,7 @@ func TestTimelineFrequency_OldPostsFilteredButNotCounted(t *testing.T) {
 		"new": {w9, w10, o30, o50, o40},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t, want[read.sort], readWholeTimeline(t, repo, cast.viewer, read.sort, read.timeframe))
@@ -133,7 +133,7 @@ func TestTimelineFrequency_ThresholdWindowIgnoresTopTimeframe(t *testing.T) {
 		frequencyPost{rkey: "ctrl", score: 1, age: hours(1)},
 	)
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	assert.Equal(t,
 		[]string{frequencyPostURI(control, "ctrl")},
 		readWholeTimeline(t, repo, cast.viewer, "top", "day"))
@@ -181,7 +181,7 @@ func TestTimelineFrequency_NoVisibleWindowPostsContributesNothing(t *testing.T) 
 		frequencyPost{rkey: "ctrl", score: 1, age: hours(1)},
 	)
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t,
@@ -207,7 +207,7 @@ func TestTimelineFrequency_SingleWindowPostAppearsAtLevelTwo(t *testing.T) {
 		frequencyPost{rkey: "only", score: 4, age: hours(6)},
 	)
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t,
@@ -260,7 +260,7 @@ func TestTimelineFrequency_ThresholdCountsOnlyViewerVisiblePosts(t *testing.T) {
 		"new": {own25, tp30},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t, want[read.sort], readWholeTimeline(t, repo, cast.viewer, read.sort, read.timeframe))
@@ -309,7 +309,7 @@ func TestTimelineFrequency_ThresholdCountsNonPositiveAndRoundsUp(t *testing.T) {
 		"new": {p2, q11, p1, q10},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t, want[read.sort], readWholeTimeline(t, repo, cast.viewer, read.sort, read.timeframe))

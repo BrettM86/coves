@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -55,12 +54,80 @@ func TestDiscoverRepo_HotRefillsWhenCandidateDisappearsBeforeHydration(t *testin
 
 	repository := NewDiscoverRepository(db, "hot-hydration-race-secret").(*postgresDiscoverRepo)
 	repository.discoverHotWorkDeadline = 10 * time.Second
-	firstPage, inputCursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 1})
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{Limit: 1})
 	require.NoError(t, err)
 	require.Equal(t, []string{a1}, discoverURIs(firstPage))
 	require.NotNil(t, inputCursor)
 
-	_, err = db.ExecContext(ctx, `
+	gate := installDiscoverHotHydrationGate(t, db, vanishedA2, lockClass, lockID)
+
+	type pageResult struct {
+		feed   []*discoverHotTestItem
+		cursor *string
+		err    error
+	}
+	results := make(chan pageResult, 1)
+	go func() {
+		feed, cursor, requestErr := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
+			Limit:  2,
+			Cursor: inputCursor,
+		})
+		results <- pageResult{feed: feed, cursor: cursor, err: requestErr}
+	}()
+
+	waitForDiscoverHotAdvisoryLock(t, db, gate.holderPID)
+	mutation, err := db.ExecContext(ctx, `
+		UPDATE discover_hot_hydration_posts
+		SET deleted_at = clock_timestamp()
+		WHERE uri = $1
+	`, vanishedA2)
+	require.NoError(t, err)
+	mutated, err := mutation.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, mutated)
+	gate.release(t)
+
+	secondPage := <-results
+	require.NoError(t, secondPage.err, "a candidate disappearing after revalidation is an eligibility change, not a server error")
+	assert.Equal(t, []string{b1, a3}, discoverURIs(secondPage.feed),
+		"selection must restart from the input checkpoint so the vanished A post does not penalize A")
+	assert.NotContains(t, discoverURIs(secondPage.feed), vanishedA2)
+	require.NotNil(t, secondPage.cursor)
+
+	finalPage, finalCursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
+		Limit:  2,
+		Cursor: secondPage.cursor,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{c1}, discoverURIs(finalPage),
+		"the returned checkpoint must continue after exactly the posts that were emitted")
+	assert.Nil(t, finalCursor)
+	assert.NotContains(t, append(discoverURIs(secondPage.feed), discoverURIs(finalPage)...), vanishedA2)
+}
+
+// discoverHotHydrationGate holds back every read of one post until released:
+// posts is renamed to discoverHotHydrationStoredPosts and replaced by a
+// security_barrier view whose rows for the gated URI first take an advisory
+// lock the gate's own connection holds. A request reading the gated row (the
+// Discover Hot revalidation) waits there; a mutation of the stored table made
+// while it waits is invisible to that statement and visible to the next one
+// (the final hydration).
+type discoverHotHydrationGate struct {
+	lockConnection    *sql.Conn
+	holderPID         int
+	lockClass, lockID int
+	locked            bool
+}
+
+// discoverHotHydrationStoredPosts is the real posts table while a gate is
+// installed; fixtures mutate it directly.
+const discoverHotHydrationStoredPosts = "discover_hot_hydration_posts"
+
+func installDiscoverHotHydrationGate(t *testing.T, db *sql.DB, candidateURI string, lockClass, lockID int) *discoverHotHydrationGate {
+	t.Helper()
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, `
 		CREATE TABLE discover_hot_hydration_test_gate (
 			candidate_uri TEXT PRIMARY KEY,
 			lock_class INTEGER NOT NULL,
@@ -93,91 +160,59 @@ func TestDiscoverRepo_HotRefillsWhenCandidateDisappearsBeforeHydration(t *testin
 	_, err = db.ExecContext(ctx, `
 		INSERT INTO discover_hot_hydration_test_gate (candidate_uri, lock_class, lock_id)
 		VALUES ($1, $2, $3)
-	`, vanishedA2, lockClass, lockID)
+	`, candidateURI, lockClass, lockID)
 	require.NoError(t, err)
 
-	lockConnection, err := db.Conn(ctx)
+	gate := &discoverHotHydrationGate{lockClass: lockClass, lockID: lockID}
+	gate.lockConnection, err = db.Conn(ctx)
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, lockConnection.Close()) })
-	_, err = lockConnection.ExecContext(ctx, `SELECT pg_advisory_lock($1, $2)`, lockClass, lockID)
+	t.Cleanup(func() { require.NoError(t, gate.lockConnection.Close()) })
+	_, err = gate.lockConnection.ExecContext(ctx, `SELECT pg_advisory_lock($1, $2)`, lockClass, lockID)
 	require.NoError(t, err)
-	locked := true
+	gate.locked = true
 	t.Cleanup(func() {
-		if locked {
-			_, unlockErr := lockConnection.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, lockClass, lockID)
+		if gate.locked {
+			_, unlockErr := gate.lockConnection.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, lockClass, lockID)
 			require.NoError(t, unlockErr)
 		}
 	})
-	var lockHolderPID int
-	require.NoError(t, lockConnection.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&lockHolderPID))
+	require.NoError(t, gate.lockConnection.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&gate.holderPID))
+	return gate
+}
 
-	type pageResult struct {
-		feed   []*discover.FeedViewPost
-		cursor *string
-		err    error
-	}
-	results := make(chan pageResult, 1)
-	go func() {
-		feed, cursor, requestErr := repository.GetDiscover(ctx, discover.GetDiscoverRequest{
-			Sort:   "hot",
-			Limit:  2,
-			Cursor: inputCursor,
-		})
-		results <- pageResult{feed: feed, cursor: cursor, err: requestErr}
-	}()
-
-	waitForDiscoverHotAdvisoryLock(t, db, lockHolderPID)
-	mutation, err := db.ExecContext(ctx, `
-		UPDATE discover_hot_hydration_posts
-		SET deleted_at = clock_timestamp()
-		WHERE uri = $1
-	`, vanishedA2)
+// release lets the waiting request continue.
+func (g *discoverHotHydrationGate) release(t *testing.T) {
+	t.Helper()
+	_, err := g.lockConnection.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, g.lockClass, g.lockID)
 	require.NoError(t, err)
-	mutated, err := mutation.RowsAffected()
-	require.NoError(t, err)
-	require.EqualValues(t, 1, mutated)
-	_, err = lockConnection.ExecContext(ctx, `SELECT pg_advisory_unlock($1, $2)`, lockClass, lockID)
-	require.NoError(t, err)
-	locked = false
-
-	secondPage := <-results
-	require.NoError(t, secondPage.err, "a candidate disappearing after revalidation is an eligibility change, not a server error")
-	assert.Equal(t, []string{b1, a3}, discoverURIs(secondPage.feed),
-		"selection must restart from the input checkpoint so the vanished A post does not penalize A")
-	assert.NotContains(t, discoverURIs(secondPage.feed), vanishedA2)
-	require.NotNil(t, secondPage.cursor)
-
-	finalPage, finalCursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{
-		Sort:   "hot",
-		Limit:  2,
-		Cursor: secondPage.cursor,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, []string{c1}, discoverURIs(finalPage),
-		"the returned checkpoint must continue after exactly the posts that were emitted")
-	assert.Nil(t, finalCursor)
-	assert.NotContains(t, append(discoverURIs(secondPage.feed), discoverURIs(finalPage)...), vanishedA2)
+	g.locked = false
 }
 
 func waitForDiscoverHotAdvisoryLock(t *testing.T, db *sql.DB, holderPID int) {
 	t.Helper()
 	testkit.WaitFor(t, 2*time.Second, func() (bool, error) {
-		var waiting bool
-		err := db.QueryRowContext(context.Background(), `
-			SELECT EXISTS (
-				SELECT 1
-				FROM pg_locks waiter
-				INNER JOIN pg_locks holder
-					ON holder.locktype = waiter.locktype
-					AND holder.database = waiter.database
-					AND holder.classid = waiter.classid
-					AND holder.objid = waiter.objid
-					AND holder.objsubid = waiter.objsubid
-				WHERE holder.pid = $1
-					AND holder.granted
-					AND NOT waiter.granted
-			)
-		`, holderPID).Scan(&waiting)
-		return waiting, err
+		return discoverHotAdvisoryLockHasWaiter(db, holderPID)
 	}, testkit.WithDescription("Discover Hot candidate revalidation waiting at the hydration boundary"))
+}
+
+// discoverHotAdvisoryLockHasWaiter reports whether any session is waiting on
+// an advisory lock holderPID holds.
+func discoverHotAdvisoryLockHasWaiter(db *sql.DB, holderPID int) (bool, error) {
+	var waiting bool
+	err := db.QueryRowContext(context.Background(), `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_locks waiter
+			INNER JOIN pg_locks holder
+				ON holder.locktype = waiter.locktype
+				AND holder.database = waiter.database
+				AND holder.classid = waiter.classid
+				AND holder.objid = waiter.objid
+				AND holder.objsubid = waiter.objsubid
+			WHERE holder.pid = $1
+				AND holder.granted
+				AND NOT waiter.granted
+		)
+	`, holderPID).Scan(&waiting)
+	return waiting, err
 }

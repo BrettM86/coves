@@ -16,6 +16,7 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
+	"Coves/tests/fixtures/commentfeedfixture"
 	"Coves/tests/testkit"
 )
 
@@ -411,7 +412,8 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 		// The read path has to agree with the row count: a thread query that
 		// dropped rows under contention would still leave the counters right.
 		// A nil PDS-client factory is enough because only GetComments is used.
-		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil,
+			comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
 			PostURI:   postURI,
 			Sort:      "new",

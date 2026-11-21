@@ -26,6 +26,7 @@ import (
 
 	actorAPI "Coves/internal/api/handlers/actor"
 	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/tests/fixtures/commentfeedfixture"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
@@ -70,7 +71,8 @@ func TestModerationCovesQuoteProjectionAcrossReadPaths(t *testing.T) {
 				posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 				posts.WithSyncAcceptance(postgres.NewAdmissionRepository(db), nil),
 			)
-			commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+			commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil,
+				comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 			feedService := communityFeeds.NewCommunityFeedService(
 				postgres.NewCommunityFeedRepository(db, "moderation-quote-cursor-secret"), communityService,
 			)
@@ -135,6 +137,8 @@ func TestModerationCovesQuoteProjectionAcrossReadPaths(t *testing.T) {
 			routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
 			routes.RegisterPostRoutes(mux, postService, nil, quoteResolver, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
 			routes.RegisterCommunityFeedRoutes(mux, feedService, nil, quoteResolver, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
+			// communityFeed.getCommunity is a getFeed alias; RegisterCommunityFeedRoutes serves searchPosts.
+			registerFeedAliasRoutes(mux, db, "moderation-quote-cursor-secret", communityService, quoteResolver, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
 			mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.actor.getPosts",
 				actorAPI.NewGetPostsHandler(postService, nil, nil, quoteResolver).HandleGetPosts)
 			mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",

@@ -534,7 +534,7 @@ func TestCommentRepo_DeleteLeavesTheTextReadable(t *testing.T) {
 		"the batch thread fetch serves the deleted text too. "+
 			"IF THIS FAILED (issue 2026-07-31-repo-minor-pins-batch.md) the defect is FIXED — delete this pin")
 
-	tree, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "new", "", 10, nil, "")
+	tree, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "new", "", 10, nil, "")
 	require.NoError(t, err)
 	require.Len(t, tree, 1)
 	assert.Equal(t, secret, tree[0].Content,
@@ -592,7 +592,7 @@ func TestCommentRepo_SoftDeleteWithReason(t *testing.T) {
 
 		require.NoError(t, env.repo.SoftDeleteWithReason(env.ctx, parent, comments.DeletionReasonAuthor, env.author))
 
-		replies, _, err := env.repo.ListByParentWithHotRank(env.ctx, parent, "new", "", 10, nil, "")
+		replies, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, parent, "new", "", 10, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{child}, commentURIs(replies),
 			"a hard delete would take the child with it; the whole point of blanking instead of "+

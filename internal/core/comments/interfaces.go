@@ -58,20 +58,6 @@ type Repository interface {
 	// Supports optional community filtering and returns next page cursor
 	ListByCommenterWithCursor(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 
-	// ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
-	// Supports hot, top, and new sorting with cursor-based pagination
-	// Returns comments with author info hydrated and next page cursor
-	// viewerDID is optional — when non-empty, comments from blocked users are filtered out
-	ListByParentWithHotRank(
-		ctx context.Context,
-		parentURI string,
-		sort string, // "hot", "top", "new"
-		timeframe string, // "hour", "day", "week", "month", "year", "all" (for "top" only)
-		limit int,
-		cursor *string,
-		viewerDID string,
-	) ([]*Comment, *string, error)
-
 	// GetByRootAndRkey retrieves a comment within a thread by its record key
 	// Used to resolve the parentRkey parameter of getComments (comment permalinks)
 	// viewerDID is optional — when non-empty, a comment whose author the viewer has
@@ -91,18 +77,9 @@ type Repository interface {
 	// each URI that has at least one.
 	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)
 
-	// ListByParentsBatch retrieves direct replies to multiple parents in a single query
-	// Returns map[parentURI][]*Comment grouped by parent
-	// Used to prevent N+1 queries when loading nested replies
-	// Limits results per parent to avoid memory exhaustion
-	// viewerDID is optional — when non-empty, comments from blocked users are filtered out
-	ListByParentsBatch(
-		ctx context.Context,
-		parentURIs []string,
-		sort string,
-		limitPerParent int,
-		viewerDID string,
-	) (map[string][]*Comment, error)
+	// HydrateComments returns the comments at uris in input order, dropping
+	// URIs that are not indexed or whose author viewerDID has blocked.
+	HydrateComments(ctx context.Context, uris []string, viewerDID string) ([]*Comment, error)
 }
 
 // RepositoryTx provides transaction-aware operations for consumers that need atomicity

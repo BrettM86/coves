@@ -1,0 +1,12 @@
+{
+  "$type": "social.coves.feed.getCommentSkeleton#output",
+  "replies": [
+    {
+      "comments": [
+        {
+          "comment": "at://did:plc:ghi789/social.coves.community.comment/3k7a3dmb5bk3a"
+        }
+      ]
+    }
+  ]
+}

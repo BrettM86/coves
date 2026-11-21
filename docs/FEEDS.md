@@ -2,18 +2,77 @@
 
 ## Surfaces
 
-Every post list is a Postgres query in the AppView. Coves does not run atProto feed generators and serves no `getFeedSkeleton`.
+Every post list is a Postgres query in the AppView. Coves serves its own built-in feed generators through `getFeed` (below) and serves no `getFeedSkeleton`. `getTimeline`, `getDiscover` and `getCommunity` are aliases of `getFeed`: each maps its `sort` to a built-in and calls the same code as `getFeed`.
 
-| Route | Auth | Scope |
-| --- | --- | --- |
-| `/xrpc/social.coves.feed.getTimeline` | `RequireAuth` | Communities the viewer subscribes to |
-| `/xrpc/social.coves.feed.getDiscover` | `OptionalAuth` | Every community |
-| `/xrpc/social.coves.communityFeed.getCommunity` | `OptionalAuth` | One community |
-| `/xrpc/social.coves.feed.searchPosts` | `OptionalAuth` | Every community, or one |
+| Route | Auth | Scope | Served by |
+| --- | --- | --- | --- |
+| `/xrpc/social.coves.feed.getFeed` | `OptionalAuth` (scope `home` requires a viewer) | `home`, one community, or `all` | The requested built-in |
+| `/xrpc/social.coves.feed.getTimeline` | `RequireAuth` | `home`: communities the viewer subscribes to | getFeed; `sort` `hot` (default), `new`, `top` |
+| `/xrpc/social.coves.feed.getDiscover` | `OptionalAuth` | `all`: every community | getFeed; `sort` `hot` (default) is `discover-hot`, `new`, `top` |
+| `/xrpc/social.coves.communityFeed.getCommunity` | `OptionalAuth` | `community`: one community | getFeed; `sort` `hot` (default), `new`, `top` |
+| `/xrpc/social.coves.feed.searchPosts` | `OptionalAuth` | Every community, or one | Its own query |
 
 On the `OptionalAuth` routes a signed-in viewer gets their own vote state and block filtering. An anonymous caller gets neither.
 
-The community feed is served as `social.coves.communityFeed.getCommunity`, but its lexicon is `social.coves.feed.getCommunity` and no `communityFeed.*` lexicon exists. The frontend and mobile clients call the served name; a third-party client that follows the published lexicon gets a 404. `feed/getAll.json` is also published with no route. The fix is an alias route under the lexicon name, then a client switch, then removing the old path. Register every new endpoint under its lexicon id.
+The community feed is served as `social.coves.communityFeed.getCommunity`, and no `communityFeed.*` lexicon exists. The frontend and mobile clients call the served name. The `feed/getCommunity.json` and `feed/getAll.json` lexicons were published with no route; both files are deleted and the published schemas are to be unpublished (see [Retired schemas](LEXICON_PUBLISHING.md#retired-schemas)). `social.coves.feed.getFeed` (below) replaces the post list endpoints. The old endpoints stay as aliases so released clients keep working, and are to be removed after the clients switch. Register every new endpoint under its lexicon id.
+
+An alias accepts only `sort` `hot`, `new` or `top` (absent is `hot`); any other value is 400 `InvalidRequest`. `limit`, `timeframe`, `cursor` and `community` pass through, so validation, error codes, viewer state and moderation are getFeed's. Two old rules are kept: getTimeline answers 401 `AuthenticationRequired` without a signed-in viewer, and getCommunity validates `sort`, `limit` and `timeframe` before it resolves the community and applies no length cap to `community` (an unknown long identifier is 404 `CommunityNotFound`). Responses are getFeed's (`feed`, `cursor`, `reqId`).
+
+## getFeed and feed generators
+
+`social.coves.feed.getFeed` takes `scope`, an optional `feed` (a generator at-uri), and for scope `community` a `community` identifier. The built-in generators are `hot` (scopes `home` and `community`), `new` and `top` (scopes `home`, `community` and `all`), and `discover-hot` (scope `all` only). `hot` reproduces the old Timeline Hot and community Hot queries: the same ranking, candidate bound, blocks and visibility. `new` and `top` reproduce the old New and Top queries on Timeline and the community feed: the same order, blocks, visibility, and on `home` the level 1-2 frequency thresholds, with no candidate bound; on `all` they reproduce Discover New and Top, including Discover's blocks and its exclusion of instance-removed communities. `discover-hot` is Discover Hot: the same snapshot, ranking, diversity selection, hydration-race refill and `discover-hot-v1` cursor (carried inside the envelope), which getDiscover with sort `hot` or no sort also serves; its pages come back already hydrated, and its capacity refusals are 503 `DiscoverUnavailable` with `Retry-After: 30`. An omitted `feed` uses the instance default for the scope: `hot` for `home` and `community`, `discover-hot` for `all`. `hot` is not offered at scope `all`, and `discover-hot` is not offered at `home` or `community`; both return 400 `UnsupportedFeedScope`.
+
+`timeframe` is validated for every feed, as the old feeds did: one of `hour`, `day`, `week`, `month`, `year`, `all`, anything else is 400 `InvalidRequest`. It defaults to `day`. `top` keeps only posts created within it (`all` keeps every post); `hot` and `new` ignore it. The cursor does not bind it, as the old Top cursors did not. Scope `thread` returns 400 `UnsupportedFeedScope`. An unregistered `feed` returns 400 `UnknownFeed`; scope `home` without a signed-in viewer returns 401.
+
+Built-in generator at-uris are `at://<INSTANCE_DID>/social.coves.feed.generator/<rkey>`, built from the configured `INSTANCE_DID` without a PDS login. At startup the AppView logs into the instance PDS account (`PDS_INSTANCE_HANDLE` / `PDS_INSTANCE_PASSWORD`) and writes each built-in `social.coves.feed.generator` record into that account's repo: a missing record is created, a changed one is rewritten with its original `createdAt`, an unchanged one is left alone. A missing credential, failed login or failed record write logs an ERROR and boot continues; getFeed serves regardless and the records sync on the next restart. This login replaced the earlier instance credential check, whose token nothing used.
+
+Feed pickers use two public queries that take no auth. `social.coves.feed.describeFeedGenerator` returns `did` (the configured `INSTANCE_DID`) and `feeds`, the at-uris of the registered built-ins in registration order. `social.coves.feed.getFeedGenerators` takes up to 25 repeated `feeds` at-uris and returns a `generatorView` (`uri`, `did`, `displayName`, `description`, `kind`, `scopes`, `acceptsInteractions`, which is `false` for every built-in) for each registered one, in request order; unknown at-uris are omitted. A missing `feeds`, more than 25, or a value that is not an at-uri returns 400 `InvalidRequest`.
+
+The getFeed cursor is described under [Cursors](#cursors).
+
+### Cost (posts)
+
+Measured 2026-11-19 by `TestFeedQueryCost_OldVersusRankAndHydrate` (`EXPLAIN (ANALYZE, BUFFERS)`, page size 15) on the PostgreSQL test database after `ANALYZE`, before the old queries were removed: 24,000 posts, 12,000 community admissions, 12 communities, 301 users, 608 subscriptions (the viewer at levels 1-5, 3, 3, 3, with one community block and one user block). "Old" is the previous single query, measured through its verbatim copy in the oracle (`internal/db/postgres/feed_oracle_test.go`) while the old code still existed; "rank" is the built-in generator's query and "hydrate" the read by URI of the rank query's first page.
+
+| Surface | Query | Execution | Planning | Shared hit | Shared read | Rows |
+| --- | --- | --- | --- | --- | --- | --- |
+| Timeline hot | Old | 261.832 ms | 4.229 ms | 128,708 | 0 | 16 |
+| | Rank | 192.693 ms | 2.952 ms | 118,569 | 0 | 16 |
+| | Hydrate | 0.346 ms | 1.172 ms | 214 | 0 | 15 |
+| Timeline new | Old | 11.513 ms | 2.692 ms | 9,336 | 0 | 16 |
+| | Rank | 11.216 ms | 1.767 ms | 9,282 | 0 | 16 |
+| | Hydrate | 0.317 ms | 1.244 ms | 207 | 0 | 15 |
+| Community hot | Old | 35.336 ms | 1.184 ms | 27,626 | 0 | 16 |
+| | Rank | 31.050 ms | 0.827 ms | 21,689 | 0 | 16 |
+| | Hydrate | 0.374 ms | 0.693 ms | 252 | 0 | 15 |
+| Community top (day) | Old | 0.961 ms | 1.032 ms | 901 | 0 | 16 |
+| | Rank | 0.686 ms | 0.502 ms | 544 | 0 | 16 |
+| | Hydrate | 0.372 ms | 0.650 ms | 259 | 0 | 15 |
+| Discover new | Old | 0.211 ms | 1.024 ms | 148 | 0 | 16 |
+| | Rank | 0.131 ms | 0.579 ms | 97 | 0 | 16 |
+| | Hydrate | 0.287 ms | 0.987 ms | 163 | 0 | 15 |
+| Discover top (day) | Old | 0.217 ms | 1.190 ms | 150 | 0 | 16 |
+| | Rank | 0.131 ms | 0.651 ms | 99 | 0 | 16 |
+| | Hydrate | 0.287 ms | 0.980 ms | 175 | 0 | 15 |
+
+Rank plus hydrate executes faster than the old query on timeline hot (193.0 ms against 261.8 ms) and community hot (31.4 ms against 35.3 ms), and the same on timeline new (11.5 ms against 11.5 ms). On the cheap surfaces the second read adds 0.10-0.21 ms of execution (community top 0.10 ms, Discover new and top 0.21 and 0.20 ms) and, counting planning too, 0.22 ms on community top, 0.75 ms on Discover new and 0.64 ms on Discover top. The hydrate plan reads posts by primary key or a `uri` index (a bitmap AND with another index allowed), at most one row per page entry; the test fails otherwise. Discover Hot already ranked then hydrated and is not compared.
+
+#### Production (2026-11-19)
+
+Measured on production with `EXPLAIN (ANALYZE, BUFFERS)` inside `BEGIN TRANSACTION READ ONLY` (10 s statement timeout, rolled back), the same query text as the test with real parameters, warm cache (second of two runs; shared reads were 0): the viewer with the most subscriptions (15), the community with the most live posts (3,519), the `day` timeframe for top, page size 15. Production then held 51,098 posts, 38,996 admissions, 1,730 communities, 15,077 users and 74 subscriptions. The hydrate input was the URIs the matching rank query returned (10 on community top, where only 10 posts were from the last day). Rank + hydrate is the sum of the two queries; the extra round trip between them is not included.
+
+| Surface | Old execution | Rank + hydrate execution | Old planning | Rank + hydrate planning | Old shared hit | Rank + hydrate shared hit |
+| --- | --- | --- | --- | --- | --- | --- |
+| Timeline hot | 1,054.637 ms | 985.848 ms (979.582 + 6.266) | 41.499 ms | 32.791 ms | 278,276 | 258,380 |
+| Timeline new | 805.409 ms | 606.527 ms (604.308 + 2.219) | 12.674 ms | 12.455 ms | 340,085 | 261,591 |
+| Timeline top (day) | 5.534 ms | 6.246 ms (4.048 + 2.198) | 11.887 ms | 12.453 ms | 1,796 | 1,841 |
+| Community hot | 467.413 ms | 439.230 ms (436.359 + 2.871) | 4.820 ms | 6.214 ms | 103,652 | 90,012 |
+| Community new | 13.796 ms | 15.514 ms (12.742 + 2.772) | 4.005 ms | 6.473 ms | 716 | 1,077 |
+| Community top (day) | 0.965 ms | 2.404 ms (0.535 + 1.869) | 4.115 ms | 4.504 ms | 197 | 464 |
+| Discover new | 13.712 ms | 15.223 ms (12.893 + 2.330) | 5.016 ms | 9.278 ms | 797 | 1,080 |
+| Discover top (day) | 13.659 ms | 15.055 ms (13.002 + 2.053) | 5.072 ms | 9.115 ms | 911 | 1,198 |
+
+On production the expensive surfaces got cheaper (timeline hot 69 ms, timeline new 199 ms, community hot 28 ms less execution) and the cheap ones cost 0.7-1.7 ms more, almost all of it the hydrate read (2-3 ms on production against 0.3 ms on the test database). Every hydrate plan read posts through `posts_uri_key`, alone or ANDed with `idx_posts_community_created`. Timeline hot and new take 0.6-1.1 s on production with either query; that cost is in the rank query and predates this change.
 
 ## Visibility
 
@@ -34,7 +93,9 @@ A community block is an aggregate-feed mute. This is a product decision that mat
 
 Every feed cursor is `base64(payload::hex(HMAC-SHA256(payload)))` keyed by `CURSOR_SECRET`. Production config refuses to start when `CURSOR_SECRET` is unset (it falls back to a public dev constant), a `CHANGE_ME` placeholder, or shorter than 16 characters. Rotating it invalidates every outstanding cursor on every feed and reshuffles the Discover hosted bonus. A tampered or malformed cursor returns 400 `InvalidCursor`.
 
-Timeline and community Hot cursors carry `created_at::uri::query_time`, not the rank. The next page recomputes the anchor post's rank from its current row at the pinned query time with the same SQL expression as the candidates, so float rounding is identical on both sides of the comparison and posts do not drift across pages as time passes.
+The getFeed cursor is a signed envelope around the generator's own cursor, bound to the feed at-uri, scope, community DID and viewer DID; replaying it with any of those changed, or tampering with it, returns 400 `InvalidCursor`. Alias cursors are getFeed cursors: a getTimeline, getDiscover or getCommunity cursor pages the matching getFeed feed and scope, and a request for a different feed, scope, community or viewer, through any alias or getFeed, rejects it. Cursors issued before the old endpoints became aliases are not envelopes; each gets a one-time 400 `InvalidCursor` at deploy, with no compatibility shim, and clients restart from page one. Known limitation: the envelope stays within the lexicon's 500-character cursor bound only for post URIs up to about 200 characters. A longer post URI still pages, because the handler never rejects a server-signed cursor for its length, but that cursor exceeds the published bound.
+
+Inside the envelope, the `hot` generator's cursor carries `created_at::uri::query_time`, not the rank. The next page recomputes the anchor post's rank from its current row at the pinned query time with the same SQL expression as the candidates, so float rounding is identical on both sides of the comparison and posts do not drift across pages as time passes.
 
 ## Hot rank
 
@@ -74,7 +135,7 @@ A global limiter allows 100 requests per minute per client IP on every route. Ti
 
 ## Discover Hot
 
-Only Discover with sort `hot`, including the default sort, uses this ranking. Discover New and Top use the shared feed query. It exists because high-vote bridged communities took most of Discover: in a September 2026 sample two communities held 60% of the first 50 posts.
+Only the `discover-hot` built-in (getDiscover with sort `hot`, including the default sort) uses this ranking. Discover New and Top are the `new` and `top` built-ins at scope `all`. It exists because high-vote bridged communities took most of Discover: in a September 2026 sample two communities held 60% of the first 50 posts.
 
 ### Ranking
 
@@ -125,3 +186,35 @@ The frontend and mobile 1.4.0+11 restart from page one on `InvalidCursor` and ho
 - The baseline uses the current scores of mature posts, not their scores at 24 hours, because historical aggregate votes are not stored.
 - Every post in a hosted community gets the bonus, aggregator posts included. Revisit this as native posting grows.
 - The first downvote on a zero-score hosted post removes the whole bonus, dropping the numerator from up to 4.0 to `1 - ln 2` (about 13x), against about 3.3x for a non-hosted post. One account can do this. A taper over the first few negative scores is the fallback if it is abused.
+
+## Comments
+
+`social.coves.community.comment.getComments` takes an optional `feed`, the at-uri of a comment generator. The built-ins are `comments-hot`, `comments-top` and `comments-new` (kind `comments`, scope `thread`). `sort` (`hot`, `top`, `new`) is a deprecated alias that maps to the matching built-in; `feed` wins when both are sent, and with neither the order is `comments-hot`. A `feed` that is not an at-uri is 400 `InvalidRequest`, an unregistered one 400 `UnknownFeed`, and a posts generator 400 `UnsupportedFeedScope`. `timeframe` is accepted only by `comments-top`; with any other feed it is 400 `InvalidRequest`. getFeed rejects the comment built-ins with `UnsupportedFeedScope`.
+
+A comment generator orders the direct replies of one or more parents and returns URIs only; the AppView then reads those comments by URI and keeps the generator's order. The top level and a `parentRkey` subtree are one parent with a cursor and the request's limit and timeframe. Each nested level is one call with every parent at that depth, 5 replies per parent and no timeframe. The orders, filters and cursors are the ones the previous single queries used: hot ranked with the cursor's pinned `rankedAt` and live scores, author blocks applied when a viewer is signed in, deleted and removed comments kept as placeholders. The previous queries live on as test oracles in `internal/db/postgres/comment_oracle_test.go`, and the equivalence tests compare whole getComments trees and hot cursor drift against them.
+
+### Cost
+
+Measured 2026-11-19 by `TestCommentQueryCost_OldVersusRankAndHydrate` (`EXPLAIN (ANALYZE, BUFFERS)`) on the PostgreSQL test database after `ANALYZE`: 21,100 comments, a busy thread with 600 top-level comments and 500 replies plus 200 other threads, 401 users. "Old" is the previous single query (now the oracle); "rank" and "hydrate" are the generator query and the read by URI.
+
+| Query | Execution | Planning | Shared hit | Shared read | Rows |
+| --- | --- | --- | --- | --- | --- |
+| Old, top-level hot page (limit 50) | 0.742 ms | 0.554 ms | 57 | 0 | 51 |
+| Rank, top-level hot page | 0.369 ms | 0.077 ms | 46 | 0 | 51 |
+| Hydrate, top-level hot page | 0.383 ms | 0.256 ms | 163 | 0 | 50 |
+| Old, nested batch level (25 parents x 5) | 1.661 ms | 0.293 ms | 453 | 0 | 125 |
+| Rank, nested batch level | 0.553 ms | 0.097 ms | 277 | 0 | 125 |
+| Hydrate, nested batch level | 0.835 ms | 0.263 ms | 411 | 0 | 125 |
+
+Rank plus hydrate costs about the same as the old query at the top level (0.75 ms against 0.74 ms execution, more buffer hits from the second read) and less at a nested level (1.39 ms against 1.66 ms). The hydrate plan reads comments by primary key or the unique `uri` index, at most one row per page entry; the test fails otherwise.
+
+#### Production (2026-11-19)
+
+Measured on production the same way as the posts (read-only transaction, warm cache, shared reads 0): the thread with the most comments (676 comments, 70 top-level), the viewer with the most subscriptions, hot. The nested batch is that thread's 25 top-level comments with the most replies, 5 per parent; they had 79 replies between them, so the level returned 79 rows rather than 125. Production then held 108,693 comments.
+
+| Query | Old execution | Rank + hydrate execution | Old planning | Rank + hydrate planning | Old shared hit | Rank + hydrate shared hit | Rows |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Top-level hot page (limit 50) | 1.610 ms | 2.967 ms (0.256 + 2.711) | 1.746 ms | 1.821 ms | 528 | 647 | 50 |
+| Nested batch level (25 parents x 5) | 2.330 ms | 4.519 ms (0.835 + 3.684) | 0.857 ms | 1.015 ms | 611 | 1,048 | 79 |
+
+On production rank plus hydrate costs 1.4 ms more at the top level and 2.2 ms more at a nested level, the hydrate read by `comments_uri_key` being most of it.

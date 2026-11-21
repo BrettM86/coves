@@ -35,14 +35,14 @@ func TestDiscoverRepo_HotCallerDeadlineIsRetryableButCancellationIsNot(t *testin
 
 	deadlineContext, cancelDeadline := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancelDeadline()
-	_, _, deadlineErr := repository.GetDiscover(deadlineContext, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	_, _, deadlineErr := getDiscoverHotViaGenerator(deadlineContext, repository, discoverHotTestRequest{Limit: 10})
 	assert.ErrorIs(t, deadlineErr, context.DeadlineExceeded)
 	assert.ErrorIs(t, deadlineErr, discover.ErrDiscoverUnavailable,
 		"caller deadline exhaustion must remain identifiable as retryable Discover unavailability")
 
 	canceledContext, cancel := context.WithCancel(ctx)
 	cancel()
-	_, _, canceledErr := repository.GetDiscover(canceledContext, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	_, _, canceledErr := getDiscoverHotViaGenerator(canceledContext, repository, discoverHotTestRequest{Limit: 10})
 	assert.ErrorIs(t, canceledErr, context.Canceled)
 	assert.NotErrorIs(t, canceledErr, discover.ErrDiscoverUnavailable,
 		"plain caller cancellation must not be relabeled as retryable unavailability")

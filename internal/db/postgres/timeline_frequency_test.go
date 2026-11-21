@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"Coves/internal/core/discover"
-	"Coves/internal/core/timeline"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -140,7 +139,7 @@ func TestTimelineFrequency_LevelsOneAndTwoKeepTopOfWindow(t *testing.T) {
 		"new": {d1, d2, e30, d3, a19, b119, a20, b120, d4, c16, c17, c18, c19, c20, d5},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t, want[read.sort], readWholeTimeline(t, repo, cast.viewer, read.sort, read.timeframe))
@@ -178,13 +177,13 @@ func TestTimelineFrequency_LevelThreeFeedUnchanged(t *testing.T) {
 		"new": {g("g1"), g("g2"), g("g3"), g("g7"), g("g4"), g("g5"), g("g6")},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			var pages [][]string
 			var cursor *string
 			for page := 0; page < 4; page++ {
-				feed, next, err := repo.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+				feed, next, err := repo.GetTimeline(context.Background(), timelineViaFeedRequest{
 					UserDID:   cast.viewer,
 					Sort:      read.sort,
 					Timeframe: read.timeframe,
@@ -251,7 +250,7 @@ func TestTimelineFrequency_NonPositivePostsNeverAppearAtLevelsOneAndTwo(t *testi
 		frequencyPost{rkey: "ctrl", score: 1, age: hours(1)},
 	)
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			assert.Equal(t,

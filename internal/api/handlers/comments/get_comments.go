@@ -39,6 +39,7 @@ type GetCommentsRequest struct {
 	ViewerDID  *string `json:"-"`
 	PostURI    string  `json:"post"`
 	ParentRkey string  `json:"parentRkey,omitempty"`
+	Feed       string  `json:"feed,omitempty"`
 	Sort       string  `json:"sort,omitempty"`
 	Timeframe  string  `json:"timeframe,omitempty"`
 	Depth      int     `json:"depth,omitempty"`
@@ -73,6 +74,7 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	query := r.URL.Query()
 	post := query.Get("post")
 	parentRkey := query.Get("parentRkey")
+	feed := query.Get("feed")
 	sort := query.Get("sort")
 	timeframe := query.Get("timeframe")
 	depthStr := query.Get("depth")
@@ -89,6 +91,14 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	if parentRkey != "" {
 		if _, err := syntax.ParseRecordKey(parentRkey); err != nil {
 			writeError(w, http.StatusBadRequest, "InvalidRequest", "parentRkey must be a valid record key")
+			return
+		}
+	}
+
+	// 3c. Validate feed syntax if provided (the comment generator's at-uri)
+	if feed != "" {
+		if _, err := syntax.ParseATURI(feed); err != nil {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "feed must be a valid at-uri")
 			return
 		}
 	}
@@ -134,13 +144,9 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 7. Validate timeframe parameter (only valid with "top" sort)
+	// 7. Validate timeframe values. Which feed accepts a timeframe is the
+	// service's rule, since it depends on the resolved feed.
 	if timeframe != "" {
-		if sort != "top" {
-			writeError(w, http.StatusBadRequest, "InvalidRequest",
-				"timeframe can only be used with sort=top")
-			return
-		}
 		validTimeframes := map[string]bool{
 			"hour": true, "day": true, "week": true,
 			"month": true, "year": true, "all": true,
@@ -163,6 +169,7 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	req := &GetCommentsRequest{
 		PostURI:    post,
 		ParentRkey: parentRkey,
+		Feed:       feed,
 		Sort:       sort,
 		Timeframe:  timeframe,
 		Depth:      depth,

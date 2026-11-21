@@ -12,12 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/api/handlers/communityFeed"
 	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
-	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -30,7 +26,7 @@ import (
 // actually carries.
 //
 // Every sort ("hot", "top" with a timeframe, "new") is one ORDER BY clause in
-// feed_repo.go, and every page boundary is a keyset predicate derived from the
+// its generator (feedgen_hot.go, feedgen_sort.go), and every page boundary is a keyset predicate derived from the
 // opaque cursor that clause emits. Neither can be tested against a fake
 // repository: the hot rank is computed in SQL from score and age, the timeframe
 // filter is a WHERE on created_at, and the pagination bugs pinned below were all
@@ -38,61 +34,36 @@ import (
 // against. So the suite belongs beside the query, seeded with rows chosen to make
 // each sort produce a DIFFERENT answer.
 //
-// It drives the XRPC handler rather than the repository directly because the
+// It drives the XRPC endpoint rather than the generators directly because the
 // cursor is only opaque at that boundary — encoding, signing and decoding it is
 // part of what is under test, and the response shape (Record, Community, Stats)
-// is what a client actually receives. The handler is called in process with
-// httptest; nothing here needs a PDS, a Jetstream or a running AppView, which is
-// why the package's Postgres-only floor is enough.
+// is what a client actually receives. getCommunity is an alias of getFeed
+// scope community, so the endpoint is served as production registers it
+// (RegisterFeedRoutes over the production built-ins, postgres.FeedAliasServer)
+// in process with httptest; nothing here needs a PDS, a Jetstream or a running
+// AppView, which is why the package's Postgres-only floor is enough.
 //
 // This file is in the external test package because it uses Coves/tests/fixtures
 // for row seeding; see that package's doc comment for why its callers must be.
 
-// feedCursorSecret is the HMAC key the feed repository signs cursors with. Any
-// value works as long as one test uses one value: a cursor minted under one key
-// and presented under another is rejected, which is the behaviour a shared
-// constant keeps out of the way of the tests that are about ordering.
-const feedCursorSecret = "test-cursor-secret"
-
-// newCommunityFeedHandler wires the real repository, service and handler over a
-// test database.
-//
-// Every dependency the feed itself does not need is nil: no PDS account
-// provisioner or client factory (nothing here writes to a repo), no vote service
-// (no viewer, so no viewer state to hydrate) and no Bluesky service (no
-// cross-network embeds). Passing real ones would make these tests fail for
-// reasons that have nothing to do with ordering.
-func newCommunityFeedHandler(db *sql.DB) *communityFeed.GetCommunityHandler {
-	communityService := communities.NewCommunityServiceWithPDSFactory(
-		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
-		testkit.Endpoints().PDS.BaseURL,
-		fixtures.InstanceDID(),
-		testkit.Endpoints().PDS.HandleDomain,
-		nil,
-		nil,
-		nil, nil,
-		communities.PrivateHostOptions(true)...,
-	)
-	feedService := communityFeeds.NewCommunityFeedService(
-		postgres.NewCommunityFeedRepository(db, feedCursorSecret),
-		communityService,
-	)
-	return communityFeed.NewGetCommunityHandler(feedService, nil, nil)
+// newCommunityFeedServer serves getCommunity over a test database. No viewer
+// is signed in anywhere in this file, so no viewer state is hydrated, and no
+// Bluesky service is wired (no cross-network embeds).
+func newCommunityFeedServer(db *sql.DB) *postgres.FeedAliasServer {
+	return postgres.NewFeedAliasServer(db, nil)
 }
 
-// getCommunityFeed issues one feed request and decodes the response, failing the
-// test on any status other than 200.
-func getCommunityFeed(t *testing.T, handler *communityFeed.GetCommunityHandler, query string) communityFeeds.FeedResponse {
+// getCommunityFeed issues one anonymous feed request and decodes the response,
+// failing the test on any status other than 200.
+func getCommunityFeed(t *testing.T, server *postgres.FeedAliasServer, query string) postgres.FeedAliasPage {
 	t.Helper()
+	return server.Page(t, postgres.GetCommunityPath, query, "")
+}
 
-	rec := httptest.NewRecorder()
-	handler.HandleGetCommunity(rec, httptest.NewRequest(http.MethodGet,
-		"/xrpc/social.coves.communityFeed.getCommunity?"+query, nil))
-	require.Equalf(t, http.StatusOK, rec.Code, "GET ?%s: %s", query, rec.Body.String())
-
-	var response communityFeeds.FeedResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
-	return response
+// getCommunityFeedRecorder issues one anonymous feed request and returns the
+// raw response, for the error cases.
+func getCommunityFeedRecorder(server *postgres.FeedAliasServer, query string) *httptest.ResponseRecorder {
+	return server.Serve(postgres.GetCommunityPath, query, "")
 }
 
 // getPostTitle reads the title out of a post view's record.
@@ -126,7 +97,7 @@ func getPostTitle(t *testing.T, pv *posts.PostView) string {
 func TestGetCommunityFeed_Hot(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -140,7 +111,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 	post2URI := fixtures.Post(t, db, communityDID, "did:plc:bob", "Old popular post", 100, time.Now().Add(-24*time.Hour))
 	post3URI := fixtures.Post(t, db, communityDID, "did:plc:charlie", "Brand new post", 5, time.Now().Add(-10*time.Minute))
 
-	response := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=hot&limit=10", communityDID))
+	response := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=hot&limit=10", communityDID))
 
 	assert.Len(t, response.Feed, 3)
 
@@ -175,7 +146,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -188,7 +159,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 	fixtures.Post(t, db, communityDID, "did:plc:charlie", "30 minutes old", 50, time.Now().Add(-30*time.Minute))
 
 	t.Run("Top posts from last day", func(t *testing.T) {
-		response := getCommunityFeed(t, handler,
+		response := getCommunityFeed(t, server,
 			fmt.Sprintf("community=%s&sort=top&timeframe=day&limit=10", communityDID))
 
 		// The 2-day-old post is outside the window even though it scores highest.
@@ -198,7 +169,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 	})
 
 	t.Run("Top posts from all time", func(t *testing.T) {
-		response := getCommunityFeed(t, handler,
+		response := getCommunityFeed(t, server,
 			fmt.Sprintf("community=%s&sort=top&timeframe=all&limit=10", communityDID))
 
 		assert.Len(t, response.Feed, 3)
@@ -213,7 +184,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 func TestGetCommunityFeed_New(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -225,7 +196,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 	fixtures.Post(t, db, communityDID, "did:plc:bob", "Middle post", 100, time.Now().Add(-2*time.Hour))
 	fixtures.Post(t, db, communityDID, "did:plc:charlie", "Newest post", 1, time.Now().Add(-1*time.Hour))
 
-	response := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
+	response := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
 
 	assert.Len(t, response.Feed, 3)
 	assert.Equal(t, "Newest post", getPostTitle(t, response.Feed[0].Post))
@@ -240,7 +211,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 func TestGetCommunityFeed_Pagination(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -253,11 +224,11 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 			time.Now().Add(-time.Duration(i)*time.Minute))
 	}
 
-	page1 := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
+	page1 := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
 	assert.Len(t, page1.Feed, 10)
 	require.NotNil(t, page1.Cursor, "Should have cursor for next page")
 
-	page2 := getCommunityFeed(t, handler,
+	page2 := getCommunityFeed(t, server,
 		fmt.Sprintf("community=%s&sort=new&limit=10&cursor=%s", communityDID, *page1.Cursor))
 	assert.Len(t, page2.Feed, 10)
 
@@ -270,7 +241,7 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 	}
 
 	require.NotNil(t, page2.Cursor, "Expected cursor for page 3")
-	page3 := getCommunityFeed(t, handler,
+	page3 := getCommunityFeed(t, server,
 		fmt.Sprintf("community=%s&sort=new&limit=10&cursor=%s", communityDID, *page2.Cursor))
 
 	assert.Len(t, page3.Feed, 5)
@@ -283,12 +254,9 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/xrpc/social.coves.communityFeed.getCommunity?community=did:plc:nonexistent&sort=hot&limit=10", nil)
-	rec := httptest.NewRecorder()
-	handler.HandleGetCommunity(rec, req)
+	rec := getCommunityFeedRecorder(server, "community=did:plc:nonexistent&sort=hot&limit=10")
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 
@@ -306,7 +274,7 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -326,11 +294,8 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-				"/xrpc/social.coves.communityFeed.getCommunity?community=%s&sort=new&limit=10&cursor=%s",
-				communityDID, tt.cursor), nil)
-			rec := httptest.NewRecorder()
-			handler.HandleGetCommunity(rec, req)
+			rec := getCommunityFeedRecorder(server, fmt.Sprintf(
+				"community=%s&sort=new&limit=10&cursor=%s", communityDID, tt.cursor))
 
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 
@@ -354,7 +319,7 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -362,7 +327,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 		fmt.Sprintf("empty-%s", testID), fmt.Sprintf("empty-%s.test", testID))
 	require.NoError(t, err)
 
-	response := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=hot&limit=10", communityDID))
+	response := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=hot&limit=10", communityDID))
 
 	assert.Len(t, response.Feed, 0)
 	assert.Nil(t, response.Cursor)
@@ -375,7 +340,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -384,10 +349,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("Reject limit over 50", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf(
-			"/xrpc/social.coves.communityFeed.getCommunity?community=%s&sort=hot&limit=100", communityDID), nil)
-		rec := httptest.NewRecorder()
-		handler.HandleGetCommunity(rec, req)
+		rec := getCommunityFeedRecorder(server, fmt.Sprintf("community=%s&sort=hot&limit=100", communityDID))
 
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 
@@ -395,13 +357,14 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 
 		assert.Equal(t, "InvalidRequest", errResp["error"])
-		assert.Contains(t, errResp["message"], "limit must not exceed 50")
+		// The message is getFeed's; it names the limit.
+		assert.Contains(t, errResp["message"], "limit")
 	})
 
 	t.Run("Handle zero limit with default", func(t *testing.T) {
 		// limit=0 means "unspecified", not "no posts": the handler substitutes
 		// its default rather than refusing the request.
-		getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=hot&limit=0", communityDID))
+		getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=hot&limit=0", communityDID))
 	})
 }
 
@@ -419,7 +382,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -434,14 +397,14 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	postB := fixtures.Post(t, db, communityDID, "did:plc:bob", "Old popular", 100, time.Now().Add(-24*time.Hour))
 	_ = fixtures.Post(t, db, communityDID, "did:plc:charlie", "Older medium", 50, time.Now().Add(-36*time.Hour))
 
-	page1 := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=hot&limit=1", communityDID))
+	page1 := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=hot&limit=1", communityDID))
 	assert.Len(t, page1.Feed, 1)
 	require.NotNil(t, page1.Cursor, "Should have cursor for next page")
 
 	firstPostURI := page1.Feed[0].Post.URI
 	t.Logf("Page 1 - First post: %s (URI: %s)", getPostTitle(t, page1.Feed[0].Post), firstPostURI)
 
-	page2 := getCommunityFeed(t, handler,
+	page2 := getCommunityFeed(t, server,
 		fmt.Sprintf("community=%s&sort=hot&limit=2&cursor=%s", communityDID, *page1.Cursor))
 
 	// The exact count is left loose because the hot rank is recomputed against
@@ -481,7 +444,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -494,14 +457,14 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	postB := fixtures.Post(t, db, communityDID, "did:plc:bob", "Post B", 50, baseTime.Add(100*time.Millisecond))
 	postC := fixtures.Post(t, db, communityDID, "did:plc:charlie", "Post C", 50, baseTime.Add(200*time.Millisecond))
 
-	page1 := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=hot&limit=1", communityDID))
+	page1 := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=hot&limit=1", communityDID))
 	assert.Len(t, page1.Feed, 1)
 	require.NotNil(t, page1.Cursor, "Should have cursor for next page")
 
 	firstPostURI := page1.Feed[0].Post.URI
 	t.Logf("Page 1 - First post: %s", firstPostURI)
 
-	page2 := getCommunityFeed(t, handler,
+	page2 := getCommunityFeed(t, server,
 		fmt.Sprintf("community=%s&sort=hot&limit=2&cursor=%s", communityDID, *page1.Cursor))
 
 	assert.GreaterOrEqual(t, len(page2.Feed), 2, "Page 2 should contain at least 2 remaining posts")
@@ -534,7 +497,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -561,7 +524,7 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 			query += "&cursor=" + *cursor
 		}
 
-		page := getCommunityFeed(t, handler, query)
+		page := getCommunityFeed(t, server, query)
 		if len(page.Feed) == 0 {
 			break
 		}
@@ -620,7 +583,7 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 // Do not add t.Parallel here without moving the config off a global.
 func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	db := testkit.DB(t)
-	handler := newCommunityFeedHandler(db)
+	server := newCommunityFeedServer(db)
 
 	// Serve URLs the way production does: through the image proxy on the media
 	// hostname. The config is process-wide, so it is restored afterwards.
@@ -668,7 +631,7 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	`, uri, "bafytest", rkey, authorDID, communityDID, "Post with blob thumb", embedJSON)
 	require.NoError(t, err)
 
-	response := getCommunityFeed(t, handler, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
+	response := getCommunityFeed(t, server, fmt.Sprintf("community=%s&sort=new&limit=10", communityDID))
 	require.Len(t, response.Feed, 1, "Should have one post")
 
 	feedPost := response.Feed[0]

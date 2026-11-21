@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"Coves/internal/core/discover"
+	"Coves/internal/core/feedgen"
+	"Coves/internal/core/posts"
 
 	"github.com/lib/pq"
 )
@@ -35,7 +37,47 @@ const (
 	discoverHotCheckpointStateSizeConstraint       = "ck_discover_hot_checkpoint_state_size"
 )
 
-func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.GetDiscoverRequest) (posts []*discover.FeedViewPost, nextCursor *string, err error) {
+// discoverHotPageRequest is one Discover Hot page request of the discover-hot
+// getFeed generator. Cursor is the signed discover-hot-v1 cursor; "" requests
+// the first page.
+type discoverHotPageRequest struct {
+	viewerDID string
+	limit     int
+	cursor    string
+}
+
+// HydratedPage is the discover-hot getFeed generator: one Discover Hot page,
+// hydrated inside the page transaction, for scope all. Its inner cursor is the
+// signed discover-hot-v1 cursor. Errors keep matching
+// discover.ErrDiscoverUnavailable; a rejected inner cursor matches both
+// discover.ErrInvalidCursor and feedgen.ErrInvalidCursor.
+func (r *postgresDiscoverRepo) HydratedPage(ctx context.Context, req feedgen.SkeletonRequest) (feedgen.HydratedPostPage, error) {
+	if req.Scope.Name != feedgen.ScopeAll {
+		return feedgen.HydratedPostPage{}, fmt.Errorf("discover-hot page: scope %q: %w", req.Scope.Name, feedgen.ErrUnsupportedFeedScope)
+	}
+	views, nextCursor, err := r.discoverHotPage(ctx, discoverHotPageRequest{
+		viewerDID: req.ViewerDID,
+		limit:     req.Limit,
+		cursor:    req.Cursor,
+	})
+	if err != nil {
+		if errors.Is(err, discover.ErrInvalidCursor) {
+			return feedgen.HydratedPostPage{}, fmt.Errorf("discover-hot page: %w: %w", feedgen.ErrInvalidCursor, err)
+		}
+		return feedgen.HydratedPostPage{}, err
+	}
+	page := feedgen.HydratedPostPage{Feed: make([]*feedgen.FeedViewPost, 0, len(views)), Cursor: nextCursor}
+	for _, view := range views {
+		page.Feed = append(page.Feed, &feedgen.FeedViewPost{Post: view})
+	}
+	return page, nil
+}
+
+// discoverHotPage selects, revalidates and hydrates one Discover Hot page in
+// one transaction. A selected post that fails final hydration is excluded and
+// the page is reselected from the input state before the checkpoint is built,
+// so the checkpoint reflects only emitted posts. nextCursor "" means the end.
+func (r *postgresDiscoverRepo) discoverHotPage(ctx context.Context, req discoverHotPageRequest) (views []*posts.PostView, nextCursor string, err error) {
 	callerContext := ctx
 	ctx, cancel := context.WithTimeout(ctx, r.effectiveDiscoverHotWorkDeadline())
 	defer func() {
@@ -44,8 +86,8 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 		if err == nil {
 			return
 		}
-		posts = nil
-		nextCursor = nil
+		views = nil
+		nextCursor = ""
 		if callerErr := callerContext.Err(); callerErr != nil {
 			err = callerErr
 			if errors.Is(callerErr, context.DeadlineExceeded) {
@@ -65,56 +107,65 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 		checkpointID int64
 	)
 
-	if req.Cursor != nil && *req.Cursor != "" {
-		parsedSnapshotID, parsedCheckpointID, err := r.parseDiscoverHotCursor(*req.Cursor, req.ViewerDID)
+	if req.cursor != "" {
+		parsedSnapshotID, parsedCheckpointID, err := r.parseDiscoverHotCursor(req.cursor, req.viewerDID)
 		if err != nil {
-			return nil, nil, discover.ErrInvalidCursor
+			return nil, "", discover.ErrInvalidCursor
 		}
 		snapshotID = parsedSnapshotID
 		checkpointID = parsedCheckpointID
 	} else {
 		var err error
-		snapshotID, candidates, err = r.loadOrCreateDiscoverHotSnapshot(ctx, req.ViewerDID)
+		snapshotID, candidates, err = r.loadOrCreateDiscoverHotSnapshot(ctx, req.viewerDID)
 		if err != nil {
-			return nil, nil, err
+			return nil, "", err
 		}
 	}
 
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin Discover Hot page: %w", err)
+		return nil, "", fmt.Errorf("begin Discover Hot page: %w", err)
 	}
 	defer tx.Rollback()
 
 	if checkpointID != 0 {
-		state, err = loadDiscoverHotCheckpoint(ctx, tx, snapshotID, checkpointID, req.ViewerDID)
+		state, err = loadDiscoverHotCheckpoint(ctx, tx, snapshotID, checkpointID, req.viewerDID)
 		if err != nil {
 			if errors.Is(err, discover.ErrInvalidCursor) {
-				return nil, nil, discover.ErrInvalidCursor
+				return nil, "", discover.ErrInvalidCursor
 			}
-			return nil, nil, fmt.Errorf("load Discover Hot checkpoint: %w", err)
+			return nil, "", fmt.Errorf("load Discover Hot checkpoint: %w", err)
 		}
 		candidates, err = loadDiscoverHotCandidates(ctx, tx, snapshotID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("load Discover Hot candidates: %w", err)
+			return nil, "", fmt.Errorf("load Discover Hot candidates: %w", err)
 		}
 	} else if err := pinDiscoverHotSnapshot(ctx, tx, snapshotID); err != nil {
-		return nil, nil, fmt.Errorf("pin Discover Hot snapshot: %w", err)
+		return nil, "", fmt.Errorf("pin Discover Hot snapshot: %w", err)
 	}
 
-	if err := markExcludedDiscoverHotCandidates(ctx, tx, candidates, req.ViewerDID, r.authorityDID); err != nil {
-		return nil, nil, fmt.Errorf("revalidate Discover Hot candidates: %w", err)
+	if err := markExcludedDiscoverHotCandidates(ctx, tx, candidates, req.viewerDID, r.authorityDID); err != nil {
+		return nil, "", fmt.Errorf("revalidate Discover Hot candidates: %w", err)
 	}
 	var (
 		selected  []discover.DiscoverHotCandidate
 		nextState discover.DiscoverHotSelectionState
-		feedPosts []*discover.FeedViewPost
+		feedPosts []*posts.PostView
 	)
+	hydrator := NewPostHydrator(tx, WithAccountRestrictionAuthority(r.authorityDID))
 	for {
-		selected, nextState = discover.SelectDiscoverHotCandidates(candidates, req.Limit, state)
-		feedPosts, err = hydrateDiscoverHotCandidates(ctx, tx, selected, req.ViewerDID, r.authorityDID)
+		selected, nextState = discover.SelectDiscoverHotCandidates(candidates, req.limit, state)
+		uris := make([]string, len(selected))
+		for i, candidate := range selected {
+			uris[i] = candidate.URI
+		}
+		feedPosts, err = hydrator.HydratePosts(ctx, feedgen.HydrateRequest{
+			ViewerDID: req.viewerDID,
+			Scope:     feedgen.Scope{Name: feedgen.ScopeAll},
+			URIs:      uris,
+		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("hydrate Discover Hot candidates: %w", err)
+			return nil, "", fmt.Errorf("hydrate Discover Hot candidates: %w", err)
 		}
 		if len(feedPosts) == len(selected) {
 			break
@@ -122,7 +173,7 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 
 		hydrated := make(map[string]struct{}, len(feedPosts))
 		for _, feedPost := range feedPosts {
-			hydrated[feedPost.Post.URI] = struct{}{}
+			hydrated[feedPost.URI] = struct{}{}
 		}
 		missing := make(map[string]struct{}, len(selected)-len(feedPosts))
 		for _, candidate := range selected {
@@ -140,23 +191,23 @@ func (r *postgresDiscoverRepo) getDiscoverHot(ctx context.Context, req discover.
 	lookahead, _ := discover.SelectDiscoverHotCandidates(candidates, 1, nextState)
 	if len(lookahead) == 0 {
 		if err := tx.Commit(); err != nil {
-			return nil, nil, fmt.Errorf("commit Discover Hot page: %w", err)
+			return nil, "", fmt.Errorf("commit Discover Hot page: %w", err)
 		}
-		return feedPosts, nil, nil
+		return feedPosts, "", nil
 	}
 
 	checkpointID, err = r.storeDiscoverHotCheckpoint(ctx, tx, snapshotID, nextState)
 	if err != nil {
-		return nil, nil, fmt.Errorf("store Discover Hot checkpoint: %w", err)
+		return nil, "", fmt.Errorf("store Discover Hot checkpoint: %w", err)
 	}
-	cursor, err := r.buildDiscoverHotCursor(snapshotID, checkpointID, req.ViewerDID)
+	cursor, err := r.buildDiscoverHotCursor(snapshotID, checkpointID, req.viewerDID)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("commit Discover Hot page: %w", err)
+		return nil, "", fmt.Errorf("commit Discover Hot page: %w", err)
 	}
-	return feedPosts, &cursor, nil
+	return feedPosts, cursor, nil
 }
 
 func (r *postgresDiscoverRepo) loadOrCreateDiscoverHotSnapshot(ctx context.Context, viewerDID string) (int64, []discover.DiscoverHotCandidate, error) {
@@ -678,57 +729,6 @@ func markExcludedDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, candidat
 		candidates[i].Excluded = !isEligible
 	}
 	return nil
-}
-
-func hydrateDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, selected []discover.DiscoverHotCandidate, viewerDID, authorityDID string) ([]*discover.FeedViewPost, error) {
-	if len(selected) == 0 {
-		return nil, nil
-	}
-
-	uris := make([]string, len(selected))
-	for i, candidate := range selected {
-		uris[i] = candidate.URI
-	}
-	visJoin, visWhere := visiblePostsJoin(2, 3)
-	viewerFilter := ""
-	if viewerDID != "" {
-		viewerFilter = viewerBlockFilters(2, aggregateSurface)
-	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT`+postViewSelectColumns+`
-		FROM posts p
-		LEFT JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did`+visJoin+`
-		WHERE p.uri = ANY($1)
-			AND p.deleted_at IS NULL
-			AND `+visWhere+`
-			AND NOT `+communityRemovedSQL("p.community_did", "$3")+`
-			`+viewerFilter+`
-	`, pq.Array(uris), viewerDID, authorityDID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	views := make(map[string]*discover.FeedViewPost, len(selected))
-	for rows.Next() {
-		postView, err := scanPostView(rows)
-		if err != nil {
-			return nil, err
-		}
-		views[postView.URI] = &discover.FeedViewPost{Post: postView}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	feedPosts := make([]*discover.FeedViewPost, 0, len(selected))
-	for _, candidate := range selected {
-		if view := views[candidate.URI]; view != nil {
-			feedPosts = append(feedPosts, view)
-		}
-	}
-	return feedPosts, nil
 }
 
 func (r *postgresDiscoverRepo) buildDiscoverHotCursor(snapshotID, checkpointID int64, viewerDID string) (string, error) {

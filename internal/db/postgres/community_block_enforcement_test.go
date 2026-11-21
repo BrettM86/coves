@@ -8,9 +8,6 @@ import (
 	"time"
 
 	"Coves/internal/core/comments"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/timeline"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
@@ -60,10 +57,10 @@ func TestCommunityBlock_AggregateFeedsMuteTheCommunity(t *testing.T) {
 	}
 	require.NoError(t, commentRepo.Create(ctx, threadComment))
 
-	discoverRepo := NewDiscoverRepository(db, "test-secret")
+	discoverRepo := newDiscoverViaFeed(db)
 	readDiscover := func(t *testing.T, viewer string) []string {
 		t.Helper()
-		feed, _, err := discoverRepo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		feed, _, err := discoverRepo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 			ViewerDID: viewer,
 			Sort:      "new",
 			Limit:     50,
@@ -72,10 +69,10 @@ func TestCommunityBlock_AggregateFeedsMuteTheCommunity(t *testing.T) {
 		return discoverURIs(feed)
 	}
 
-	timelineRepo := NewTimelineRepository(db, "test-secret")
+	timelineRepo := newTimelineViaFeed(db)
 	readTimeline := func(t *testing.T, userDID string) []string {
 		t.Helper()
-		feed, _, err := timelineRepo.GetTimeline(ctx, timeline.GetTimelineRequest{
+		feed, _, err := timelineRepo.GetTimeline(ctx, timelineViaFeedRequest{
 			UserDID: userDID,
 			Sort:    "new",
 			Limit:   50,
@@ -84,10 +81,10 @@ func TestCommunityBlock_AggregateFeedsMuteTheCommunity(t *testing.T) {
 		return timelineURIs(feed)
 	}
 
-	communityFeedRepo := NewCommunityFeedRepository(db, "test-secret")
+	communityFeedRepo := newCommunityFeedViaFeed(db)
 	readCommunityFeed := func(t *testing.T, communityDID, viewer string) []string {
 		t.Helper()
-		feed, _, err := communityFeedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		feed, _, err := communityFeedRepo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: communityDID,
 			ViewerDID: viewer,
 			Sort:      "new",
@@ -135,8 +132,8 @@ func TestCommunityBlock_AggregateFeedsMuteTheCommunity(t *testing.T) {
 	})
 
 	t.Run("the comment thread under it stays reachable", func(t *testing.T) {
-		list, _, err := commentRepo.ListByParentWithHotRank(
-			ctx, blockedCommunityOtherPost, "new", "", 50, nil, viewerDID)
+		list, _, err := listByParentViaGenerator(
+			ctx, commentRepo, db, blockedCommunityOtherPost, "new", "", 50, nil, viewerDID)
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{threadComment.URI}, commentURIs(list),
 			"a community mute must not hide the explicitly requested comment thread beneath its post")

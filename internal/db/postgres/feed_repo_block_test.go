@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/communityFeeds"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
@@ -20,15 +19,7 @@ import (
 
 // communityFeedURIs renders a community feed as the URIs it returned, which is
 // both the whole assertion and the only readable failure message.
-func communityFeedURIs(feed []*communityFeeds.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func communityFeedURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
 func TestCommunityFeedRepo_ViewerBlockFiltering(t *testing.T) {
 	t.Parallel()
@@ -45,10 +36,10 @@ func TestCommunityFeedRepo_ViewerBlockFiltering(t *testing.T) {
 	thirdPartyPost := seedFilterablePost(t, db, communityDID, cast.thirdParty, "feedthird", base.Add(time.Hour))
 	viewerPost := seedFilterablePost(t, db, communityDID, cast.viewer, "feedviewer", base.Add(2*time.Hour))
 
-	repo := NewCommunityFeedRepository(db, "test-secret")
+	repo := newCommunityFeedViaFeed(db)
 	read := func(t *testing.T, viewerDID string) []string {
 		t.Helper()
-		feed, _, err := repo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		feed, _, err := repo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: communityDID,
 			ViewerDID: viewerDID,
 			Sort:      "new",
@@ -107,10 +98,10 @@ func TestCommunityFeedRepo_CommunityBlockIsNotApplied(t *testing.T) {
 	thirdPartyPost := seedFilterablePost(t, db, communityDID, cast.thirdParty, "feedcommunitythird", base)
 	viewerPost := seedFilterablePost(t, db, communityDID, cast.viewer, "feedcommunityviewer", base.Add(time.Hour))
 
-	repo := NewCommunityFeedRepository(db, "test-secret")
+	repo := newCommunityFeedViaFeed(db)
 	read := func(t *testing.T) []string {
 		t.Helper()
-		feed, _, err := repo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		feed, _, err := repo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: communityDID,
 			ViewerDID: cast.viewer,
 			Sort:      "new",

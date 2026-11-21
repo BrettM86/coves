@@ -1,6 +1,7 @@
 package communityFeed
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,30 @@ import (
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 )
+
+// fakeCommunityFeedService captures the SearchPosts request the handler built
+// so a test can assert on it; the embedded nil Service satisfies the rest of
+// the interface and panics if reached. It never reaches a database, so the
+// whole file is T0.
+type fakeCommunityFeedService struct {
+	communityFeeds.Service
+
+	searchGot      *communityFeeds.SearchPostsRequest
+	searchResponse *communityFeeds.FeedResponse
+	searchErr      error
+}
+
+func (f *fakeCommunityFeedService) SearchPosts(_ context.Context, req communityFeeds.SearchPostsRequest) (*communityFeeds.FeedResponse, error) {
+	captured := req
+	f.searchGot = &captured
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if f.searchResponse != nil {
+		return f.searchResponse, nil
+	}
+	return &communityFeeds.FeedResponse{Feed: []*communityFeeds.FeedViewPost{}}, nil
+}
 
 // searchPosts drives the handler over a raw query string and returns the
 // recorder plus the service that captured the request.

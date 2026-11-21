@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"strconv"
 
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/moderation"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 )
 
@@ -94,5 +96,20 @@ func (h *SearchPostsHandler) HandleSearchPosts(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("ERROR: Failed to encode post search response: %v", err)
+	}
+}
+
+// processFeedPosts adds the viewer's vote state and moderation actions to each
+// post and resolves its blob URLs and embeds.
+func processFeedPosts(r *http.Request, feed []*communityFeeds.FeedViewPost, voteService votes.Service, blueskyService blueskypost.Service,
+	authority moderation.Authority, instanceDID string,
+) {
+	common.PopulateViewerVoteState(r.Context(), r, voteService, feed)
+	common.PopulateViewerModeration(r, authority, instanceDID, feed)
+	for _, feedPost := range feed {
+		if feedPost.Post != nil {
+			posts.TransformBlobRefsToURLs(feedPost.Post)
+			posts.TransformPostEmbeds(r.Context(), feedPost.Post, blueskyService)
+		}
 	}
 }

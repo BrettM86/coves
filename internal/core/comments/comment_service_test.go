@@ -10,6 +10,7 @@ import (
 
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 
@@ -29,12 +30,99 @@ type mockCommentRepo struct {
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	listByCommenterWithCursorFunc func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 	getByRootAndRkeyFunc          func(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error)
+	// listed holds the comments the mock-backed comment generators returned
+	// from the canned listings above, so HydrateComments serves exactly the
+	// objects a test's listing handed out even when they are not in comments.
+	listed map[string]*Comment
 }
 
 func newMockCommentRepo() *mockCommentRepo {
 	return &mockCommentRepo{
 		comments: make(map[string]*Comment),
+		listed:   make(map[string]*Comment),
 	}
+}
+
+// HydrateComments returns the comments at uris in input order, dropping the
+// ones the mock does not hold. A comment handed out by a canned listing wins
+// over one stored with Create under the same URI.
+func (m *mockCommentRepo) HydrateComments(ctx context.Context, uris []string, viewerDID string) ([]*Comment, error) {
+	result := make([]*Comment, 0, len(uris))
+	for _, uri := range uris {
+		if c, ok := m.listed[uri]; ok {
+			result = append(result, c)
+			continue
+		}
+		if c, ok := m.comments[uri]; ok {
+			result = append(result, c)
+		}
+	}
+	return result, nil
+}
+
+// mockFeedInstanceDID is the account DID of the registries the mock-backed
+// comment generators are registered in.
+const mockFeedInstanceDID = "did:web:comments.test"
+
+// mockRepoCommentGenerator is a comment generator backed by the mock repo's
+// canned listings: a single-parent request that is not a reply-batch level
+// (a top-level or parentRkey subtree page) is answered by
+// listByParentWithHotRankFunc, and a reply-batch level (no cursor,
+// DefaultRepliesPerParent per parent) by listByParentsBatchFunc. It lets
+// the GetComments tests written against those listings keep exercising
+// GetComments through a resolved generator.
+type mockRepoCommentGenerator struct {
+	repo *mockCommentRepo
+	sort string
+}
+
+func (g *mockRepoCommentGenerator) CommentSkeleton(ctx context.Context, req feedgen.CommentSkeletonRequest) (feedgen.CommentSkeletonPage, error) {
+	batchLevel := req.Cursor == "" && req.LimitPerParent == DefaultRepliesPerParent
+	if len(req.Parents) == 1 && !batchLevel {
+		var cursor *string
+		if req.Cursor != "" {
+			c := req.Cursor
+			cursor = &c
+		}
+		listed, next, err := g.repo.ListByParentWithHotRank(ctx, req.Parents[0], g.sort, req.Timeframe, req.LimitPerParent, cursor, req.ViewerDID)
+		if err != nil {
+			return feedgen.CommentSkeletonPage{}, err
+		}
+		replies := feedgen.CommentReplies{Parent: req.Parents[0], URIs: g.remember(listed)}
+		if next != nil {
+			replies.Cursor = *next
+		}
+		return feedgen.CommentSkeletonPage{Replies: []feedgen.CommentReplies{replies}}, nil
+	}
+	byParent, err := g.repo.ListByParentsBatch(ctx, req.Parents, g.sort, req.LimitPerParent, req.ViewerDID)
+	if err != nil {
+		return feedgen.CommentSkeletonPage{}, err
+	}
+	page := feedgen.CommentSkeletonPage{Replies: make([]feedgen.CommentReplies, 0, len(req.Parents))}
+	for _, parent := range req.Parents {
+		page.Replies = append(page.Replies, feedgen.CommentReplies{Parent: parent, URIs: g.remember(byParent[parent])})
+	}
+	return page, nil
+}
+
+func (g *mockRepoCommentGenerator) remember(listed []*Comment) []string {
+	uris := make([]string, 0, len(listed))
+	for _, c := range listed {
+		g.repo.listed[c.URI] = c
+		uris = append(uris, c.URI)
+	}
+	return uris
+}
+
+// withMockCommentFeeds gives a service under test the comments-hot,
+// comments-top and comments-new builtins, each backed by repo's canned
+// listings for its sort.
+func withMockCommentFeeds(repo *mockCommentRepo) CommentServiceOption {
+	return WithFeedRegistry(feedgen.NewRegistry(mockFeedInstanceDID,
+		feedgen.CommentsHotBuiltin(&mockRepoCommentGenerator{repo: repo, sort: "hot"}),
+		feedgen.CommentsTopBuiltin(&mockRepoCommentGenerator{repo: repo, sort: "top"}),
+		feedgen.CommentsNewBuiltin(&mockRepoCommentGenerator{repo: repo, sort: "new"}),
+	))
 }
 
 func (m *mockCommentRepo) Create(ctx context.Context, comment *Comment) error {
@@ -685,7 +773,7 @@ func TestCommentService_GetComments_ValidRequest(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -713,7 +801,7 @@ func TestCommentService_GetComments_InvalidPostURI(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	tests := []struct {
 		name    string
@@ -757,7 +845,7 @@ func TestCommentService_GetComments_PostNotFound(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -800,7 +888,7 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -850,7 +938,7 @@ func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	// Execute without viewer
 	req := &GetCommentsRequest{
@@ -916,7 +1004,7 @@ func TestCommentService_GetComments_SortingOptions(t *testing.T) {
 				}
 			}
 
-			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 			req := &GetCommentsRequest{
 				PostURI:   postURI,
@@ -965,7 +1053,7 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 		return nil, nil, errors.New("database error")
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -1054,7 +1142,7 @@ func setupSubtreeFixture(t *testing.T) (Service, *GetCommentsRequest, *mockComme
 		return result, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	req := &GetCommentsRequest{
 		PostURI:    postURI,
@@ -1174,7 +1262,7 @@ func TestCommentService_GetComments_ParentRkey_ChildrenPagination(t *testing.T) 
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	requestCursor := "request-cursor"
 	req := &GetCommentsRequest{
@@ -1312,7 +1400,7 @@ func TestCommentService_GetComments_InvalidCursorErrorPropagates(t *testing.T) {
 		return nil, nil, fmt.Errorf("invalid cursor: %w", ErrInvalidCursor)
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	badCursor := "not-a-valid-cursor"
 	req := &GetCommentsRequest{
@@ -1361,7 +1449,7 @@ func TestCommentService_GetComments_RepliesBatchErrorPropagates(t *testing.T) {
 		return nil, errors.New("database timeout")
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo))
 
 	req := &GetCommentsRequest{
 		PostURI: postURI,
@@ -1386,10 +1474,10 @@ func TestCommentService_buildThreadViews_EmptyInput(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
 
 	// Execute
-	result, err := service.buildThreadViews(context.Background(), []*Comment{}, 10, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{}, 10, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 
 	// Verify - should return empty slice, not nil
 	assert.NoError(t, err)
@@ -1417,10 +1505,10 @@ func TestCommentService_buildThreadViews_IncludesDeletedCommentsAsPlaceholders(t
 	// Create a normal comment
 	normalComment := createTestComment("at://did:plc:commenter123/comment/2", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
 
 	// Execute
-	result, err := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 
 	// Verify - both comments should be included to preserve thread structure
 	assert.NoError(t, err)
@@ -1462,10 +1550,10 @@ func TestCommentService_buildThreadViews_WithNestedReplies(t *testing.T) {
 		}, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
 
 	// Execute with depth > 0 to load replies
-	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 1, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 1, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 
 	// Verify
 	assert.NoError(t, err)
@@ -1490,10 +1578,10 @@ func TestCommentService_buildThreadViews_DepthLimit(t *testing.T) {
 	// Comment with replies but depth = 0
 	parentComment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 5)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
 
 	// Execute with depth = 0 (should not load replies)
-	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 0, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 0, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 
 	// Verify
 	assert.NoError(t, err)
@@ -2564,8 +2652,8 @@ func TestCommentService_buildThreadViews_BatchesPerLevelNotPerParent(t *testing.
 		return result, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil).(*commentService)
-	result, err := service.buildThreadViews(context.Background(), top, 10, "hot", nil)
+	service := NewCommentService(commentRepo, userRepo, newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
+	result, err := service.buildThreadViews(context.Background(), top, 10, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, batchCalls, "one reply batch per level below the top, not one per parent")
@@ -2633,8 +2721,8 @@ func TestCommentService_buildThreadViews_UnevenRepliesPerParent(t *testing.T) {
 		return result, nil
 	}
 
-	service := NewCommentService(commentRepo, newMockUserRepo(), newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil).(*commentService)
-	result, err := service.buildThreadViews(context.Background(), top, 10, "hot", nil)
+	service := NewCommentService(commentRepo, newMockUserRepo(), newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil, withMockCommentFeeds(commentRepo)).(*commentService)
+	result, err := service.buildThreadViews(context.Background(), top, 10, &mockRepoCommentGenerator{repo: commentRepo, sort: "hot"}, nil)
 	require.NoError(t, err)
 
 	require.Equal(t, [][]string{{parentWithHiddenReplies.URI, parentWithOneReply.URI, parentWithTruncatedReplies.URI}}, requestedParents,

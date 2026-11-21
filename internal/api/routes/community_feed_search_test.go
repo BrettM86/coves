@@ -11,19 +11,17 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/moderation"
 
 	"github.com/go-chi/chi/v5"
 )
 
+// fakeCommunityFeedService serves SearchPosts; the embedded nil Service
+// satisfies the rest of the interface and panics if reached.
 type fakeCommunityFeedService struct {
+	communityFeeds.Service
 	searchCalls int
-	getCalls    int
-}
-
-func (f *fakeCommunityFeedService) GetCommunityFeed(context.Context, communityFeeds.GetCommunityFeedRequest) (*communityFeeds.FeedResponse, error) {
-	f.getCalls++
-	return &communityFeeds.FeedResponse{Feed: []*communityFeeds.FeedViewPost{}}, nil
 }
 
 func (f *fakeCommunityFeedService) SearchPosts(context.Context, communityFeeds.SearchPostsRequest) (*communityFeeds.FeedResponse, error) {
@@ -31,9 +29,20 @@ func (f *fakeCommunityFeedService) SearchPosts(context.Context, communityFeeds.S
 	return &communityFeeds.FeedResponse{Feed: []*communityFeeds.FeedViewPost{}}, nil
 }
 
+// emptyFeedService answers every getFeed request with an empty page.
+type emptyFeedService struct{}
+
+func (emptyFeedService) GetFeed(context.Context, feedgen.GetFeedRequest) (*feedgen.GetFeedResponse, error) {
+	return &feedgen.GetFeedResponse{Feed: []*feedgen.FeedViewPost{}}, nil
+}
+
+// communityFeedRouter serves searchPosts and, alongside it, getFeed (another
+// feed read) on one router.
 func communityFeedRouter(service communityFeeds.Service) http.Handler {
 	router := chi.NewRouter()
-	RegisterCommunityFeedRoutes(router, service, nil, nil, middleware.NewOAuthAuthMiddleware(nil, nil), moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	auth := middleware.NewOAuthAuthMiddleware(nil, nil)
+	RegisterCommunityFeedRoutes(router, service, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	RegisterFeedRoutes(router, emptyFeedService{}, feedgen.NewRegistry("did:plc:testinstance"), nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	return router
 }
 
@@ -108,11 +117,11 @@ func TestCommunityFeedRoutes_SearchRateLimitIsNamedPerRouteAndClient(t *testing.
 		t.Errorf("first search from %s status = %d, want 200: the 30/minute search cap is per client, not shared across clients. Body: %s", secondClient, otherClient.Code, otherClient.Body.String())
 	}
 
-	communityFeed := communityFeedRequest(t, router, "/xrpc/social.coves.communityFeed.getCommunity?community=x", firstClient)
-	if communityFeed.Code == http.StatusTooManyRequests {
-		t.Errorf("getCommunity from search-limited client status = 429: the postSearch cap must be route-specific because only search is the most expensive read")
+	otherFeed := communityFeedRequest(t, router, "/xrpc/social.coves.feed.getFeed?scope=all", firstClient)
+	if otherFeed.Code == http.StatusTooManyRequests {
+		t.Errorf("getFeed from search-limited client status = 429: the postSearch cap must be route-specific because only search is the most expensive read")
 	}
-	if communityFeed.Code != http.StatusOK {
-		t.Errorf("getCommunity from search-limited client status = %d, want 200: exhausting the per-route search budget must not throttle other reads. Body: %s", communityFeed.Code, communityFeed.Body.String())
+	if otherFeed.Code != http.StatusOK {
+		t.Errorf("getFeed from search-limited client status = %d, want 200: exhausting the per-route search budget must not throttle other reads. Body: %s", otherFeed.Code, otherFeed.Body.String())
 	}
 }

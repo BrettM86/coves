@@ -18,7 +18,7 @@ import (
 // feedHotRankExpression is the live hot-rank expression shared by the discover,
 // timeline, and community feed queries (both the hot_rank SELECT column and the
 // ORDER BY). It uses NOW(), so a post's rank decays between requests — expected
-// for hot sorting. parseCursor rebuilds the same formula with the cursor's
+// for hot sorting. parseCursorPayload rebuilds the same formula with the cursor's
 // pinned timestamp so pagination stays stable; the two MUST stay in sync, which
 // is why both go through hotRankSQL.
 var feedHotRankExpression = hotRankSQL("p", "NOW()")
@@ -243,21 +243,9 @@ func (r *feedRepoBase) verifyCursorPayload(cursor string) (string, error) {
 	return payload, nil
 }
 
-// parseCursor decodes and validates pagination cursor
-// paramOffset is the starting parameter number for cursor values
-// ($2 for discover, $3 for timeline and community feed)
-func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int) (string, []interface{}, error) {
-	if cursor == nil || *cursor == "" {
-		return "", nil, nil
-	}
-
-	payload, err := r.verifyCursorPayload(*cursor)
-	if err != nil {
-		return "", nil, err
-	}
-	return r.parseCursorPayload(payload, sort, paramOffset)
-}
-
+// parseCursorPayload turns a verified, unsigned cursor payload into the keyset
+// filter for sort. paramOffset is the starting parameter number for the
+// cursor values. Callers verify the signature first (verifyCursorPayload).
 func (r *feedRepoBase) parseCursorPayload(payload, sort string, paramOffset int) (string, []interface{}, error) {
 	payloadParts := strings.Split(payload, cursorDelimiter)
 
@@ -394,13 +382,9 @@ func (r *feedRepoBase) parseCursorPayload(payload, sort string, paramOffset int)
 	}
 }
 
-// buildCursor creates HMAC-signed pagination cursor from last post
-// SECURITY: Cursor is signed with HMAC-SHA256 to prevent manipulation
-// queryTime is the timestamp when the query was executed, used for stable hot_rank comparison
-func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank float64, queryTime time.Time) string {
-	return r.signCursorPayload(r.buildCursorPayload(post, sort, hotRank, queryTime))
-}
-
+// buildCursorPayload builds the unsigned cursor payload for the last post of
+// a page. queryTime is when the query ran, pinned for a stable hot_rank
+// comparison. Callers sign it (signCursorPayload) before handing it out.
 func (r *feedRepoBase) buildCursorPayload(post *posts.PostView, sort string, hotRank float64, queryTime time.Time) string {
 	var payload string
 
@@ -524,35 +508,4 @@ func postSearchScopeHash(req communityFeeds.SearchPostsRequest) string {
 	}
 	sum := hash.Sum(nil)
 	return hex.EncodeToString(sum[:8])
-}
-
-// feedPostSelectClause builds the SELECT ... FROM posts p clause shared by the
-// community, timeline, and discover feed queries. It is postViewSelectColumns (the
-// single source of truth for PostView hydration, see post_repo.go) plus a hot_rank
-// column: pass feedHotRankExpression for hot sort, the search relevance rank,
-// or "NULL::numeric" for other sorts.
-func feedPostSelectClause(hotRankExpr string) string {
-	return `
-		SELECT` + postViewSelectColumns + `,
-			` + hotRankExpr + ` as hot_rank
-		FROM posts p`
-}
-
-// scanFeedPost scans a database row into a PostView plus its computed hot_rank.
-// Rows MUST be selected via feedPostSelectClause; all PostView hydration is delegated
-// to scanPostView so feed and post queries can never drift apart.
-func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, error) {
-	var hotRank sql.NullFloat64
-	postView, err := scanPostView(rows, &hotRank)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// hot_rank is NULL for ordinary non-hot feeds; search reuses it for relevance.
-	hotRankValue := 0.0
-	if hotRank.Valid {
-		hotRankValue = hotRank.Float64
-	}
-
-	return postView, hotRankValue, nil
 }

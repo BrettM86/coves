@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -52,12 +51,11 @@ func TestDiscoverRepo_HotContinuationRefillsAfterLiveAuthorBlock(t *testing.T) {
 	c1 := seed(communities[2], cast.thirdParty, "hotcontc1", 1_500)
 	d1 := seed(communities[3], cast.thirdParty, "hotcontd1", 10)
 
-	repo := NewDiscoverRepository(db, "hot-continuation-secret")
+	repo := NewDiscoverRepository(db, "hot-continuation-secret").(*postgresDiscoverRepo)
 	page := func(cursor *string) ([]string, *string) {
 		t.Helper()
-		feed, next, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		feed, next, err := getDiscoverHotViaGenerator(ctx, repo, discoverHotTestRequest{
 			ViewerDID: cast.viewer,
-			Sort:      "hot",
 			Limit:     2,
 			Cursor:    cursor,
 		})

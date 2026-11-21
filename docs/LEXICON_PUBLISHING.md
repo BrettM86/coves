@@ -236,11 +236,16 @@ goat lex publish --update \
   internal/atproto/lexicon/social/coves/actor/signup.json \
   internal/atproto/lexicon/social/coves/actor/updateProfile.json \
   internal/atproto/lexicon/social/coves/feed/defs.json \
-  internal/atproto/lexicon/social/coves/feed/getAll.json \
-  internal/atproto/lexicon/social/coves/feed/getCommunity.json \
+  internal/atproto/lexicon/social/coves/feed/describeFeedGenerator.json \
+  internal/atproto/lexicon/social/coves/feed/generator.json \
+  internal/atproto/lexicon/social/coves/feed/getCommentSkeleton.json \
   internal/atproto/lexicon/social/coves/feed/getDiscover.json \
+  internal/atproto/lexicon/social/coves/feed/getFeed.json \
+  internal/atproto/lexicon/social/coves/feed/getFeedGenerators.json \
+  internal/atproto/lexicon/social/coves/feed/getFeedSkeleton.json \
   internal/atproto/lexicon/social/coves/feed/getTimeline.json \
   internal/atproto/lexicon/social/coves/feed/searchPosts.json \
+  internal/atproto/lexicon/social/coves/feed/sendInteractions.json \
   internal/atproto/lexicon/social/coves/feed/vote.json \
   internal/atproto/lexicon/social/coves/feed/vote/create.json \
   internal/atproto/lexicon/social/coves/feed/vote/delete.json \
@@ -379,6 +384,11 @@ replaced by `feed.searchPosts`), and the held-back `community.rules` and
 `community.moderator`. All three were unpublished; as of 2026-10-06 none of
 them resolves. If `goat lex resolve` ever succeeds for one of them, unpublish
 it again.
+
+`social.coves.feed.getAll` and `social.coves.feed.getCommunity` were published
+with no route and their files are deleted; `social.coves.feed.getFeed`
+replaces them. Both are to unpublish after merge with
+`goat lex unpublish <nsid>`.
 
 ## Release gates the build does not run
 

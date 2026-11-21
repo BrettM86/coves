@@ -34,8 +34,8 @@ type PostRepository struct {
 
 // postViewSelectColumns is the ordered SELECT list for hydrating a posts.PostView row.
 // It MUST stay byte-aligned with the positional Scan in scanPostView. It is the single
-// source of truth shared by GetViewsByURIs, GetByAuthor, and (via feedPostSelectClause)
-// the community/timeline/discover feed queries, so the column order can only be defined
+// source of truth shared by GetViewsByURIs, GetByAuthor, and the shared feed
+// PostHydrator (feedgen_hydrator.go), so the column order can only be defined
 // in one place and the queries cannot drift apart and silently mis-scan.
 //
 // Displayed upvote/downvote counts fold in the bridge-asserted aggregates
@@ -705,7 +705,7 @@ func (r *PostRepository) SoftDelete(ctx context.Context, uri string) error {
 }
 
 // scanPostView scans a database row into a PostView. Shared by GetByAuthor,
-// GetViewsByURIs, and the feed repositories (via scanFeedPost), which all SELECT
+// GetViewsByURIs, and the shared feed PostHydrator, which all SELECT
 // postViewSelectColumns; the Scan order below MUST stay byte-aligned with that column
 // list. extraDest receives any columns a caller appends after postViewSelectColumns
 // (the feed queries append hot_rank).

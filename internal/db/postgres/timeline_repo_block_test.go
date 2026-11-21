@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/timeline"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
@@ -25,15 +24,7 @@ import (
 // pinning: it is correct only because those two are always the same person.
 
 // timelineURIs renders a timeline as the URIs it returned.
-func timelineURIs(feed []*timeline.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func timelineURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
 // subscribeToCommunity indexes a subscription, which is what puts a community's
 // posts in a user's timeline at all.
@@ -62,10 +53,10 @@ func TestTimelineRepo_ViewerBlockFiltering(t *testing.T) {
 	blockedPost := seedFilterablePost(t, db, communityDID, cast.blocked, "tlblocked", base)
 	thirdPartyPost := seedFilterablePost(t, db, communityDID, cast.thirdParty, "tlthird", base.Add(time.Hour))
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	read := func(t *testing.T) []string {
 		t.Helper()
-		feed, _, err := repo.GetTimeline(ctx, timeline.GetTimelineRequest{
+		feed, _, err := repo.GetTimeline(ctx, timelineViaFeedRequest{
 			UserDID: cast.viewer,
 			Sort:    "new",
 			Limit:   50,
@@ -107,10 +98,10 @@ func TestTimelineRepo_CommunityBlockFiltering(t *testing.T) {
 	visibleCommunityPost := seedFilterablePost(t, db, visibleCommunityDID, cast.thirdParty, "tlcommunityvisible", base.Add(2*time.Hour))
 	allPosts := []string{blockedCommunityPost, viewerPostInBlockedCommunity, visibleCommunityPost}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	read := func(t *testing.T, userDID string) []string {
 		t.Helper()
-		feed, _, err := repo.GetTimeline(ctx, timeline.GetTimelineRequest{
+		feed, _, err := repo.GetTimeline(ctx, timelineViaFeedRequest{
 			UserDID: userDID,
 			Sort:    "new",
 			Limit:   50,

@@ -393,14 +393,16 @@ type InstanceConfig struct {
 	AtprotoPublicKey string
 }
 
-// PDSConfig holds the settings for this instance's own PDS account, used to
-// write the community records the instance owns.
+// PDSConfig holds this instance's PDS settings: the default PDS URL, the
+// instance account, and the PDS admin password.
 type PDSConfig struct {
 	// URL is the default PDS for this instance.
 	URL string
 
 	// InstanceHandle and InstancePassword authenticate the instance's PDS
-	// account. When either is empty, community write-forward is disabled.
+	// account, which publishes the built-in feed generator records at
+	// startup. When either is empty, startup logs an ERROR and no feed
+	// generator records are published.
 	InstanceHandle   string
 	InstancePassword string
 
@@ -412,7 +414,7 @@ type PDSConfig struct {
 }
 
 // HasInstanceCredentials reports whether the instance can authenticate with
-// its PDS to write community records.
+// its PDS account to publish the built-in feed generator records.
 func (p PDSConfig) HasInstanceCredentials() bool {
 	return p.InstanceHandle != "" && p.InstancePassword != ""
 }

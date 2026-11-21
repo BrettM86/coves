@@ -1,0 +1,8 @@
+{
+  "$type": "social.coves.feed.getFeedSkeleton#output",
+  "feed": [
+    {
+      "feedContext": "hot:rank=1"
+    }
+  ]
+}

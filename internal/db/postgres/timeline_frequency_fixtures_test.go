@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/timeline"
-
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,16 +69,17 @@ var timelineFrequencySorts = []struct {
 	{sort: "new"},
 }
 
-// readWholeTimeline reads one page large enough for the whole fixture and
+// readWholeTimeline reads one page large enough for the whole fixture (50,
+// the getFeed maximum) and
 // requires that there is no further page.
-func readWholeTimeline(t *testing.T, repo timeline.Repository, viewerDID, sort, timeframe string) []string {
+func readWholeTimeline(t *testing.T, repo *timelineViaFeed, viewerDID, sort, timeframe string) []string {
 	t.Helper()
 
-	feed, cursor, err := repo.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+	feed, cursor, err := repo.GetTimeline(context.Background(), timelineViaFeedRequest{
 		UserDID:   viewerDID,
 		Sort:      sort,
 		Timeframe: timeframe,
-		Limit:     100,
+		Limit:     50,
 	})
 	require.NoError(t, err)
 	require.Nil(t, cursor, "fixture must fit one page")

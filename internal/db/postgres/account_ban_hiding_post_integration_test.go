@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"Coves/internal/core/accountstatus"
-	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
@@ -31,11 +30,10 @@ type accountRestrictionPostRead struct {
 // authorDID as viewerDID ("" for anonymous), each returning the served URIs.
 func accountRestrictionPostReads(db *sql.DB, communityDID, authorDID, viewerDID string) []accountRestrictionPostRead {
 	postRepo := postgres.NewPostRepository(db, postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
-	feedRepo := postgres.NewCommunityFeedRepository(db, "account-ban-item-removal-secret",
-		postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
+	feedRepo := postgres.NewCommunityFeedViaFeed(db, postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID()))
 	return []accountRestrictionPostRead{
 		{"community feed", func(t *testing.T) []string {
-			feed, _, err := feedRepo.GetCommunityFeed(t.Context(), communityFeeds.GetCommunityFeedRequest{
+			feed, _, err := feedRepo.GetCommunityFeedViaFeed(t.Context(), postgres.CommunityFeedViaFeedRequest{
 				Community: communityDID, ViewerDID: viewerDID, Sort: "new", Timeframe: "all", Limit: 50,
 			})
 			require.NoError(t, err)

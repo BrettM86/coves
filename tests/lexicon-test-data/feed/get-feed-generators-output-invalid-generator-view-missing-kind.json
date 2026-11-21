@@ -1,0 +1,11 @@
+{
+  "$type": "social.coves.feed.getFeedGenerators#output",
+  "feeds": [
+    {
+      "uri": "at://did:plc:abc123/social.coves.feed.generator/hot",
+      "did": "did:web:feeds.example.com",
+      "displayName": "Hot This Week",
+      "scopes": ["all"]
+    }
+  ]
+}

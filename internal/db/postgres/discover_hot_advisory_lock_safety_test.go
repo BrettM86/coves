@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"testing"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/require"
@@ -82,8 +81,8 @@ func TestDiscoverRepo_HotDiscardsAdvisoryLockConnectionOnAnomaly(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, poisonedConnection.Close())
 
-			repository := NewDiscoverRepository(db, "advisory-lock-safety-secret")
-			feed, cursor, getErr := repository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+			repository := NewDiscoverRepository(db, "advisory-lock-safety-secret").(*postgresDiscoverRepo)
+			feed, cursor, getErr := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{Limit: 10})
 			require.Error(t, getErr, "an advisory-lock acquisition or release anomaly must fail GetDiscover")
 			require.Empty(t, feed)
 			require.Nil(t, cursor)

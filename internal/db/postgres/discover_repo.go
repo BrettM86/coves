@@ -1,9 +1,7 @@
 package postgres
 
 import (
-	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"Coves/internal/core/discover"
@@ -19,115 +17,9 @@ type postgresDiscoverRepo struct {
 	discoverHotWorkDeadline                 time.Duration
 }
 
-// NewDiscoverRepository creates a new PostgreSQL discover repository.
+// NewDiscoverRepository creates the PostgreSQL Discover Hot repository.
 func NewDiscoverRepository(db *sql.DB, cursorSecret string, options ...AccountRestrictionOption) discover.Repository {
 	return &postgresDiscoverRepo{
 		feedRepoBase: newFeedRepoBase(db, cursorSecret, options),
 	}
-}
-
-// GetDiscover retrieves posts from ALL communities (public feed)
-func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.GetDiscoverRequest) ([]*discover.FeedViewPost, *string, error) {
-	if req.Sort == "hot" {
-		return r.getDiscoverHot(ctx, req)
-	}
-
-	// Capture query time for stable cursor generation (used for hot sort pagination)
-	queryTime := time.Now()
-
-	// Build ORDER BY clause based on sort type
-	orderBy, timeFilter := r.buildSortClause(req.Sort, req.Timeframe)
-
-	// Build cursor filter for pagination
-	// Discover uses $2+ for cursor params (after $1=limit)
-	cursorFilter, cursorValues, err := r.parseCursor(req.Cursor, req.Sort, 2)
-	if err != nil {
-		return nil, nil, discover.ErrInvalidCursor
-	}
-
-	// Build the main query (shared column list — see feedPostSelectClause)
-	var selectClause string
-	if req.Sort == "hot" {
-		selectClause = feedPostSelectClause(feedHotRankExpression)
-	} else {
-		selectClause = feedPostSelectClause("NULL::numeric")
-	}
-
-	// The admission visibility gate always runs. Discover spans every community,
-	// so it cannot lean on a community filter — the gate keys the admission row on
-	// (a.community_did = p.community_did AND a.post_uri = p.uri) so a post is
-	// visible iff ITS OWN community accepted it, never a community that forked it.
-	// Its viewer parameter ($visibilityParam) is empty for the anonymous public,
-	// which sees accepted content only.
-	visibilityParam := 2 + len(cursorValues)
-	visJoin, visWhere := visiblePostsJoin(visibilityParam, visibilityParam+1)
-
-	// The viewer block filter reuses that same viewer parameter; only meaningful
-	// for an authenticated viewer, absent for the public.
-	var viewerFilter string
-	if req.ViewerDID != "" {
-		viewerFilter = viewerBlockFilters(visibilityParam, aggregateSurface)
-	}
-
-	// No subscription filter - show ALL posts from ALL communities
-	query := fmt.Sprintf(`
-		%s
-		LEFT JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did%s
-		WHERE p.deleted_at IS NULL
-			AND %s
-			AND NOT %s
-			%s
-			%s
-			%s
-		ORDER BY %s
-		LIMIT $1
-	`, selectClause, visJoin, visWhere, communityRemovedSQL("p.community_did", fmt.Sprintf("$%d", visibilityParam+1)),
-		timeFilter, cursorFilter, viewerFilter, orderBy)
-
-	// Prepare query arguments. The viewer DID is bound once at $visibilityParam
-	// and reused by the block filter above.
-	args := []interface{}{req.Limit + 1} // +1 to check for next page
-	args = append(args, cursorValues...)
-	args = append(args, req.ViewerDID, r.authorityDID)
-
-	// Execute query
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query discover feed: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			fmt.Printf("Warning: failed to close rows: %v\n", err)
-		}
-	}()
-
-	// Scan results
-	var feedPosts []*discover.FeedViewPost
-	var hotRanks []float64
-	for rows.Next() {
-		postView, hotRank, err := r.scanFeedPost(rows)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to scan discover post: %w", err)
-		}
-		feedPosts = append(feedPosts, &discover.FeedViewPost{Post: postView})
-		hotRanks = append(hotRanks, hotRank)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("error iterating discover results: %w", err)
-	}
-
-	// Handle pagination cursor
-	var cursor *string
-	if len(feedPosts) > req.Limit && req.Limit > 0 {
-		feedPosts = feedPosts[:req.Limit]
-		hotRanks = hotRanks[:req.Limit]
-		lastPost := feedPosts[len(feedPosts)-1].Post
-		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
-		cursor = &cursorStr
-	}
-
-	return feedPosts, cursor, nil
 }

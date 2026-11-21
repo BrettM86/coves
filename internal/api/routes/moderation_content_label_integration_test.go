@@ -20,11 +20,9 @@ import (
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
 	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
@@ -33,6 +31,7 @@ import (
 	"Coves/tests/testkit"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/tests/fixtures/commentfeedfixture"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -96,12 +95,11 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		postgres.NewCommunityFeedRepository(db, "content-label-acceptance-cursor-secret", accountRestriction), communityService,
 	)
 	commentService := comments.NewCommentService(postgres.NewCommentRepository(db, accountRestriction), postgres.NewUserRepository(db),
-		postRepo, communityRepo, nil, nil, nil, comments.WithInstanceDID(instanceDID))
+		postRepo, communityRepo, nil, nil, nil, comments.WithInstanceDID(instanceDID),
+		comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 	accountBans := postgres.NewAccountBanReader(db, instanceDID)
 	userService := users.NewUserService(postgres.NewUserRepository(db), nil, pds.URL, nil, "",
 		users.WithAccountBans(accountBans), users.WithAccountStatusRestrictions(postgres.NewAccountStatusRepository(db)))
-	timelineService := timeline.NewTimelineService(postgres.NewTimelineRepository(db, "content-label-acceptance-cursor-secret", accountRestriction))
-	discoverService := discover.NewDiscoverService(postgres.NewDiscoverRepository(db, "content-label-acceptance-cursor-secret", accountRestriction))
 
 	authorName := testkit.UniqueIDWithPrefix(t, "labelauthor")
 	const authorDID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
@@ -162,8 +160,8 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, authority, instanceDID)
 	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth, authority, instanceDID)
 	routes.RegisterActorRoutes(mux, postService, nil, nil, nil, commentService, optionalAuth, authority, instanceDID)
-	routes.RegisterTimelineRoutes(mux, timelineService, nil, nil, optionalAuth, authority, instanceDID)
-	routes.RegisterDiscoverRoutes(mux, discoverService, nil, nil, optionalAuth, authority, instanceDID)
+	// getTimeline, getDiscover and communityFeed.getCommunity are getFeed aliases.
+	registerFeedAliasRoutes(mux, db, "content-label-acceptance-cursor-secret", communityService, nil, optionalAuth, authority, instanceDID, accountRestriction)
 	mediaPipeline, err := media.NewPipeline(media.Config{MaxConcurrent: 1, MaxLongEdge: media.DefaultMaxLongEdge})
 	require.NoError(t, err)
 	routes.RegisterUserRoutesWithOptions(mux, userService, optionalAuth, nil, &routes.UserRouteOptions{

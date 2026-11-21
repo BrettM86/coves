@@ -10,10 +10,7 @@ import (
 
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 
@@ -49,35 +46,11 @@ const (
 )
 
 // feedURIs renders a community feed as the URIs it returned.
-func feedURIs(feed []*communityFeeds.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func feedURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
-func discoverFeedURIs(feed []*discover.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func discoverFeedURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
-func timelineFeedURIs(feed []*timeline.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func timelineFeedURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
 // TestCommunityFeedVisibility_AcceptedOnly is the community feed's predicate:
 // getCommunity(X) shows a post iff community X has ADMITTED it. The four seeded
@@ -104,8 +77,8 @@ func TestCommunityFeedVisibility_AcceptedOnly(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, rejected, posts.AdmissionStatusRejected, "", "spam")
 	seedVisibilityAdmission(t, db, community, removed, posts.AdmissionStatusRemoved, "", "rule-violation")
 
-	repo := NewCommunityFeedRepository(db, "test-secret")
-	feed, _, err := repo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+	repo := newCommunityFeedViaFeed(db)
+	feed, _, err := repo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 		Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
 	})
 	require.NoError(t, err)
@@ -153,8 +126,8 @@ func TestDiscoverVisibility_ForkJoinKey(t *testing.T) {
 	homegrown := seedVisibilityPost(t, db, forker, author, "dfhome", "homegrown", base.Add(2*time.Hour))
 	seedVisibilityAdmission(t, db, forker, homegrown, posts.AdmissionStatusAccepted, "bafypostv2dfhome", "")
 
-	repo := NewDiscoverRepository(db, "test-secret")
-	feed, _, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+	repo := newDiscoverViaFeed(db)
+	feed, _, err := repo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 		ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
 	})
 	require.NoError(t, err)
@@ -196,8 +169,8 @@ func TestTimelineVisibility_AcceptedOnly(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2tlacc", "")
 	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
 
-	repo := NewTimelineRepository(db, "test-secret")
-	feed, _, err := repo.GetTimeline(ctx, timeline.GetTimelineRequest{
+	repo := newTimelineViaFeed(db)
+	feed, _, err := repo.GetTimeline(ctx, timelineViaFeedRequest{
 		UserDID: subscriber, Sort: visibilitySort, Limit: 50,
 	})
 	require.NoError(t, err)
@@ -569,13 +542,13 @@ func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
 	// missing row is a failed seed — fail closed for non-authors.
 	postv2 := seedVisibilityPost(t, db, community, author, "fc2pv2", "postv2 with no admission", base.Add(1*time.Hour))
 
-	feedRepo := NewCommunityFeedRepository(db, "test-secret")
+	feedRepo := newCommunityFeedViaFeed(db)
 	postRepo := NewPostRepository(db)
-	discoverRepo := NewDiscoverRepository(db, "test-secret")
+	discoverRepo := newDiscoverViaFeed(db)
 
 	communityFeed := func(t *testing.T, viewer string) []string {
 		t.Helper()
-		feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		feed, _, err := feedRepo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: community, ViewerDID: viewer, Sort: visibilitySort, Limit: 50,
 		})
 		require.NoError(t, err)
@@ -603,7 +576,7 @@ func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
 		assert.NotContainsf(t, communityFeed(t, stranger), postv2,
 			"a postv2 with no admission row leaked to a non-author (an authenticated stranger) in the community feed")
 
-		disc, _, err := discoverRepo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		disc, _, err := discoverRepo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 			ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
 		})
 		require.NoError(t, err)
@@ -691,6 +664,7 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 		NewPostRepository(db),
 		NewCommunityRepository(db, credentialciphertest.Fixed()),
 		nil, nil,
+		comments.WithFeedRegistry(productionCommentFeeds(db)),
 	)
 
 	header := func(t *testing.T, postURI, viewerDID string) (*comments.GetCommentsResponse, error) {
@@ -817,8 +791,8 @@ func TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders(t *testing.T) {
 	// The oracle: whatever the community feed renders to the anonymous public is
 	// exactly what the count must report. Asserting against the FEED rather than
 	// a hand-counted literal is what keeps the two from drifting.
-	feed, _, err := NewCommunityFeedRepository(db, "test-secret").GetCommunityFeed(ctx,
-		communityFeeds.GetCommunityFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+	feed, _, err := newCommunityFeedViaFeed(db).GetCommunityFeedViaFeed(ctx,
+		communityFeedViaFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
 	require.NoError(t, err)
 	visible := feedURIs(feed)
 	require.ElementsMatchf(t, []string{accepted, legacy}, visible,
@@ -896,8 +870,8 @@ func TestPostGetVisibility_AcceptedBranchHonorsPinnedCID(t *testing.T) {
 			"rendering it shows un-attested content under a stale acceptance (§5.5). The accepted branch must AND "+
 			"a.accepted_cid = p.cid.")
 
-	feedRepo := NewCommunityFeedRepository(db, "test-secret")
-	feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+	feedRepo := newCommunityFeedViaFeed(db)
+	feed, _, err := feedRepo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 		Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
 	})
 	require.NoError(t, err)
@@ -1002,10 +976,10 @@ func TestVisibility_PendingReacceptanceIsAuthorOnly(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "", "")
 
 	postRepo := NewPostRepository(db)
-	feedRepo := NewCommunityFeedRepository(db, "test-secret")
+	feedRepo := newCommunityFeedViaFeed(db)
 	communityFeed := func(t *testing.T, viewer string) []string {
 		t.Helper()
-		feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		feed, _, err := feedRepo.GetCommunityFeedViaFeed(ctx, communityFeedViaFeedRequest{
 			Community: community, ViewerDID: viewer, Sort: visibilitySort, Limit: 50,
 		})
 		require.NoError(t, err)
@@ -1137,16 +1111,16 @@ func TestFeedsVisibility_UnknownAuthorAccepted(t *testing.T) {
 	}
 
 	t.Run("feed.getCommunity", func(t *testing.T) {
-		feed, _, err := NewCommunityFeedRepository(db, "test-secret").GetCommunityFeed(ctx,
-			communityFeeds.GetCommunityFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+		feed, _, err := newCommunityFeedViaFeed(db).GetCommunityFeedViaFeed(ctx,
+			communityFeedViaFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
 		require.NoError(t, err)
 		require.Containsf(t, feedURIs(feed), post, "the community feed dropped an accepted post by an unindexed author (users INNER join?)")
 		assertUnknownAuthorHandle(t, feed[0].Post)
 	})
 
 	t.Run("feed.getDiscover", func(t *testing.T) {
-		feed, _, err := NewDiscoverRepository(db, "test-secret").GetDiscover(ctx,
-			discover.GetDiscoverRequest{ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+		feed, _, err := newDiscoverViaFeed(db).GetDiscoverViaFeed(ctx,
+			discoverViaFeedRequest{ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
 		require.NoError(t, err)
 		require.Containsf(t, discoverFeedURIs(feed), post, "discover dropped an accepted post by an unindexed author")
 		assertUnknownAuthorHandle(t, feed[0].Post)
@@ -1157,8 +1131,8 @@ func TestFeedsVisibility_UnknownAuthorAccepted(t *testing.T) {
 		createTestUser(t, db, "visuasubscriber.test", subscriber)
 		_, err := db.ExecContext(ctx, `INSERT INTO community_subscriptions (user_did, community_did, subscribed_at) VALUES ($1, $2, NOW())`, subscriber, community)
 		require.NoError(t, err)
-		feed, _, err := NewTimelineRepository(db, "test-secret").GetTimeline(ctx,
-			timeline.GetTimelineRequest{UserDID: subscriber, Sort: visibilitySort, Limit: 50})
+		feed, _, err := newTimelineViaFeed(db).GetTimeline(ctx,
+			timelineViaFeedRequest{UserDID: subscriber, Sort: visibilitySort, Limit: 50})
 		require.NoError(t, err)
 		require.Containsf(t, timelineFeedURIs(feed), post, "the timeline dropped an accepted post by an unindexed author")
 		assertUnknownAuthorHandle(t, feed[0].Post)

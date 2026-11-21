@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.feed.describeFeedGenerator#output",
+  "did": "did:web:feeds.example.com",
+  "feeds": [
+    {
+      "uri": "at://did:plc:abc123/social.coves.feed.generator/hot"
+    }
+  ]
+}

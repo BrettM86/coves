@@ -70,7 +70,6 @@ type communityService struct {
 	pdsURL         string
 	instanceDID    string
 	instanceDomain string
-	pdsAccessToken string
 
 	// Sync primitives last
 	mapMutex sync.RWMutex // Protects refreshMutexes map itself
@@ -155,12 +154,6 @@ func NewCommunityServiceWithPDSFactory(
 		pdsHTTPClient:    newPDSHTTPClient(opts...),
 		refreshMutexes:   make(map[string]*sync.Mutex),
 	}
-}
-
-// SetPDSAccessToken sets the PDS access token for authentication
-// This should be called after creating a session for the Coves instance DID on the PDS
-func (s *communityService) SetPDSAccessToken(token string) {
-	s.pdsAccessToken = token
 }
 
 // getPDSClient creates a PDS client from an OAuth session.

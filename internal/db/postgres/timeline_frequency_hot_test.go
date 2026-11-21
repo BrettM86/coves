@@ -7,9 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/timeline"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -23,13 +20,13 @@ import (
 
 // readTimelinePages pages through the timeline at the given limit until the
 // cursor runs out, failing past maxPages.
-func readTimelinePages(t *testing.T, repo timeline.Repository, viewerDID, sort, timeframe string, limit, maxPages int) [][]string {
+func readTimelinePages(t *testing.T, repo *timelineViaFeed, viewerDID, sort, timeframe string, limit, maxPages int) [][]string {
 	t.Helper()
 
 	var pages [][]string
 	var cursor *string
 	for page := 0; page < maxPages; page++ {
-		feed, next, err := repo.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+		feed, next, err := repo.GetTimeline(context.Background(), timelineViaFeedRequest{
 			UserDID:   viewerDID,
 			Sort:      sort,
 			Timeframe: timeframe,
@@ -110,7 +107,7 @@ func TestTimelineFrequency_HotWeightingOrdersBoostedPostsFirst(t *testing.T) {
 			seedFrequencyPosts(t, db, boostedCommunity, cast.thirdParty, now, tc.boosted)
 			seedFrequencyPosts(t, db, plainCommunity, cast.thirdParty, now, tc.plain)
 
-			repo := NewTimelineRepository(db, "test-secret")
+			repo := newTimelineViaFeed(db)
 			assert.Equal(t, []string{
 				frequencyPostURI(boostedCommunity, "pair"),
 				frequencyPostURI(plainCommunity, "pair"),
@@ -184,7 +181,7 @@ func TestTimelineFrequency_MixedLevelsPageWithoutRepeatsOrSkips(t *testing.T) {
 		"new": {d1, v2, d2, v1, f2, f1, a10, d3, f3, v3},
 	}
 
-	repo := NewTimelineRepository(db, "test-secret")
+	repo := newTimelineViaFeed(db)
 	for _, read := range timelineFrequencySorts {
 		t.Run(read.sort, func(t *testing.T) {
 			pages := readTimelinePages(t, repo, cast.viewer, read.sort, read.timeframe, 3, 10)
@@ -241,8 +238,8 @@ func TestTimelineFrequency_HotCursorSurvivesUnsubscribingFromItsCommunity(t *tes
 		frequencyPost{rkey: "v1", score: 5, age: hours(3)}, // r×2 = 0.499
 	)
 
-	repo := NewTimelineRepository(db, "test-secret")
-	firstPage, cursor, err := repo.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+	repo := newTimelineViaFeed(db)
+	firstPage, cursor, err := repo.GetTimeline(context.Background(), timelineViaFeedRequest{
 		UserDID: cast.viewer,
 		Sort:    "hot",
 		Limit:   2,
@@ -257,7 +254,7 @@ func TestTimelineFrequency_HotCursorSurvivesUnsubscribingFromItsCommunity(t *tes
 		cast.viewer, levelFive)
 	require.NoError(t, err, "unsubscribing from the cursor post's community")
 
-	nextPage, _, err := repo.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+	nextPage, _, err := repo.GetTimeline(context.Background(), timelineViaFeedRequest{
 		UserDID: cast.viewer,
 		Sort:    "hot",
 		Limit:   10,
@@ -295,11 +292,11 @@ func TestTimelineFrequency_CommunityFeedAndDiscoverIgnoreFrequency(t *testing.T)
 	want := []string{o("o1"), o("o2"), o("o3"), o("o4")}
 
 	t.Run("community feed hot", func(t *testing.T) {
-		repository := NewCommunityFeedRepository(db, "test-secret")
+		repository := newCommunityFeedViaFeed(db)
 		var served []string
 		var cursor *string
 		for page := 0; page < 3; page++ {
-			feed, next, err := repository.GetCommunityFeed(context.Background(), communityFeeds.GetCommunityFeedRequest{
+			feed, next, err := repository.GetCommunityFeedViaFeed(context.Background(), communityFeedViaFeedRequest{
 				Community: community,
 				ViewerDID: cast.viewer,
 				Sort:      "hot",
@@ -317,8 +314,8 @@ func TestTimelineFrequency_CommunityFeedAndDiscoverIgnoreFrequency(t *testing.T)
 	})
 
 	t.Run("discover hot", func(t *testing.T) {
-		repository := NewDiscoverRepository(db, "test-secret")
-		feed, _, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+		repository := newDiscoverViaFeed(db)
+		feed, _, err := repository.GetDiscoverViaFeed(context.Background(), discoverViaFeedRequest{
 			ViewerDID: cast.viewer,
 			Sort:      "hot",
 			Limit:     10,
@@ -346,10 +343,10 @@ func TestTimelineFrequency_FilterAppliesOutsideHotCandidateBound(t *testing.T) {
 	seedFrequencyPosts(t, db, community, cast.thirdParty, now,
 		frequencyRun("b", 1, 20, func(score int) time.Duration { return hours(score) })...)
 
-	repository := NewTimelineRepository(db, "test-secret").(*postgresTimelineRepo)
-	repository.hotCandidateLimit = 2
+	repository := newTimelineViaFeed(db)
+	repository.setHotCandidateLimit(2)
 
-	feed, cursor, err := repository.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+	feed, cursor, err := repository.GetTimeline(context.Background(), timelineViaFeedRequest{
 		UserDID: cast.viewer,
 		Sort:    "hot",
 		Limit:   10,

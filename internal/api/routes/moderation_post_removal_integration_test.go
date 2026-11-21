@@ -14,7 +14,6 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
@@ -24,6 +23,7 @@ import (
 	"Coves/tests/testkit"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/tests/fixtures/commentfeedfixture"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
@@ -80,10 +80,8 @@ func TestModerationPostRemovalAcceptance(t *testing.T) {
 		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 		posts.WithSyncAcceptance(admissionRepo, nil),
 	)
-	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
-	feedService := communityFeeds.NewCommunityFeedService(
-		postgres.NewCommunityFeedRepository(db, "moderation-acceptance-cursor-secret"), communityService,
-	)
+	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil,
+		comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 
 	authorName := testkit.UniqueIDWithPrefix(t, "postauthor")
 	const authorDID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
@@ -143,7 +141,8 @@ func TestModerationPostRemovalAcceptance(t *testing.T) {
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
 	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
-	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
+	// communityFeed.getCommunity is a getFeed alias.
+	registerFeedAliasRoutes(mux, db, "moderation-acceptance-cursor-secret", communityService, nil, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
 	mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",
 		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, moderation.NewAllowlistAuthority(nil), instanceDID).HandleGetComments)
 	server := httptest.NewServer(mux)

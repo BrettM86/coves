@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/require"
@@ -68,20 +67,20 @@ func TestDiscoverRepo_HotRefillsAfterInstanceRemovalAtHydrationBoundary(t *testi
 
 			repo := NewDiscoverRepository(db, "hot-moderation-race-secret").(*postgresDiscoverRepo)
 			repo.discoverHotWorkDeadline = 10 * time.Second
-			first, cursor, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 1})
+			first, cursor, err := getDiscoverHotViaGenerator(ctx, repo, discoverHotTestRequest{Limit: 1})
 			require.NoError(t, err)
 			require.Equal(t, []string{a1}, discoverURIs(first))
 			require.NotNil(t, cursor)
 
 			type pageResult struct {
-				feed   []*discover.FeedViewPost
+				feed   []*discoverHotTestItem
 				cursor *string
 				err    error
 			}
 			var second pageResult
 			if timing == "before-revalidation" {
 				insertDiscoverHotRemoval(t, db, removedA2)
-				second.feed, second.cursor, second.err = repo.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 2, Cursor: cursor})
+				second.feed, second.cursor, second.err = getDiscoverHotViaGenerator(ctx, repo, discoverHotTestRequest{Limit: 2, Cursor: cursor})
 			} else {
 				_, err := db.ExecContext(ctx, `
 					CREATE TABLE hot_moderation_gate (candidate_uri TEXT PRIMARY KEY, lock_class INTEGER, lock_id INTEGER);
@@ -117,7 +116,7 @@ func TestDiscoverRepo_HotRefillsAfterInstanceRemovalAtHydrationBoundary(t *testi
 				require.NoError(t, lockConnection.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&holderPID))
 				results := make(chan pageResult, 1)
 				go func() {
-					feed, next, requestErr := repo.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 2, Cursor: cursor})
+					feed, next, requestErr := getDiscoverHotViaGenerator(ctx, repo, discoverHotTestRequest{Limit: 2, Cursor: cursor})
 					results <- pageResult{feed: feed, cursor: next, err: requestErr}
 				}()
 				waitForDiscoverHotAdvisoryLock(t, db, holderPID)
@@ -131,7 +130,7 @@ func TestDiscoverRepo_HotRefillsAfterInstanceRemovalAtHydrationBoundary(t *testi
 			require.NoError(t, second.err)
 			require.Equal(t, []string{b1, a3}, discoverURIs(second.feed), "removal must refill without penalizing A's diversity slot")
 			require.NotNil(t, second.cursor)
-			third, end, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 2, Cursor: second.cursor})
+			third, end, err := getDiscoverHotViaGenerator(ctx, repo, discoverHotTestRequest{Limit: 2, Cursor: second.cursor})
 			require.NoError(t, err)
 			require.Equal(t, []string{c1}, discoverURIs(third))
 			require.Nil(t, end)

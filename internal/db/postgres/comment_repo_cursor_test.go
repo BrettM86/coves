@@ -39,9 +39,7 @@ import (
 // a cursor fails, and it is how two cursor defects were found: under the "hot"
 // sort a months-old thread lost every comment after page one, because the rank
 // was written into the cursor at six decimal places and rounded to zero
-// (guarded by TestCommentRepo_HotPaginationReachesEveryReplyOnAMonthsOldThread),
-// and under an unrecognised sort the cursor is discarded and page one repeats
-// forever (pinned by TestCommentRepo_UnknownSortCursorRepeatsPageOne).
+// (guarded by TestCommentRepo_HotPaginationReachesEveryReplyOnAMonthsOldThread).
 //
 // See comment_repo_write_test.go for commentEnv and the seeding helpers.
 
@@ -312,7 +310,7 @@ func TestCommentRepo_ParseCommentCursor(t *testing.T) {
 
 		cursorFor := func(t *testing.T, sort string) string {
 			t.Helper()
-			page, next, err := threadEnv.repo.ListByParentWithHotRank(threadEnv.ctx, threadEnv.root, sort, "", 1, nil, "")
+			page, next, err := listByParentViaGenerator(threadEnv.ctx, threadEnv.repo, threadEnv.db, threadEnv.root, sort, "", 1, nil, "")
 			require.NoError(t, err)
 			require.Equalf(t, []string{named}, commentURIs(page),
 				"THE FIXTURE IS WRONG, not the code: page one under %s must be the reply the cursor is "+
@@ -353,25 +351,6 @@ func TestCommentRepo_ParseCommentCursor(t *testing.T) {
 		assert.Equal(t, "2026-03-04T05:06:07.891011Z", values[2],
 			"the created_at tiebreak must survive with its fractional second, as it does under new")
 		assert.Equal(t, named, values[3])
-	})
-
-	// Its own thread, not the shared env: a parallel sibling that seeded into
-	// the same thread would change which reply page one ends on.
-	t.Run("the default arm of the builder emits the bare URI", func(t *testing.T) {
-		t.Parallel()
-		threadEnv := commentEnvFor(t)
-		now := time.Now().UTC()
-		threadEnv.seed(commentSpec{rkey: "first", score: 5, createdAt: now})
-		threadEnv.seed(commentSpec{rkey: "second", score: 1, createdAt: now.Add(-time.Minute)})
-
-		page, cursor, err := threadEnv.repo.ListByParentWithHotRank(threadEnv.ctx, threadEnv.root, "wildly-unknown", "", 1, nil, "")
-		require.NoError(t, err)
-		require.Len(t, page, 1)
-		require.NotNil(t, cursor, "THE FIXTURE IS WRONG, not the code: the thread has two replies and "+
-			"the page holds one, so the listing must hand out a cursor")
-		assert.Equal(t, page[0].URI, commentDecodeCursor(t, *cursor),
-			"an unrecognised sort produces a cursor carrying no sort key at all, which is what makes "+
-				"it unusable — see TestCommentRepo_UnknownSortCursorRepeatsPageOne")
 	})
 }
 
@@ -435,11 +414,11 @@ func TestCommentRepo_ThreadSortModes(t *testing.T) {
 		t.Parallel()
 		env, parent, best, middling, newest := seed(t)
 
-		byNew, _, err := env.repo.ListByParentWithHotRank(env.ctx, parent, "new", "", 10, nil, "")
+		byNew, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, parent, "new", "", 10, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{newest, middling, best}, commentURIs(byNew))
 
-		byTop, _, err := env.repo.ListByParentWithHotRank(env.ctx, parent, "top", "all", 10, nil, "")
+		byTop, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, parent, "top", "all", 10, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{best, middling, newest}, commentURIs(byTop),
 			"top must rank by score; an order identical to new would mean the sort parameter never "+
@@ -454,14 +433,14 @@ func TestCommentRepo_ThreadSortModes(t *testing.T) {
 		t.Parallel()
 		env, parent, best, middling, newest := seed(t)
 
-		byHot, _, err := env.repo.ListByParentWithHotRank(env.ctx, parent, "hot", "", 10, nil, "")
+		byHot, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, parent, "hot", "", 10, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{newest, middling, best}, commentURIs(byHot),
 			"a minute-old comment outranks a three-day-old one even at 1 point against 500, because "+
 				"the decay is age^1.8; if this ever matches the top ordering the decay term has stopped "+
 				"being applied")
 
-		byTop, _, err := env.repo.ListByParentWithHotRank(env.ctx, parent, "top", "", 10, nil, "")
+		byTop, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, parent, "top", "", 10, nil, "")
 		require.NoError(t, err)
 		assert.NotEqual(t, commentURIs(byTop), commentURIs(byHot),
 			"hot and top must disagree on this fixture, or neither assertion above is testing "+
@@ -510,7 +489,7 @@ func TestCommentRepo_ThreadSortModes(t *testing.T) {
 			{"month", []string{insideMonth, insideWeek, insideDay, insideHour}},
 			{"year", []string{insideYear, insideMonth, insideWeek, insideDay, insideHour}},
 		} {
-			page, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "top", tc.timeframe, 10, nil, "")
+			page, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "top", tc.timeframe, 10, nil, "")
 			require.NoError(t, err)
 			assert.Equalf(t, tc.want, commentURIs(page),
 				"'top of the last %s' admitted the wrong set. Each window must admit exactly one "+
@@ -518,14 +497,14 @@ func TestCommentRepo_ThreadSortModes(t *testing.T) {
 					"answer is a window that is not doing its own job", tc.timeframe)
 		}
 
-		byHour, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "top", "hour", 10, nil, "")
+		byHour, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "top", "hour", 10, nil, "")
 		require.NoError(t, err)
 		assert.NotContains(t, commentURIs(byHour), ancient,
 			"'top of the last hour' must not be led by a two-year-old comment with a thousand points")
 
 		everythingWanted := []string{ancient, insideYear, insideMonth, insideWeek, insideDay, insideHour}
 		for _, timeframe := range []string{"", "all", "fortnight"} {
-			everything, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "top", timeframe, 10, nil, "")
+			everything, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "top", timeframe, 10, nil, "")
 			require.NoError(t, err)
 			assert.ElementsMatchf(t, everythingWanted, commentURIs(everything),
 				"timeframe %q must widen to everything rather than narrow to nothing", timeframe)
@@ -540,69 +519,13 @@ func TestCommentRepo_ThreadSortModes(t *testing.T) {
 		ancient := env.seed(commentSpec{rkey: "ancient", score: 5, createdAt: now.AddDate(-2, 0, 0)})
 
 		for _, sort := range []string{"new", "hot"} {
-			page, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, sort, "hour", 10, nil, "")
+			page, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, sort, "hour", 10, nil, "")
 			require.NoError(t, err)
 			assert.ElementsMatchf(t, []string{recent, ancient}, commentURIs(page),
 				"%q must show the whole thread even when a timeframe is supplied; hiding older "+
 					"replies would silently truncate the conversation", sort)
 		}
 	})
-}
-
-// TestCommentRepo_UnknownSortRanksLikeTopNotLikeHot pins the third way an
-// unrecognised sort goes wrong, and the one with an observable effect on
-// ordering.
-//
-// buildCommentSortClause's default arm returns the hot ORDER BY — "hot_rank
-// DESC, c.score DESC, …". But ListByParentWithHotRank only COMPUTES hot_rank
-// when sort == "hot" exactly; every other value selects NULL::numeric for that
-// column. So under an unrecognised sort the leading key is NULL for every row,
-// the comparison collapses to the score tiebreak, and the thread comes back
-// ranked by score — that is, as "top", with no timeframe.
-//
-// ListByParentsBatch, which renders the replies below those same comments, has
-// an explicit default arm that DOES compute the rank (comment_repo.go:1150), so
-// the two halves of one thread view disagree about what an unknown sort means:
-// the top level is ordered by score and the nested replies by hot.
-//
-// The fix is for the selectClause branch to follow the same default as the sort
-// clause, or for the repository to reject a sort it does not recognise.
-//
-// REACHABILITY: no production caller can reach this today.
-// comment_service.go:1327-1333 validates Sort against {hot, top, new} and
-// returns an error before the repository is called, so an unrecognised sort
-// dies one layer up. This is pinned anyway because the guard is in a DIFFERENT
-// package from the two functions that disagree, nothing enforces the
-// relationship, and the defect goes live the moment a fourth sort is added to
-// the service's allow-list without both repository arms learning it — which is
-// exactly the change someone will make when they add "controversial".
-//
-// Issue: 2026-07-31-comment-repo-unrecognised-sort-trio.md
-func TestCommentRepo_UnknownSortRanksLikeTopNotLikeHot(t *testing.T) {
-	t.Parallel()
-	env := commentEnvFor(t)
-	now := time.Now().UTC()
-	// Old and high-scoring versus fresh and low-scoring: hot puts the fresh one
-	// first, score puts the old one first.
-	oldBest := env.seed(commentSpec{rkey: "oldbest", score: 500, createdAt: now.Add(-72 * time.Hour)})
-	freshWorst := env.seed(commentSpec{rkey: "freshworst", score: 1, createdAt: now.Add(-time.Minute)})
-
-	byHot, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 10, nil, "")
-	require.NoError(t, err)
-	require.Equal(t, []string{freshWorst, oldBest}, commentURIs(byHot))
-
-	byUnknown, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "confidence", "", 10, nil, "")
-	require.NoError(t, err)
-	assert.Equal(t, []string{oldBest, freshWorst}, commentURIs(byUnknown),
-		"an unrecognised sort should rank the way buildCommentSortClause's default arm says it "+
-			"will — as hot. It ranks by score instead, because hot_rank is NULL unless the sort "+
-			"string is exactly \"hot\". IF THIS FAILED (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md) the defect is FIXED — delete this pin")
-
-	nested, err := env.repo.ListByParentsBatch(env.ctx, []string{env.root}, "confidence", 10, "")
-	require.NoError(t, err)
-	assert.Equal(t, []string{freshWorst, oldBest}, commentURIs(nested[env.root]),
-		"and the batch used for the nested replies of the same thread DOES default to hot, so one "+
-			"view is ordered two ways. IF THIS FAILED (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md) the two paths now agree — delete this pin")
 }
 
 func TestCommentRepo_ThreadCursorPagination(t *testing.T) {
@@ -642,7 +565,7 @@ func TestCommentRepo_ThreadCursorPagination(t *testing.T) {
 		var cursor *string
 		for requests := 0; ; requests++ {
 			require.Less(t, requests, 20, "the cursor stopped advancing: this thread never ends")
-			page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, sort, "", limit, cursor, "")
+			page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, sort, "", limit, cursor, "")
 			require.NoError(t, err)
 			visited = append(visited, commentURIs(page)...)
 			if next == nil {
@@ -664,7 +587,7 @@ func TestCommentRepo_ThreadCursorPagination(t *testing.T) {
 					"makes the conversation look duplicated")
 			assert.Len(t, visited, len(all))
 
-			single, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, sort, "", 50, nil, "")
+			single, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, sort, "", 50, nil, "")
 			require.NoError(t, err)
 			assert.Equal(t, commentURIs(single), visited,
 				"and the paged order must match the unpaged one, or the reader sees the thread "+
@@ -680,12 +603,12 @@ func TestCommentRepo_ThreadCursorPagination(t *testing.T) {
 			env.seed(commentSpec{rkey: rkey, score: 10 - i, createdAt: now.Add(-time.Duration(i) * time.Minute)})
 		}
 
-		first, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "top", "", 2, nil, "")
+		first, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "top", "", 2, nil, "")
 		require.NoError(t, err)
 		require.Len(t, first, 2)
 		require.NotNil(t, next)
 
-		second, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "top", "", 2, next, "")
+		second, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "top", "", 2, next, "")
 		require.NoError(t, err)
 		require.Len(t, second, 2)
 		assert.Nil(t, next, "the limit+1 probe exists so the last full page knows it is the last; "+
@@ -753,7 +676,7 @@ func TestCommentRepo_HotPaginationReachesEveryReplyOnAMonthsOldThread(t *testing
 	var cursor *string
 	for requests := 0; ; requests++ {
 		require.Less(t, requests, 20, "the cursor stopped advancing: this thread never ends")
-		page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, cursor, "")
+		page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, cursor, "")
 		require.NoError(t, err)
 		visited = append(visited, commentURIs(page)...)
 		if next == nil {
@@ -768,7 +691,7 @@ func TestCommentRepo_HotPaginationReachesEveryReplyOnAMonthsOldThread(t *testing
 			"look duplicated")
 	assert.Len(t, visited, len(all))
 
-	single, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 50, nil, "")
+	single, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 50, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, commentURIs(single), visited,
 		"and the paged order must match the unpaged one, or the reader sees the thread reshuffle "+
@@ -831,7 +754,7 @@ func TestCommentRepo_HotPaginationSurvivesSixDecimalRounding(t *testing.T) {
 		var visited []string
 		for requests := 0; ; requests++ {
 			require.Less(t, requests, 20, "the cursor stopped advancing: this thread never ends")
-			page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", limit, cursor, "")
+			page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", limit, cursor, "")
 			require.NoError(t, err)
 			visited = append(visited, commentURIs(page)...)
 			if next == nil {
@@ -846,7 +769,7 @@ func TestCommentRepo_HotPaginationSurvivesSixDecimalRounding(t *testing.T) {
 		assert.ElementsMatch(t, all, visited, consequence)
 		assert.Len(t, visited, len(all))
 
-		single, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 50, nil, "")
+		single, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 50, nil, "")
 		require.NoError(t, err)
 		assert.Equal(t, commentURIs(single), visited,
 			"and the paged order must match the unpaged one, or the reader sees the thread reshuffle "+
@@ -901,7 +824,7 @@ func TestCommentRepo_HotPaginationSurvivesSixDecimalRounding(t *testing.T) {
 			"THE FIXTURE IS WRONG, not the code: the third reply must rank below the boundary, so "+
 				"page one ends on the boundary and there is a page two")
 
-		first, cursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, nil, "")
+		first, cursor, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, nil, "")
 		require.NoError(t, err)
 		require.Equal(t, []string{justAbove, boundary}, commentURIs(first),
 			"page one is the two highest-ranked replies, ending on the boundary")
@@ -986,49 +909,6 @@ func TestCommentRepo_HotPaginationSurvivesSixDecimalRounding(t *testing.T) {
 	})
 }
 
-// TestCommentRepo_UnknownSortCursorRepeatsPageOne is the end-to-end half of the
-// unrecognised-sort defect pinned in
-// TestCommentRepo_UnknownSortCursorIsSilentlyDiscarded.
-//
-// The ORDER BY defaults to hot, so page one looks right and hands back a
-// cursor. The cursor parser's default arm discards it, so page two is page one.
-// A client that scrolls until the cursor is nil never stops, and every page it
-// renders is the same three comments.
-//
-// REACHABILITY: no production caller can reach this today.
-// comment_service.go:1327-1333 validates Sort against {hot, top, new} and
-// returns an error before the repository is called, so an unrecognised sort
-// dies one layer up. This is pinned anyway because the guard is in a DIFFERENT
-// package from the two functions that disagree, nothing enforces the
-// relationship, and the defect goes live the moment a fourth sort is added to
-// the service's allow-list without both repository arms learning it — which is
-// exactly the change someone will make when they add "controversial".
-//
-// Issue: 2026-07-31-comment-repo-unrecognised-sort-trio.md
-func TestCommentRepo_UnknownSortCursorRepeatsPageOne(t *testing.T) {
-	t.Parallel()
-	env := commentEnvFor(t)
-	now := time.Now().UTC()
-	for i, rkey := range []string{"u1", "u2", "u3"} {
-		env.seed(commentSpec{rkey: rkey, score: 30 - i*10, createdAt: now.Add(-time.Duration(i) * time.Minute)})
-	}
-
-	first, cursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "confidence", "", 2, nil, "")
-	require.NoError(t, err)
-	require.Len(t, first, 2)
-	require.NotNil(t, cursor)
-
-	second, nextCursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "confidence", "", 2, cursor, "")
-	require.NoError(t, err)
-	assert.Equal(t, commentURIs(first), commentURIs(second),
-		"page two of an unrecognised sort should either advance or be refused as an invalid cursor. "+
-			"Instead the cursor is discarded and page one is served again, forever. "+
-			"IF THIS FAILED (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md) the defect is FIXED — delete this pin")
-	require.NotNil(t, nextCursor, "and it keeps offering a cursor, so a client that scrolls until "+
-		"the cursor is nil never stops")
-	assert.Equal(t, *cursor, *nextCursor)
-}
-
 // TestCommentRepo_HotCursorRejectsNonNumericAndRankBearingFields guards the hot
 // cursor parser against the forged and stale values it used to accept.
 //
@@ -1088,7 +968,7 @@ func TestCommentRepo_HotCursorRejectsNonNumericAndRankBearingFields(t *testing.T
 				"the parser must refuse %q as bad client input; accepting it pages the thread from a "+
 					"key that is not the instant page one was ranked at", plaintext)
 
-			page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 10, &cursor, "")
+			page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 10, &cursor, "")
 			assert.Truef(t, errors.Is(err, comments.ErrInvalidCursor),
 				"the listing must refuse %q with comments.ErrInvalidCursor, which is what makes it a 400; "+
 					"got error %v", plaintext, err)
@@ -1133,7 +1013,7 @@ func TestCommentRepo_HotCursorServesEquivalentTimestampSpellingsAlike(t *testing
 	canonicalCreatedAt := boundaryCreatedAt.Format(time.RFC3339Nano)
 	canonical := cursorOf(canonicalRankedAt, canonicalCreatedAt)
 
-	wantPage, wantNext, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 1, &canonical, "")
+	wantPage, wantNext, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 1, &canonical, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{third}, commentURIs(wantPage),
 		"THE FIXTURE IS WRONG, not the code: after the boundary, ranked at T, the page must be third")
@@ -1151,7 +1031,7 @@ func TestCommentRepo_HotCursorServesEquivalentTimestampSpellingsAlike(t *testing
 			require.NotEqual(t, commentDecodeCursor(t, canonical), commentDecodeCursor(t, cursor),
 				"THE FIXTURE IS WRONG, not the code: the spelling must differ from the canonical cursor's")
 
-			page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 1, &cursor, "")
+			page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 1, &cursor, "")
 			require.NoError(t, err, "a cursor naming the same instants in another RFC3339 spelling is valid "+
 				"input; a query error here is a 500 for a cursor the parser accepted")
 			assert.Equal(t, commentURIs(wantPage), commentURIs(page),
@@ -1205,7 +1085,7 @@ func commentHotWalk(t *testing.T, env *commentEnv, limit int, cursor *string, vi
 	t.Helper()
 	const maxRequests = 20
 	for requests := 0; requests < maxRequests; requests++ {
-		page, next, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", limit, cursor, viewerDID)
+		page, next, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", limit, cursor, viewerDID)
 		require.NoError(t, err)
 		visited = append(visited, commentURIs(page)...)
 		if next == nil {
@@ -1229,7 +1109,7 @@ func commentAssertHotWalkMatchesOneRequest(t *testing.T, env *commentEnv, want, 
 			"conversation look duplicated")
 	assert.Len(t, visited, len(want))
 
-	single, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 50, nil, viewerDID)
+	single, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 50, nil, viewerDID)
 	require.NoError(t, err)
 	assert.Equal(t, commentURIs(single), visited,
 		"and the paged order must match the unpaged one, or the reader sees the thread reshuffle as "+
@@ -1428,7 +1308,7 @@ func TestCommentRepo_HotPaginationHonoursViewerBlocksOnEveryPage(t *testing.T) {
 	thirdPartySecond := env.seed(commentSpec{rkey: "third2", author: cast.thirdParty, score: 10, createdAt: now.Add(-5 * time.Minute)})
 	last := env.seed(commentSpec{rkey: "author2", score: 5, createdAt: now.Add(-6 * time.Minute)})
 
-	anonymous, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 50, nil, "")
+	anonymous, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 50, nil, "")
 	require.NoError(t, err)
 	require.Equal(t,
 		[]string{first, blockedFirst, thirdPartyFirst, blockedSecond, thirdPartySecond, last}, commentURIs(anonymous),
@@ -1467,7 +1347,7 @@ func TestCommentRepo_HotPaginationDoesNotRepeatADownvotedBoundary(t *testing.T) 
 	third := env.seed(commentSpec{rkey: "third", score: 20, createdAt: now.Add(-3 * time.Minute)})
 	fourth := env.seed(commentSpec{rkey: "fourth", score: 10, createdAt: now.Add(-4 * time.Minute)})
 
-	first, cursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, nil, "")
+	first, cursor, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, nil, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{leader, boundary}, commentURIs(first),
 		"THE FIXTURE IS WRONG, not the code: page one must end on the boundary")
@@ -1513,7 +1393,7 @@ func TestCommentRepo_HotPaginationSurvivesADeletedBoundary(t *testing.T) {
 	fourth := env.seed(commentSpec{rkey: "fourth", score: 10, createdAt: now.Add(-4 * time.Minute)})
 	fifth := env.seed(commentSpec{rkey: "fifth", score: 5, createdAt: now.Add(-5 * time.Minute)})
 
-	first, cursor, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 2, nil, "")
+	first, cursor, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 2, nil, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{leader, boundary}, commentURIs(first),
 		"THE FIXTURE IS WRONG, not the code: page one must end on the boundary")
@@ -1530,7 +1410,7 @@ func TestCommentRepo_HotPaginationSurvivesADeletedBoundary(t *testing.T) {
 		"the replies after a deleted boundary must each be served once, in order; a walk that ends "+
 			"here has silently cut the thread short")
 
-	single, _, err := env.repo.ListByParentWithHotRank(env.ctx, env.root, "hot", "", 50, nil, "")
+	single, _, err := listByParentViaGenerator(env.ctx, env.repo, env.db, env.root, "hot", "", 50, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, commentURIs(single), append([]string{leader}, rest...),
 		"and the walk must match the thread read in one request once the boundary is gone")

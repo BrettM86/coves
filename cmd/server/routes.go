@@ -117,15 +117,14 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,
 		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
 
-	// Feed, timeline, discover, and actor routes take optional auth: they are
+	// searchPosts, getFeed and its aliases, and actor routes take optional auth: they are
 	// public, but an authenticated viewer additionally gets vote state,
 	// moderation actions, and block filtering.
 	routes.RegisterCommunityFeedRoutes(r, app.feedService, app.voteService,
 		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
-	routes.RegisterTimelineRoutes(r, app.timelineService, app.voteService,
+	routes.RegisterFeedRoutes(r, app.feedGeneratorService, app.feedRegistry, app.communityService, app.voteService,
 		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
-	routes.RegisterDiscoverRoutes(r, app.discoverService, app.voteService,
-		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
+	routes.RegisterFeedGeneratorRoutes(r, app.feedRegistry)
 	routes.RegisterActorRoutes(r, app.postService, app.userService, app.voteService,
 		app.blueskyService, app.commentService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
 

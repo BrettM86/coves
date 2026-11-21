@@ -177,7 +177,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		env := commentEnvFor(t)
 		env.seed(commentSpec{rkey: "bystander"})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, nil, "new", 10, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, nil, "new", 10, "")
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		assert.Empty(t, got, "an empty level of the tree must not fetch every reply in the database")
@@ -198,7 +198,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		}
 		quietReply := env.seed(commentSpec{rkey: "quiet1", parent: quiet, score: 5})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{busy, quiet}, "top", 2, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{busy, quiet}, "top", 2, "")
 		require.NoError(t, err)
 		require.Len(t, got, 2)
 		assert.Len(t, got[busy], 2, "ROW_NUMBER() must partition by parent_uri; a plain LIMIT would "+
@@ -212,7 +212,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		env := commentEnvFor(t)
 		leaf := env.seed(commentSpec{rkey: "leaf"})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{leaf, "at://did:plc:nobody/x/y"}, "new", 5, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{leaf, "at://did:plc:nobody/x/y"}, "new", 5, "")
 		require.NoError(t, err)
 		_, present := got[leaf]
 		assert.False(t, present, "a childless parent must be absent rather than mapped to an empty "+
@@ -229,7 +229,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		leftReply := env.seed(commentSpec{rkey: "leftchild", parent: left})
 		rightReply := env.seed(commentSpec{rkey: "rightchild", parent: right})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{left, right}, "new", 10, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{left, right}, "new", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{leftReply}, commentURIs(got[left]),
 			"grouping is done in Go from the parent_uri column; a mix-up here nests one comment's "+
@@ -252,29 +252,22 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		middle := env.seed(commentSpec{rkey: "middle", parent: parent, score: 50, createdAt: commentBaseTime.Add(time.Hour)})
 		newWorst := env.seed(commentSpec{rkey: "newworst", parent: parent, score: 1, createdAt: commentBaseTime.Add(2 * time.Hour)})
 
-		byNew, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, "")
+		byNew, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{newWorst, middle, oldBest}, commentURIs(byNew[parent]),
 			"'new' must be strictly reverse chronological")
 
-		byTop, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "top", 10, "")
+		byTop, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "top", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{oldBest, middle, newWorst}, commentURIs(byTop[parent]),
 			"'top' must be strictly by score; an ordering identical to 'new' would mean the sort "+
 				"parameter is being ignored")
 
-		byHot, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 10, "")
+		byHot, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "hot", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{oldBest, middle, newWorst}, commentURIs(byHot[parent]),
 			"the hot rank is log(score)/age^1.8; over a two-hour spread a hundredfold score "+
 				"difference dominates, so hot agrees with top here")
-
-		byDefault, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "wildly-unknown", 10, "")
-		require.NoError(t, err)
-		assert.Equal(t, commentURIs(byHot[parent]), commentURIs(byDefault[parent]),
-			"an unrecognised sort falls back to hot rather than to an unordered scan; without the "+
-				"default arm the window function would have no ORDER BY and the per-parent top-N "+
-				"would be an arbitrary N")
 	})
 
 	// Age is what separates hot from top. With equal scores the newer comment
@@ -286,7 +279,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		older := env.seed(commentSpec{rkey: "older", parent: parent, score: 10, createdAt: commentBaseTime.AddDate(0, 0, -30)})
 		newer := env.seed(commentSpec{rkey: "newer", parent: parent, score: 10, createdAt: commentBaseTime})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 10, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "hot", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{newer, older}, commentURIs(got[parent]),
 			"the time decay is the entire difference between hot and top; a hot ranking that put a "+
@@ -304,20 +297,20 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		blockedReply := env.seed(commentSpec{rkey: "byblocked", parent: parent, author: blocked})
 		otherReply := env.seed(commentSpec{rkey: "byother", parent: parent, createdAt: commentBaseTime.Add(time.Minute)})
 
-		before, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, viewer)
+		before, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 10, viewer)
 		require.NoError(t, err)
 		require.ElementsMatch(t, []string{blockedReply, otherReply}, commentURIs(before[parent]),
 			"both replies are visible before any block exists")
 
 		insertUserBlock(t, env.db, viewer, blocked)
 
-		after, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, viewer)
+		after, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 10, viewer)
 		require.NoError(t, err)
 		assert.Equal(t, []string{otherReply}, commentURIs(after[parent]),
 			"the blocked author's reply must leave and the third party's must stay — a filter that "+
 				"dropped everything would satisfy half of this")
 
-		anonymous, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, "")
+		anonymous, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 10, "")
 		require.NoError(t, err)
 		assert.ElementsMatch(t, []string{blockedReply, otherReply}, commentURIs(anonymous[parent]),
 			"one viewer's block must not remove the reply for everybody")
@@ -341,18 +334,18 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		newestFlat := env.seed(commentSpec{rkey: "newest", parent: parent, createdAt: now.Add(-time.Minute)})
 		midScored := env.seed(commentSpec{rkey: "midscored", parent: parent, score: 100, createdAt: now.Add(-3 * time.Hour)})
 
-		byHot, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 2, "")
+		byHot, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "hot", 2, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{recentRising, midScored}, commentURIs(byHot[parent]),
 			"hot's top two are the recent, moderately scored replies, not the newest and not the "+
 				"highest scored")
 
-		byNew, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 2, "")
+		byNew, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 2, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{newestFlat, recentRising}, commentURIs(byNew[parent]),
 			"new's top two are the two most recent replies")
 
-		all, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 10, "")
+		all, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "hot", 10, "")
 		require.NoError(t, err)
 		assert.Equal(t, []string{recentRising, midScored, newestFlat, oldBest}, commentURIs(all[parent]),
 			"with room for every reply, the capped result must be this ordering's prefix")
@@ -376,12 +369,12 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 		})
 		insertUserBlock(t, env.db, viewer, blocked)
 
-		anonymous, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 1, "")
+		anonymous, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 1, "")
 		require.NoError(t, err)
 		require.Equal(t, []string{blockedReply}, commentURIs(anonymous[parent]),
 			"precondition: the blocked author's reply ranks first under new")
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 1, viewer)
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 1, viewer)
 		require.NoError(t, err)
 		assert.Equal(t, []string{otherReply}, commentURIs(got[parent]),
 			"the viewer must get the next reply in the blocked one's place, not an empty parent")
@@ -398,7 +391,7 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 			createdAt: commentBaseTime.Add(time.Minute),
 		})
 
-		got, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 10, "")
+		got, err := listByParentsBatchViaGenerator(env.ctx, env.repo, env.db, []string{parent}, "new", 10, "")
 		require.NoError(t, err)
 		byURI := map[string]*comments.Comment{}
 		for _, reply := range got[parent] {

@@ -22,8 +22,7 @@ func TestDiscoverRepo_HotCheckpointStateByteLimitRefusesWithoutPersisting(t *tes
 	repository := NewDiscoverRepository(db, "checkpoint-byte-limit-secret").(*postgresDiscoverRepo)
 	repository.discoverHotCheckpointStateByteLimit = 1
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-		Sort:  "hot",
+	feed, cursor, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 		Limit: 1,
 	})
 	assert.ErrorIs(t, err, discover.ErrDiscoverUnavailable,

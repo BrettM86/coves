@@ -26,6 +26,7 @@ func (a *ServiceAdapter) GetComments(r *http.Request, req *GetCommentsRequest) (
 	coreReq := &comments.GetCommentsRequest{
 		PostURI:    req.PostURI,
 		ParentRkey: req.ParentRkey,
+		Feed:       req.Feed,
 		Sort:       req.Sort,
 		Timeframe:  req.Timeframe,
 		Depth:      req.Depth,

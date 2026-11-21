@@ -6,18 +6,6 @@ import (
 	"Coves/internal/core/posts"
 )
 
-// GetCommunityFeedRequest represents input for fetching a community feed
-// Matches social.coves.communityFeed.getCommunity lexicon input
-// Alpha: Basic sorting only (hot, top, new) - no post type filtering
-type GetCommunityFeedRequest struct {
-	Cursor    *string `json:"cursor,omitempty"`
-	Community string  `json:"community"`
-	ViewerDID string  `json:"-"` // Optional: authenticated viewer's DID for block filtering
-	Sort      string  `json:"sort"`
-	Timeframe string  `json:"timeframe"`
-	Limit     int     `json:"limit"`
-}
-
 // SearchPostsRequest represents input for social.coves.feed.searchPosts.
 // Community is a community identifier (DID, handle, name@origin, or bare local
 // name) at the Service boundary; the service replaces it with the resolved DID
@@ -32,8 +20,7 @@ type SearchPostsRequest struct {
 	Limit     int     `json:"limit"`
 }
 
-// FeedResponse represents paginated feed output
-// Matches social.coves.communityFeed.getCommunity lexicon output
+// FeedResponse represents paginated searchPosts output
 type FeedResponse struct {
 	Cursor *string         `json:"cursor,omitempty"`
 	Feed   []*FeedViewPost `json:"feed"`

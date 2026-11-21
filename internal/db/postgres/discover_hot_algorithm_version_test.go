@@ -86,8 +86,7 @@ func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T)
 	})
 
 	t.Run("a version two cursor is invalid", func(t *testing.T) {
-		feed, next, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-			Sort:   "hot",
+		feed, next, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 			Limit:  2,
 			Cursor: &supersededCursor,
 		})
@@ -110,9 +109,8 @@ func TestDiscoverRepo_HotRefusesSupersededAlgorithmVersionSnapshot(t *testing.T)
 	})
 
 	t.Run("a version three cursor is accepted", func(t *testing.T) {
-		feed, _, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+		feed, _, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 			ViewerDID: controlViewerDID,
-			Sort:      "hot",
 			Limit:     2,
 			Cursor:    &currentCursor,
 		})

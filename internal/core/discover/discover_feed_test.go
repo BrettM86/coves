@@ -1,12 +1,14 @@
 //go:build integration
 
-// The discover feed's behaviour is decided almost entirely by SQL: the ranking
+// Discover Hot's behaviour is decided almost entirely by SQL: the ranking
 // expression, the cursor encoding and the ORDER BY that the cursor has to agree
 // with all live in the Postgres repository, so a test with a stubbed repository
 // would assert nothing that can actually break. These tests therefore run
-// against a real database, wiring the real repository to the real service and
-// driving the real HTTP handler in process — the shortest path that still
-// exercises every layer the ranking passes through.
+// against a real database, serving the real repository through getFeed scope
+// all (newDiscoverHotFeedHandler) in process — the shortest path that still
+// exercises every layer the ranking passes through. The new and top sorts'
+// tests are in internal/db/postgres/discover_feed_test.go, served through the
+// getDiscover alias.
 //
 // They are in an external test package because they import
 // Coves/internal/db/postgres, which imports this package: in-package that is an
@@ -23,17 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/votes"
-	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
-	discoverhandler "Coves/internal/api/handlers/discover"
-
-	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,159 +37,6 @@ import (
 // both mints and verifies the cursor, which is what the pagination cases do.
 const cursorSecret = "test-cursor-secret"
 
-// mockVoteService is an in-memory votes.Service holding pre-seeded viewer
-// votes.
-//
-// Production resolves viewer votes from the AppView index overlaid by recent
-// writes. These tests are about what the feed does with the resolved votes —
-// whether the right vote lands on the right post, and whether an
-// unauthenticated request gets none at all — so the votes are seeded directly.
-type mockVoteService struct {
-	viewerVotes map[string]votes.ViewerVote // viewerDID:subjectURI -> vote
-}
-
-func newMockVoteService() *mockVoteService {
-	return &mockVoteService{
-		viewerVotes: make(map[string]votes.ViewerVote),
-	}
-}
-
-func (m *mockVoteService) AddVote(viewerDID, subjectURI, direction, voteURI string) {
-	key := viewerDID + ":" + subjectURI
-	m.viewerVotes[key] = votes.ViewerVote{
-		Direction: direction,
-		URI:       voteURI,
-	}
-}
-
-func (m *mockVoteService) CreateVote(_ context.Context, _ *oauthlib.ClientSessionData, _ votes.CreateVoteRequest) (*votes.CreateVoteResponse, error) {
-	return &votes.CreateVoteResponse{}, nil
-}
-
-func (m *mockVoteService) DeleteVote(_ context.Context, _ *oauthlib.ClientSessionData, _ votes.DeleteVoteRequest) error {
-	return nil
-}
-
-func (m *mockVoteService) ViewerVotes(_ context.Context, viewerDID string, subjectURIs []string) (map[string]votes.ViewerVote, error) {
-	result := make(map[string]votes.ViewerVote)
-	for _, uri := range subjectURIs {
-		key := viewerDID + ":" + uri
-		if vote, exists := m.viewerVotes[key]; exists {
-			result[uri] = vote
-		}
-	}
-	return result, nil
-}
-
-// A nil vote service and a nil Bluesky service are passed wherever a case does
-// not exercise them: the handler reads both as "no viewer state and no bridged
-// hydration available", which is the anonymous path.
-
-// TestGetDiscover_ShowsAllCommunities proves the discover feed is
-// community-agnostic: unlike the timeline, it draws on every indexed community
-// rather than the viewer's subscriptions.
-func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
-
-	ctx := context.Background()
-	testID := testkit.UniqueID(t)
-
-	community1DID, err := fixtures.Community(ctx, db, fmt.Sprintf("gaming-%s", testID), fmt.Sprintf("alice-%s.test", testID))
-	require.NoError(t, err)
-
-	community2DID, err := fixtures.Community(ctx, db, fmt.Sprintf("tech-%s", testID), fmt.Sprintf("bob-%s.test", testID))
-	require.NoError(t, err)
-
-	community3DID, err := fixtures.Community(ctx, db, fmt.Sprintf("cooking-%s", testID), fmt.Sprintf("charlie-%s.test", testID))
-	require.NoError(t, err)
-
-	post1URI := fixtures.Post(t, db, community1DID, "did:plc:alice", "Gaming post", 50, time.Now().Add(-1*time.Hour))
-	post2URI := fixtures.Post(t, db, community2DID, "did:plc:bob", "Tech post", 30, time.Now().Add(-2*time.Hour))
-	post3URI := fixtures.Post(t, db, community3DID, "did:plc:charlie", "Cooking post", 100, time.Now().Add(-30*time.Minute))
-
-	// No authentication: discover is the logged-out landing feed.
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
-	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var response discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-
-	uris := make(map[string]bool)
-	for _, post := range response.Feed {
-		uris[post.Post.URI] = true
-	}
-	assert.True(t, uris[post1URI], "Should contain gaming post")
-	assert.True(t, uris[post2URI], "Should contain tech post")
-	assert.True(t, uris[post3URI], "Should contain cooking post")
-
-	// Under "new", the three posts must come back in reverse chronological
-	// order regardless of which community they belong to.
-	post3Index, post1Index, post2Index := -1, -1, -1
-	for i, post := range response.Feed {
-		switch post.Post.URI {
-		case post3URI:
-			post3Index = i
-		case post1URI:
-			post1Index = i
-		case post2URI:
-			post2Index = i
-		}
-	}
-	require.NotEqual(t, -1, post3Index)
-	require.NotEqual(t, -1, post1Index)
-	require.NotEqual(t, -1, post2Index)
-	assert.Less(t, post3Index, post1Index, "Newest post (30min ago) should appear before 1hr old post")
-	assert.Less(t, post1Index, post2Index, "1hr old post should appear before 2hr old post")
-}
-
-// TestGetDiscover_NoAuthRequired pins the endpoint as anonymous-readable. It is
-// the only feed a signed-out visitor can see, so a regression that started
-// demanding a session would empty the front page.
-func TestGetDiscover_NoAuthRequired(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
-
-	ctx := context.Background()
-	testID := testkit.UniqueID(t)
-
-	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("public-%s", testID), fmt.Sprintf("alice-%s.test", testID))
-	require.NoError(t, err)
-
-	postURI := fixtures.Post(t, db, communityDID, "did:plc:alice", "Public post", 10, time.Now())
-
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
-	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code, "Discover should work without authentication")
-
-	var response discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-
-	found := false
-	for _, post := range response.Feed {
-		if post.Post.URI == postURI {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "Should show post even without authentication")
-}
-
 // TestGetDiscover_HotSort checks that hot ranking does not lose posts. The
 // ordering itself is pinned by TestGetDiscover_HotSort_LogDampedRanking; what
 // this case guards is that switching sort modes still returns the whole
@@ -204,9 +45,7 @@ func TestGetDiscover_HotSort(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, cursorSecret)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -221,13 +60,13 @@ func TestGetDiscover_HotSort(t *testing.T) {
 	post2URI := fixtures.Post(t, db, community2DID, "did:plc:bob", "Old popular", 100, time.Now().Add(-24*time.Hour))
 	post3URI := fixtures.Post(t, db, community1DID, "did:plc:charlie", "Brand new", 5, time.Now().Add(-10*time.Minute))
 
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getFeed?scope=all&limit=50", nil)
 	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
+	handler.HandleGetFeed(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var response discover.DiscoverResponse
+	var response discoverPage
 	err = json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
 
@@ -253,9 +92,7 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, cursorSecret)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -272,13 +109,13 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 	// A brand-new but downvoted post (rank ≈ -0.44)
 	downvotedURI := fixtures.Post(t, db, communityDID, "did:plc:carol", "Downvoted post", -5, time.Now().Add(-5*time.Minute))
 
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getFeed?scope=all&limit=50", nil)
 	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
+	handler.HandleGetFeed(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var response discover.DiscoverResponse
+	var response discoverPage
 	err = json.Unmarshal(rec.Body.Bytes(), &response)
 	require.NoError(t, err)
 
@@ -308,9 +145,7 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, cursorSecret)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -330,16 +165,16 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 	var seen []string
 	cursor := ""
 	for page := 0; page < 10; page++ {
-		url := "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=1"
+		requestURL := "/xrpc/social.coves.feed.getFeed?scope=all&limit=1"
 		if cursor != "" {
-			url += "&cursor=" + cursor
+			requestURL += "&cursor=" + url.QueryEscape(cursor)
 		}
-		req := httptest.NewRequest(http.MethodGet, url, nil)
+		req := httptest.NewRequest(http.MethodGet, requestURL, nil)
 		rec := httptest.NewRecorder()
-		handler.HandleGetDiscover(rec, req)
+		handler.HandleGetFeed(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, "page %d should succeed", page)
 
-		var response discover.DiscoverResponse
+		var response discoverPage
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 
 		for _, post := range response.Feed {
@@ -364,9 +199,7 @@ func TestGetDiscover_HotSort_NormalizesAndDiversifiesAcrossPages(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, cursorSecret)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -406,17 +239,17 @@ func TestGetDiscover_HotSort_NormalizesAndDiversifiesAcrossPages(t *testing.T) {
 	var returned []string
 	cursor := ""
 	for page := 0; page < 2; page++ {
-		requestURL := "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=3"
+		requestURL := "/xrpc/social.coves.feed.getFeed?scope=all&limit=3"
 		if cursor != "" {
 			requestURL += "&cursor=" + url.QueryEscape(cursor)
 		}
 
 		req := httptest.NewRequest(http.MethodGet, requestURL, nil)
 		rec := httptest.NewRecorder()
-		handler.HandleGetDiscover(rec, req)
+		handler.HandleGetFeed(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code, "page %d should succeed: %s", page+1, rec.Body.String())
 
-		var response discover.DiscoverResponse
+		var response discoverPage
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 		require.Len(t, response.Feed, 3, "page %d should be full", page+1)
 		for _, post := range response.Feed {
@@ -448,9 +281,7 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, cursorSecret)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -463,15 +294,15 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 	// A recent post with modest genuine engagement (rank ≈ 2.05 vs the clamped ≈ 0.57)
 	votedURI := fixtures.Post(t, db, communityDID, "did:plc:alice", "Recent voted post", 50, time.Now().Add(-1*time.Hour))
 
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getFeed?scope=all&limit=50", nil)
 	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
+	handler.HandleGetFeed(rec, req)
 
 	// Before the GREATEST age clamp this query 500'd with "a negative number
 	// raised to a non-integer power yields a complex result"
 	require.Equal(t, http.StatusOK, rec.Code, "Future-dated post must not break the hot feed")
 
-	var response discover.DiscoverResponse
+	var response discoverPage
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 
 	position := make(map[string]int)
@@ -483,203 +314,4 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 
 	assert.Less(t, position[votedURI], position[futureURI],
 		"Future-dated 0-vote post should rank like a fresh post, not above genuinely engaged posts")
-}
-
-// TestGetDiscover_Pagination walks the chronological cursor: pages must be full
-// and must not repeat a post already served.
-func TestGetDiscover_Pagination(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
-
-	ctx := context.Background()
-	testID := testkit.UniqueID(t)
-
-	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("test-%s", testID), fmt.Sprintf("alice-%s.test", testID))
-	require.NoError(t, err)
-
-	for i := 0; i < 5; i++ {
-		fixtures.Post(t, db, communityDID, "did:plc:alice", fmt.Sprintf("Post %d", i), 10-i, time.Now().Add(-time.Duration(i)*time.Hour))
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=2", nil)
-	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var page1 discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &page1)
-	require.NoError(t, err)
-
-	require.Len(t, page1.Feed, 2, "First page should have 2 posts")
-	require.NotNil(t, page1.Cursor, "Should have cursor for next page")
-
-	req = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/xrpc/social.coves.feed.getDiscover?sort=new&limit=2&cursor=%s", *page1.Cursor), nil)
-	rec = httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var page2 discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &page2)
-	require.NoError(t, err)
-
-	require.Len(t, page2.Feed, 2, "Second page should have 2 posts")
-
-	assert.NotEqual(t, page1.Feed[0].Post.URI, page2.Feed[0].Post.URI, "Pages should not overlap")
-}
-
-// TestGetDiscover_LimitValidation checks the handler rejects an over-large page
-// size rather than letting it reach the query: an unbounded limit is the
-// cheapest denial-of-service against a public, unauthenticated endpoint.
-func TestGetDiscover_LimitValidation(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
-
-	t.Run("Limit exceeds maximum", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=100", nil)
-		rec := httptest.NewRecorder()
-		handler.HandleGetDiscover(rec, req)
-
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-
-		var errorResp map[string]string
-		err := json.Unmarshal(rec.Body.Bytes(), &errorResp)
-		require.NoError(t, err)
-
-		assert.Equal(t, "InvalidRequest", errorResp["error"])
-		assert.Contains(t, errorResp["message"], "limit")
-	})
-}
-
-// TestGetDiscover_ViewerVoteState proves each post carries the viewer's OWN
-// vote and only that vote. Cross-wiring here would show a reader somebody
-// else's upvote, or let a re-tap toggle a vote the viewer never cast.
-func TestGetDiscover_ViewerVoteState(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	ctx := context.Background()
-	testID := testkit.UniqueID(t)
-
-	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("votes-%s", testID), fmt.Sprintf("alice-%s.test", testID))
-	require.NoError(t, err)
-
-	post1URI := fixtures.Post(t, db, communityDID, "did:plc:author1", "Post with upvote", 10, time.Now().Add(-1*time.Hour))
-	post2URI := fixtures.Post(t, db, communityDID, "did:plc:author2", "Post with downvote", 5, time.Now().Add(-2*time.Hour))
-	_ = fixtures.Post(t, db, communityDID, "did:plc:author3", "Post without vote", 3, time.Now().Add(-3*time.Hour))
-
-	viewerDID := "did:plc:viewer123"
-	mockVotes := newMockVoteService()
-	mockVotes.AddVote(viewerDID, post1URI, "up", "at://"+viewerDID+"/social.coves.vote/vote1")
-	mockVotes.AddVote(viewerDID, post2URI, "down", "at://"+viewerDID+"/social.coves.vote/vote2")
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, mockVotes, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
-
-	// Both context values are what OptionalAuth would have set. The handler
-	// reads only the DID, to key the vote lookup; the session is set too so
-	// the test exercises a state the middleware actually produces.
-	did, err := syntax.ParseDID(viewerDID)
-	require.NoError(t, err)
-	session := &oauthlib.ClientSessionData{
-		AccountDID:  did,
-		AccessToken: "test_token",
-	}
-	reqCtx := context.WithValue(req.Context(), middleware.UserDIDKey, viewerDID)
-	reqCtx = context.WithValue(reqCtx, middleware.OAuthSessionKey, session)
-	req = req.WithContext(reqCtx)
-
-	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var response discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-
-	var foundPost1, foundPost2, foundPost3 bool
-	for _, feedPost := range response.Feed {
-		switch feedPost.Post.URI {
-		case post1URI:
-			foundPost1 = true
-			require.NotNil(t, feedPost.Post.Viewer, "Post1 should have viewer state")
-			require.NotNil(t, feedPost.Post.Viewer.Vote, "Post1 should have vote direction")
-			assert.Equal(t, "up", *feedPost.Post.Viewer.Vote, "Post1 should show upvote")
-			require.NotNil(t, feedPost.Post.Viewer.VoteURI, "Post1 should have vote URI")
-			assert.Contains(t, *feedPost.Post.Viewer.VoteURI, "vote1", "Post1 should have correct vote URI")
-
-		case post2URI:
-			foundPost2 = true
-			require.NotNil(t, feedPost.Post.Viewer, "Post2 should have viewer state")
-			require.NotNil(t, feedPost.Post.Viewer.Vote, "Post2 should have vote direction")
-			assert.Equal(t, "down", *feedPost.Post.Viewer.Vote, "Post2 should show downvote")
-			require.NotNil(t, feedPost.Post.Viewer.VoteURI, "Post2 should have vote URI")
-
-		default:
-			// The third post must come back with no vote of its own.
-			if feedPost.Post.Viewer != nil && feedPost.Post.Viewer.Vote != nil {
-				continue
-			}
-			foundPost3 = true
-		}
-	}
-
-	assert.True(t, foundPost1, "Should find post1 with upvote")
-	assert.True(t, foundPost2, "Should find post2 with downvote")
-	assert.True(t, foundPost3, "Should find post3 without vote")
-}
-
-// TestGetDiscover_NoViewerStateWithoutAuth proves viewer state is withheld from
-// anonymous requests even when the vote service holds a vote for that post. The
-// vote belongs to a different account, and leaking it would tell
-// every visitor how a named user voted.
-func TestGetDiscover_NoViewerStateWithoutAuth(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	ctx := context.Background()
-	testID := testkit.UniqueID(t)
-
-	communityDID, err := fixtures.Community(ctx, db, fmt.Sprintf("noauth-%s", testID), fmt.Sprintf("alice-%s.test", testID))
-	require.NoError(t, err)
-
-	postURI := fixtures.Post(t, db, communityDID, "did:plc:author", "Some post", 10, time.Now())
-
-	mockVotes := newMockVoteService()
-	mockVotes.AddVote("did:plc:someuser", postURI, "up", "at://did:plc:someuser/social.coves.vote/vote1")
-
-	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
-	discoverService := discover.NewDiscoverService(discoverRepo)
-	handler := discoverhandler.NewGetDiscoverHandler(discoverService, mockVotes, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
-	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var response discover.DiscoverResponse
-	err = json.Unmarshal(rec.Body.Bytes(), &response)
-	require.NoError(t, err)
-
-	for _, feedPost := range response.Feed {
-		if feedPost.Post.URI == postURI {
-			assert.Nil(t, feedPost.Post.Viewer, "Unauthenticated request should not have viewer state")
-			return
-		}
-	}
-	t.Fatal("Test post not found in response")
 }

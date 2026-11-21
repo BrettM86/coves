@@ -10,12 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
-	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
-
-	discoverhandler "Coves/internal/api/handlers/discover"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,16 +53,14 @@ func TestGetDiscover_HotSort_HostedCommunityPostOutranksTiedNonHostedPost(t *tes
 	require.Greater(t, nonHostedURI, hostedURI,
 		"precondition: the non-hosted post must win the uri DESC tie-breaker, or this test could pass for the wrong reason")
 
-	repository := postgres.NewDiscoverRepository(db, "hosted-bonus-cursor-secret")
-	service := discover.NewDiscoverService(repository)
-	handler := discoverhandler.NewGetDiscoverHandler(service, nil, nil)
+	handler := newDiscoverHotFeedHandler(db, "hosted-bonus-cursor-secret")
 
-	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getFeed?scope=all&limit=10", nil)
 	rec := httptest.NewRecorder()
-	handler.HandleGetDiscover(rec, req)
+	handler.HandleGetFeed(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "Discover Hot response: %s", rec.Body.String())
 
-	var response discover.DiscoverResponse
+	var response discoverPage
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
 
 	uris := make([]string, len(response.Feed))

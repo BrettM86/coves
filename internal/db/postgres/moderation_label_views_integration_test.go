@@ -8,10 +8,8 @@ import (
 	"time"
 
 	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -102,8 +100,9 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 	require.NoError(t, err)
 	postRepo := postgres.NewPostRepository(db)
 	feedRepo := postgres.NewCommunityFeedRepository(db, "label-views-feed-secret")
-	timelineRepo := postgres.NewTimelineRepository(db, "label-views-timeline-secret")
-	discoverRepo := postgres.NewDiscoverRepository(db, "label-views-discover-secret")
+	communityFeedRepo := postgres.NewCommunityFeedViaFeed(db)
+	timelineRepo := postgres.NewTimelineViaFeed(db)
+	discoverRepo := postgres.NewDiscoverViaFeed(db)
 	service := newPostgresModerationService(db)
 	allURIs := []string{controlFirst.URI, labelled.URI, controlLast.URI}
 	reads := []struct {
@@ -126,7 +125,7 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 			return views
 		}},
 		{"community feed", func(t *testing.T) []*posts.PostView {
-			feed, _, err := feedRepo.GetCommunityFeed(t.Context(), communityFeeds.GetCommunityFeedRequest{Community: communityDID, Sort: "new", Timeframe: "all", Limit: 50})
+			feed, _, err := communityFeedRepo.GetCommunityFeedViaFeed(t.Context(), postgres.CommunityFeedViaFeedRequest{Community: communityDID, Sort: "new", Timeframe: "all", Limit: 50})
 			require.NoError(t, err)
 			views := make([]*posts.PostView, 0, len(feed))
 			for _, entry := range feed {
@@ -144,7 +143,7 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 			return views
 		}},
 		{"timeline", func(t *testing.T) []*posts.PostView {
-			feed, _, err := timelineRepo.GetTimeline(t.Context(), timeline.GetTimelineRequest{UserDID: viewerDID, Sort: "new", Limit: 50})
+			feed, _, err := timelineRepo.GetTimeline(t.Context(), postgres.TimelineViaFeedRequest{UserDID: viewerDID, Sort: "new", Limit: 50})
 			require.NoError(t, err)
 			views := make([]*posts.PostView, 0, len(feed))
 			for _, entry := range feed {
@@ -153,7 +152,7 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 			return views
 		}},
 		{"Discover new", func(t *testing.T) []*posts.PostView {
-			feed, _, err := discoverRepo.GetDiscover(t.Context(), discover.GetDiscoverRequest{Sort: "new", Timeframe: "all", Limit: 50})
+			feed, _, err := discoverRepo.GetDiscoverViaFeed(t.Context(), postgres.DiscoverViaFeedRequest{Sort: "new", Timeframe: "all", Limit: 50})
 			require.NoError(t, err)
 			views := make([]*posts.PostView, 0, len(feed))
 			for _, entry := range feed {
@@ -181,7 +180,7 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 		page         func(*testing.T, *string) ([]*posts.PostView, *string)
 	}{
 		{"community feed hot", false, func(t *testing.T, cursor *string) ([]*posts.PostView, *string) {
-			feed, next, err := feedRepo.GetCommunityFeed(t.Context(), communityFeeds.GetCommunityFeedRequest{Community: communityDID, Sort: "hot", Timeframe: "all", Limit: 1, Cursor: cursor})
+			feed, next, err := communityFeedRepo.GetCommunityFeedViaFeed(t.Context(), postgres.CommunityFeedViaFeedRequest{Community: communityDID, Sort: "hot", Timeframe: "all", Limit: 1, Cursor: cursor})
 			require.NoError(t, err)
 			views := make([]*posts.PostView, 0, len(feed))
 			for _, entry := range feed {
@@ -249,7 +248,7 @@ func TestModerationLabelServedPostViews(t *testing.T) {
 
 	readHot := func(t *testing.T, limit int, cursor *string) ([]*posts.PostView, *string) {
 		t.Helper()
-		feed, next, err := discoverRepo.GetDiscover(t.Context(), discover.GetDiscoverRequest{Sort: "hot", Limit: limit, Cursor: cursor})
+		feed, next, err := discoverRepo.GetDiscoverViaFeed(t.Context(), postgres.DiscoverViaFeedRequest{Sort: "hot", Limit: limit, Cursor: cursor})
 		require.NoError(t, err)
 		views := make([]*posts.PostView, 0, len(feed))
 		for _, entry := range feed {

@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -78,9 +77,9 @@ func TestAuthorProfileHydration(t *testing.T) {
 	})
 
 	t.Run("CommunityFeed", func(t *testing.T) {
-		feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
+		feedRepo := postgres.NewCommunityFeedViaFeed(db)
 		for _, sort := range []string{"new", "hot"} {
-			feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+			feed, _, err := feedRepo.GetCommunityFeedViaFeed(ctx, postgres.CommunityFeedViaFeedRequest{
 				Community: communityDID,
 				Sort:      sort,
 				Limit:     10,

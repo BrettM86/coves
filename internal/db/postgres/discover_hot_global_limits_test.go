@@ -23,16 +23,15 @@ func TestDiscoverRepo_HotGlobalStoredCandidateLimitCountsUnpurgedState(t *testin
 
 	firstRepository := NewDiscoverRepository(db, "global-candidate-secret").(*postgresDiscoverRepo)
 	firstRepository.discoverHotStoredCandidateLimit = 5
-	feed, cursor, err := firstRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	feed, cursor, err := getDiscoverHotViaGenerator(ctx, firstRepository, discoverHotTestRequest{Limit: 10})
 	require.NoError(t, err)
 	assert.Equal(t, expected, discoverURIs(feed))
 	assert.Nil(t, cursor)
 
 	secondRepository := NewDiscoverRepository(db, "global-candidate-secret").(*postgresDiscoverRepo)
 	secondRepository.discoverHotStoredCandidateLimit = 5
-	feed, cursor, err = secondRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
+	feed, cursor, err = getDiscoverHotViaGenerator(ctx, secondRepository, discoverHotTestRequest{
 		ViewerDID: "did:plc:globalcandidateviewerone",
-		Sort:      "hot",
 		Limit:     10,
 	})
 	require.NoError(t, err)
@@ -50,9 +49,8 @@ func TestDiscoverRepo_HotGlobalStoredCandidateLimitCountsUnpurgedState(t *testin
 
 	thirdRepository := NewDiscoverRepository(db, "global-candidate-secret").(*postgresDiscoverRepo)
 	thirdRepository.discoverHotStoredCandidateLimit = 5
-	feed, cursor, err = thirdRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
+	feed, cursor, err = getDiscoverHotViaGenerator(ctx, thirdRepository, discoverHotTestRequest{
 		ViewerDID: "did:plc:globalcandidateviewertwo",
-		Sort:      "hot",
 		Limit:     10,
 	})
 	assert.ErrorIs(t, err, discover.ErrDiscoverUnavailable,
@@ -67,9 +65,8 @@ func TestDiscoverRepo_HotGlobalStoredCandidateLimitCountsUnpurgedState(t *testin
 	assert.Equal(t, int64(2), removed)
 	require.Equal(t, []int{1, 2, 0}, discoverHotStateCounts(t, db))
 
-	feed, cursor, err = thirdRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
+	feed, cursor, err = getDiscoverHotViaGenerator(ctx, thirdRepository, discoverHotTestRequest{
 		ViewerDID: "did:plc:globalcandidateviewertwo",
-		Sort:      "hot",
 		Limit:     10,
 	})
 	require.NoError(t, err, "snapshot creation must recover after cleanup frees durable candidate capacity")
@@ -87,8 +84,7 @@ func TestDiscoverRepo_HotGlobalCheckpointLimitRefusesWithoutAdvancing(t *testing
 	firstRepository := NewDiscoverRepository(db, "global-checkpoint-secret").(*postgresDiscoverRepo)
 	firstRepository.discoverHotStoredCheckpointLimit = 1
 
-	firstPage, inputCursor, err := firstRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
-		Sort:  "hot",
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(ctx, firstRepository, discoverHotTestRequest{
 		Limit: 1,
 	})
 	require.NoError(t, err)
@@ -99,8 +95,7 @@ func TestDiscoverRepo_HotGlobalCheckpointLimitRefusesWithoutAdvancing(t *testing
 
 	continuationRepository := NewDiscoverRepository(db, "global-checkpoint-secret").(*postgresDiscoverRepo)
 	continuationRepository.discoverHotStoredCheckpointLimit = 1
-	feed, outputCursor, err := continuationRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
-		Sort:   "hot",
+	feed, outputCursor, err := getDiscoverHotViaGenerator(ctx, continuationRepository, discoverHotTestRequest{
 		Limit:  1,
 		Cursor: inputCursor,
 	})
@@ -111,8 +106,7 @@ func TestDiscoverRepo_HotGlobalCheckpointLimitRefusesWithoutAdvancing(t *testing
 		"checkpoint refusal must not persist or advance continuation state")
 
 	continuationRepository.discoverHotStoredCheckpointLimit = 2
-	feed, outputCursor, err = continuationRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
-		Sort:   "hot",
+	feed, outputCursor, err = getDiscoverHotViaGenerator(ctx, continuationRepository, discoverHotTestRequest{
 		Limit:  1,
 		Cursor: inputCursor,
 	})
@@ -130,13 +124,13 @@ func TestDiscoverRepo_HotGlobalSnapshotBuildRateLimitAllowsReuseButRefusesNewSco
 	ctx := context.Background()
 
 	firstRepository := newRateLimitedDiscoverHotRepository(db, "global-build-rate-secret", 1)
-	firstFeed, firstCursor, err := firstRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	firstFeed, firstCursor, err := getDiscoverHotViaGenerator(ctx, firstRepository, discoverHotTestRequest{Limit: 10})
 	require.NoError(t, err)
 	assert.Equal(t, expected, discoverURIs(firstFeed))
 	assert.Nil(t, firstCursor)
 
 	reuseRepository := newRateLimitedDiscoverHotRepository(db, "global-build-rate-secret", 1)
-	reusedFeed, reusedCursor, err := reuseRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	reusedFeed, reusedCursor, err := getDiscoverHotViaGenerator(ctx, reuseRepository, discoverHotTestRequest{Limit: 10})
 	require.NoError(t, err, "same-scope refresh inside thirty seconds must reuse without consuming another build")
 	assert.Equal(t, expected, discoverURIs(reusedFeed))
 	assert.Nil(t, reusedCursor)
@@ -144,9 +138,8 @@ func TestDiscoverRepo_HotGlobalSnapshotBuildRateLimitAllowsReuseButRefusesNewSco
 	stateBeforeRefusal := discoverHotStateCounts(t, db)
 
 	differentScopeRepository := newRateLimitedDiscoverHotRepository(db, "global-build-rate-secret", 1)
-	feed, cursor, err := differentScopeRepository.GetDiscover(ctx, discover.GetDiscoverRequest{
+	feed, cursor, err := getDiscoverHotViaGenerator(ctx, differentScopeRepository, discoverHotTestRequest{
 		ViewerDID: "did:plc:globalbuildrateviewer",
-		Sort:      "hot",
 		Limit:     10,
 	})
 	assert.ErrorIs(t, err, discover.ErrDiscoverUnavailable)
@@ -165,7 +158,7 @@ func TestDiscoverRepo_HotFailedSnapshotBuildConsumesGlobalRateLimit(t *testing.T
 	firstRepository := newRateLimitedDiscoverHotRepository(db, "failed-build-rate-secret", 1)
 	firstRepository.discoverHotStoredCandidateLimit = 1
 
-	feed, cursor, err := firstRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	feed, cursor, err := getDiscoverHotViaGenerator(ctx, firstRepository, discoverHotTestRequest{Limit: 10})
 	require.ErrorIs(t, err, discover.ErrDiscoverUnavailable)
 	assert.Empty(t, feed)
 	assert.Nil(t, cursor)
@@ -177,7 +170,7 @@ func TestDiscoverRepo_HotFailedSnapshotBuildConsumesGlobalRateLimit(t *testing.T
 	retryRepository := newRateLimitedDiscoverHotRepository(db, "failed-build-rate-secret", 1)
 	retryRepository.discoverHotStoredCandidateLimit = 1
 
-	feed, cursor, err = retryRepository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	feed, cursor, err = getDiscoverHotViaGenerator(ctx, retryRepository, discoverHotTestRequest{Limit: 10})
 	require.ErrorIs(t, err, discover.ErrDiscoverUnavailable,
 		"failed full snapshot work must consume the shared build budget")
 	assert.Empty(t, feed)

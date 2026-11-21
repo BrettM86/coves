@@ -15,6 +15,7 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/fixtures/accountbanfixture"
+	"Coves/tests/fixtures/commentfeedfixture"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -125,7 +126,8 @@ func newAccountBanHideFixture(t *testing.T) abhFixture {
 			postgres.NewPostRepository(f.db, postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID())),
 			postgres.NewCommunityRepository(f.db, credentialciphertest.Fixed(),
 				postgres.WithAccountRestrictionAuthority(fixtures.InstanceDID())), nil, nil,
-			comments.WithInstanceDID(fixtures.InstanceDID())),
+			comments.WithInstanceDID(fixtures.InstanceDID()),
+			comments.WithFeedRegistry(commentfeedfixture.Registry(f.db))),
 	}
 }
 

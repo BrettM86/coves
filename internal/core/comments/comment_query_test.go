@@ -20,6 +20,7 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
+	"Coves/tests/fixtures/commentfeedfixture"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -1247,7 +1248,8 @@ func setupCommentService(db *sql.DB) comments.Service {
 	userRepo := postgres.NewUserRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
-	return comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+	return comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil,
+		comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 }
 
 // Helper: createTestCommentWithScore creates a comment with specific vote counts
@@ -1334,7 +1336,8 @@ func setupCommentServiceAdapter(db *sql.DB) *testCommentServiceAdapter {
 	userRepo := postgres.NewUserRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
-	service := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+	service := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil,
+		comments.WithFeedRegistry(commentfeedfixture.Registry(db)))
 	return &testCommentServiceAdapter{service: service}
 }
 

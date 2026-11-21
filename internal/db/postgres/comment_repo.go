@@ -732,173 +732,6 @@ func commentHotRankFromValuesSQL(scoreExpr, createdAtExpr, nowExpr string) strin
 		scoreExpr, createdAtExpr, nowExpr)
 }
 
-// ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
-// Supports three sort modes: hot (Lemmy algorithm), top (by score + timeframe), and new (by created_at)
-// Uses cursor-based pagination with composite keys for consistent ordering
-// Hydrates author info (handle, display_name, avatar) via JOIN with users table
-func (r *postgresCommentRepo) ListByParentWithHotRank(
-	ctx context.Context,
-	parentURI string,
-	sort string,
-	timeframe string,
-	limit int,
-	cursor *string,
-	viewerDID string,
-) ([]*comments.Comment, *string, error) {
-	// Build ORDER BY clause and time filter based on sort type
-	orderBy, timeFilter := r.buildCommentSortClause(sort, timeframe)
-
-	// Parse cursor for pagination
-	cursorFilter, cursorValues, err := r.parseCommentCursor(cursor, sort)
-	if err != nil {
-		return nil, nil, fmt.Errorf("invalid cursor: %w", err)
-	}
-
-	args := []interface{}{parentURI, limit + 1} // +1 to detect next page
-
-	// Hot pins its rank clock, bound as $3, for the whole walk: page one ranks as of
-	// its own request time, and every later page ranks as of the rankedAt its cursor
-	// carries. Ranks decay at different speeds, so two replies can swap places between
-	// requests; a page ranked at its own request time would then skip a reply or serve
-	// one twice.
-	var rankedAt time.Time
-	if sort == "hot" {
-		if len(cursorValues) == 0 {
-			// Microseconds, the precision of timestamptz.
-			rankedAt = time.Now().UTC().Truncate(time.Microsecond)
-			args = append(args, rankedAt.Format(time.RFC3339Nano))
-		} else {
-			// parseCommentCursor has validated this field and rewritten it in UTC; it is
-			// read again as a time so the next cursor carries the same instant forward.
-			rankedAtText, isString := cursorValues[0].(string)
-			if !isString {
-				return nil, nil, fmt.Errorf("invalid cursor: %w: rankedAt is not a string", comments.ErrInvalidCursor)
-			}
-			rankedAt, err = time.Parse(time.RFC3339Nano, rankedAtText)
-			if err != nil {
-				return nil, nil, fmt.Errorf("invalid cursor: %w: rankedAt is not a timestamp", comments.ErrInvalidCursor)
-			}
-		}
-	}
-	args = append(args, cursorValues...)
-	args = append(args, r.authorityDID)
-	authorityExpr := fmt.Sprintf("$%d", len(args))
-
-	// Build SELECT clause - compute hot_rank for "hot" sort
-	// Hot rank formula (Lemmy algorithm):
-	// LOG(GREATEST(2, score + 2)) / POWER(GREATEST(age_hours, 0) + 2, 1.8)
-	//
-	// This formula:
-	// - Gives logarithmic weight to score (prevents high-score dominance)
-	// - Decays over time with power 1.8 (faster than linear, slower than quadratic)
-	// - Uses hours as time unit (3600 seconds)
-	// - Clamps negative ages so future-dated comments cannot gain a ranking boost
-	//
-	// "Now" is the rank clock $3, so the ORDER BY, which sorts on hot_rank, and the
-	// cursor filter rank every reply at the same instant.
-	var selectClause string
-	if sort == "hot" {
-		selectClause = fmt.Sprintf(`
-		SELECT
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			%s as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle,
-			%s AS commenter_restricted
-		FROM comments c`, commentHotRankSQL("c", "$3::timestamptz"), accountRestrictedSQL("c.commenter_did", authorityExpr))
-	} else {
-		selectClause = `
-		SELECT
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			NULL::numeric as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle,
-			` + accountRestrictedSQL("c.commenter_did", authorityExpr) + ` AS commenter_restricted
-		FROM comments c`
-	}
-
-	// Build optional viewer block filter (only when authenticated viewer is present).
-	// The viewer is bound after the rank clock, the cursor values and the
-	// account-ban authority, whichever are present.
-	var viewerFilter string
-	if viewerDID != "" {
-		args = append(args, viewerDID)
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = c.commenter_did)", len(args))
-	}
-
-	// Build complete query with JOINs and filters
-	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
-	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
-	query := fmt.Sprintf(`
-		%s
-		LEFT JOIN users u ON c.commenter_did = u.did
-		WHERE c.parent_uri = $1
-			%s
-			%s
-			%s
-		ORDER BY %s
-		LIMIT $2
-	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
-
-	// Execute query
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to query comments with hot rank: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("Failed to close rows: %v", err)
-		}
-	}()
-
-	// Scan results
-	var result []*comments.Comment
-	for rows.Next() {
-		var comment comments.Comment
-		var langs pq.StringArray
-		var hotRank sql.NullFloat64 // the ORDER BY key; the cursor does not carry it
-		var authorHandle string
-
-		err := rows.Scan(
-			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
-			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
-			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
-			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&hotRank, &authorHandle, &comment.CommenterRestricted,
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to scan comment: %w", err)
-		}
-
-		comment.Langs = langs
-		comment.CommenterHandle = authorHandle
-
-		result = append(result, &comment)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("error iterating comments: %w", err)
-	}
-
-	// Handle pagination cursor
-	var nextCursor *string
-	if len(result) > limit && limit > 0 {
-		result = result[:limit]
-		lastComment := result[len(result)-1]
-		cursorStr := r.buildCommentCursor(lastComment, sort, rankedAt)
-		nextCursor = &cursorStr
-	}
-
-	return result, nextCursor, nil
-}
-
 // buildCommentSortClause returns the ORDER BY SQL and optional time filter
 func (r *postgresCommentRepo) buildCommentSortClause(sort, timeframe string) (string, string) {
 	var orderBy string
@@ -916,15 +749,14 @@ func (r *postgresCommentRepo) buildCommentSortClause(sort, timeframe string) (st
 		// Default to hot
 		//
 		// KNOWN DEFECT (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md):
-		// ListByParentWithHotRank only COMPUTES hot_rank when sort == "hot" exactly, so under
-		// any other unrecognised value this leading key is NULL for every row and the ordering
-		// collapses to score DESC — i.e. "top". ListByParentsBatch's own default arm does
-		// compute the rank, so the two halves of one thread view disagree.
-		// REACHABILITY: masked today — the sort allow-list in comment_service.go's
-		// validate/list request path rejects any sort outside {hot, top, new} before the
-		// repository is reached. Adding a fourth sort without updating both arms here
-		// makes it live.
-		// (see TestCommentRepo_UnknownSortRanksLikeTopNotLikeHot)
+		// parentPageQuery in feedgen_comments.go sets rankColumn to the hot rank only when
+		// sort == "hot", so for any other unrecognised value this leading key is NULL for
+		// every row and the order falls back to score DESC, the "top" order.
+		// parentsBatchQuery's default arm in feedgen_comments.go does compute the rank, so
+		// the two halves of one thread view disagree.
+		// REACHABILITY: masked today, because CommentSortGenerator is only built for hot,
+		// top and new. Adding a fourth sort without updating this arm and
+		// parentsBatchQuery's default arm makes it live. No test pins this arm.
 		orderBy = `hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
 	}
 
@@ -1037,7 +869,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 	case "hot":
 		// Cursor format: rankedAt|score|createdAt|uri
 		//
-		// rankedAt is the instant page one was ranked at. ListByParentWithHotRank binds it
+		// rankedAt is the instant page one was ranked at. The comments-hot generator binds it
 		// as $3, the rank clock of the SELECT, the ORDER BY and this filter alike, so time
 		// decay is identical on every page of a walk. Scores are read live, so a reply
 		// whose votes change between pages can still be skipped or served twice. The rank
@@ -1110,12 +942,10 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		// unrecognised sort discards the cursor with no error, while buildCommentSortClause
 		// happily produces an ORDER BY for the same value. Page two is therefore page one,
 		// forever.
-		// REACHABILITY: masked today — the sort allow-list in comment_service.go's
-		// validate/list request path rejects any sort outside {hot, top, new} before the
-		// repository is reached. Adding a fourth sort without updating both arms here
-		// makes it live.
-		// (see TestCommentRepo_UnknownSortCursorIsSilentlyDiscarded and
-		// TestCommentRepo_UnknownSortCursorRepeatsPageOne)
+		// REACHABILITY: masked today, because CommentSortGenerator is only built for hot,
+		// top and new. Adding a fourth sort without updating both parseCommentCursor and
+		// buildCommentCursor makes it live.
+		// (see TestCommentRepo_UnknownSortCursorIsSilentlyDiscarded)
 		return "", nil, nil
 	}
 }
@@ -1212,7 +1042,7 @@ func commentChainCommunitySQL(commentAlias string) string {
 //
 // viewerDID is optional — when non-empty, a comment whose author the viewer has blocked
 // is filtered out and reported as ErrCommentNotFound, matching the block filtering
-// applied by ListByParentWithHotRank and ListByParentsBatch.
+// applied by the comment generators and HydrateComments.
 //
 // rkeys are TIDs, so a collision between two commenters within one post is astronomically
 // unlikely. To stay deterministic if it happens, the earliest indexed comment wins
@@ -1352,7 +1182,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 		comment.Langs = langs
 		// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 2): author_handle is scanned and then dropped
 		// — GetByRootAndRkey and
-		// ListByParentsBatch both assign it to comment.CommenterHandle here. Callers of this
+		// HydrateComments both assign it to comment.CommenterHandle here. Callers of this
 		// method get the empty string and the LEFT JOIN is paid for nothing.
 		// (see TestCommentRepo_GetByURIsBatchDropsTheAuthorHandle)
 		result[comment.URI] = &comment
@@ -1365,93 +1195,19 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 	return result, nil
 }
 
-// ListByParentsBatch retrieves direct replies to multiple parents in a single query
-// Groups results by parent URI to prevent N+1 queries when loading nested replies
-// Uses window functions to limit results per parent efficiently
-func (r *postgresCommentRepo) ListByParentsBatch(
-	ctx context.Context,
-	parentURIs []string,
-	sort string,
-	limitPerParent int,
-	viewerDID string,
-) (map[string][]*comments.Comment, error) {
-	if len(parentURIs) == 0 {
-		return make(map[string][]*comments.Comment), nil
+// HydrateComments returns the comments at uris in input order, dropping
+// missing rows and rows by authors the viewer blocks. A URI listed twice is
+// returned once, at its first position. Deleted comments are included (they
+// keep thread structure) and carry the author handle and CommenterRestricted,
+// as the list reads do.
+func (r *postgresCommentRepo) HydrateComments(ctx context.Context, uris []string, viewerDID string) ([]*comments.Comment, error) {
+	if len(uris) == 0 {
+		return []*comments.Comment{}, nil
 	}
-
-	// Each parent's replies are ranked and limited on their own (LATERAL ... LIMIT),
-	// so the top and new sorts read just limitPerParent rows per parent straight off
-	// idx_comments_parent_score / idx_comments_parent. The window-function form this
-	// replaced ranked, joined and materialized EVERY reply of every parent before
-	// discarding all but a handful — thousands of full rows for one popular comment.
-	// Hot still ranks each parent's replies, as it must, but no longer joins users
-	// or carries full rows for the ones it drops.
-	//
-	// The outer ORDER BY restores the per-parent order the LIMIT chose; the callers
-	// group rows by parent in the order they arrive.
-	var rankColumn, innerOrderBy, outerOrderBy string
-	switch sort {
-	case "top":
-		rankColumn = `NULL::numeric`
-		innerOrderBy = `c.score DESC, c.created_at DESC, c.uri DESC`
-		outerOrderBy = `c.score DESC, c.created_at DESC, c.uri DESC`
-	case "new":
-		rankColumn = `NULL::numeric`
-		innerOrderBy = `c.created_at DESC, c.uri DESC`
-		outerOrderBy = `c.created_at DESC, c.uri DESC`
-	default:
-		// "hot", and deliberately any unrecognised sort — see the KNOWN DEFECT note in buildCommentSortClause
-		rankColumn = commentHotRankSQL("c", "NOW()")
-		innerOrderBy = `hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
-		outerOrderBy = `c.hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
-	}
-
-	// Build optional viewer block filter (only when authenticated viewer is present)
-	// $1=parentURIs, $2=limitPerParent, $3=the account-ban authority, $4=viewer
-	var viewerFilter string
-	var viewerArgs []interface{}
-	if viewerDID != "" {
-		viewerParamIdx := 4 // after $1=parentURIs, $2=limitPerParent and $3=the authority
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = c.commenter_did)", viewerParamIdx)
-		viewerArgs = append(viewerArgs, viewerDID)
-	}
-
-	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
-	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
-	// DISTINCT keeps a parent listed twice from returning its replies twice, as = ANY did.
-	query := fmt.Sprintf(`
-		SELECT
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
-			c.hot_rank, COALESCE(u.handle, c.commenter_did) AS author_handle,
-			%s AS commenter_restricted
-		FROM (SELECT DISTINCT unnest($1::text[]) AS uri) AS parent
-		CROSS JOIN LATERAL (
-			SELECT
-				c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-				c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-				c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-				c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
-				c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-				%s AS hot_rank
-			FROM comments c
-			WHERE c.parent_uri = parent.uri
-				%s
-			ORDER BY %s
-			LIMIT $2
-		) c
-		LEFT JOIN users u ON c.commenter_did = u.did
-		ORDER BY c.parent_uri, %s
-	`, accountRestrictedSQL("c.commenter_did", "$3"), rankColumn, viewerFilter, innerOrderBy, outerOrderBy)
-
-	queryArgs := []interface{}{pq.Array(parentURIs), limitPerParent, r.authorityDID}
-	queryArgs = append(queryArgs, viewerArgs...)
-	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
+	query, args := r.hydrateQuery(uris, viewerDID)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to batch query comments by parents: %w", err)
+		return nil, fmt.Errorf("failed to hydrate comments: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -1459,12 +1215,10 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		}
 	}()
 
-	// Group results by parent URI
-	result := make(map[string][]*comments.Comment)
+	byURI := make(map[string]*comments.Comment, len(uris))
 	for rows.Next() {
 		var comment comments.Comment
 		var langs pq.StringArray
-		var hotRank sql.NullFloat64
 		var authorHandle string
 
 		err := rows.Scan(
@@ -1473,7 +1227,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
 			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy, &comment.HideReason,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
-			&hotRank, &authorHandle, &comment.CommenterRestricted,
+			&authorHandle, &comment.CommenterRestricted,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comment: %w", err)
@@ -1481,16 +1235,49 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 
 		comment.Langs = langs
 		comment.CommenterHandle = authorHandle
-
-		// Group by parent URI
-		result[comment.ParentURI] = append(result[comment.ParentURI], &comment)
+		byURI[comment.URI] = &comment
 	}
-
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating comments: %w", err)
 	}
 
+	result := make([]*comments.Comment, 0, len(byURI))
+	for _, uri := range uris {
+		if comment, found := byURI[uri]; found {
+			result = append(result, comment)
+			delete(byURI, uri)
+		}
+	}
 	return result, nil
+}
+
+// hydrateQuery builds the SQL and arguments HydrateComments runs for uris. It
+// reads comments through the unique uri index only. The cost test EXPLAINs it.
+func (r *postgresCommentRepo) hydrateQuery(uris []string, viewerDID string) (string, []any) {
+	args := []any{pq.Array(uris), r.authorityDID}
+	var viewerFilter string
+	if viewerDID != "" {
+		args = append(args, viewerDID)
+		viewerFilter = "AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $3 AND blocked_did = c.commenter_did)"
+	}
+
+	// LEFT JOIN prevents data loss when the user record hasn't been indexed yet
+	// (out-of-order Jetstream events); COALESCE falls back to the DID.
+	query := fmt.Sprintf(`
+		SELECT
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by, c.hide_reason,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
+			COALESCE(u.handle, c.commenter_did) AS author_handle,
+			%s AS commenter_restricted
+		FROM comments c
+		LEFT JOIN users u ON c.commenter_did = u.did
+		WHERE c.uri = ANY($1::text[])
+			%s
+	`, accountRestrictedSQL("c.commenter_did", "$2"), viewerFilter)
+	return query, args
 }
 
 // ActiveRemovalsByURIs returns the active removal sources of each URI.

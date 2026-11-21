@@ -5,6 +5,7 @@ import (
 
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/feedgen"
 )
 
 // errorMapper maps comment service errors to XRPC responses.
@@ -49,6 +50,13 @@ var errorMapper = xrpc.NewMapper("comments",
 	// The lexicon failure of the record about to be written, outside its embed.
 	xrpc.SentinelDetail(comments.ErrInvalidRecord, http.StatusBadRequest,
 		"InvalidRequest"),
+	// Comment feed resolution (getComments feed/sort).
+	xrpc.Sentinel(feedgen.ErrUnknownFeed, http.StatusBadRequest,
+		"UnknownFeed", "The feed is not a registered comment generator"),
+	xrpc.Sentinel(feedgen.ErrUnsupportedFeedScope, http.StatusBadRequest,
+		"UnsupportedFeedScope", "The feed does not serve comment threads"),
+	xrpc.Sentinel(comments.ErrTimeframeNotSupported, http.StatusBadRequest,
+		"InvalidRequest", "timeframe can only be used with the comments-top feed"),
 	// Fixed message: the repository layer wraps this one with detail the client
 	// has no use for.
 	xrpc.Sentinel(comments.ErrInvalidCursor, http.StatusBadRequest,

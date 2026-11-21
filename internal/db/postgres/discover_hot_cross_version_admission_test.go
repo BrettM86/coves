@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
@@ -28,8 +27,8 @@ func TestDiscoverRepo_HotBuildAndCandidateAdmissionSerializesAcrossAlgorithmVers
 
 	results := make(chan discoverHotRequestResult, 1)
 	go func() {
-		feed, cursor, err := NewDiscoverRepository(db, "cross-version-build-admission-secret").GetDiscover(
-			context.Background(), discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+		feed, cursor, err := getDiscoverHotViaGenerator(
+			context.Background(), NewDiscoverRepository(db, "cross-version-build-admission-secret").(*postgresDiscoverRepo), discoverHotTestRequest{Limit: 10})
 		results <- discoverHotRequestResult{feed: discoverURIs(feed), cursor: cursor, err: err}
 	}()
 
@@ -48,9 +47,8 @@ func TestDiscoverRepo_HotCheckpointAdmissionSerializesAcrossAlgorithmVersions(t 
 
 	db := testkit.DB(t)
 	expected := seedDiscoverHotSnapshotCandidates(t, db, "cross-version-checkpoint-admission", []int{300, 200, 100})
-	repository := NewDiscoverRepository(db, "cross-version-checkpoint-admission-secret")
-	firstPage, inputCursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
-		Sort:  "hot",
+	repository := NewDiscoverRepository(db, "cross-version-checkpoint-admission-secret").(*postgresDiscoverRepo)
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(context.Background(), repository, discoverHotTestRequest{
 		Limit: 1,
 	})
 	require.NoError(t, err)
@@ -61,8 +59,8 @@ func TestDiscoverRepo_HotCheckpointAdmissionSerializesAcrossAlgorithmVersions(t 
 	lockConnection, lockHolderPID := holdDiscoverHotAdmissionLock(t, db, lockKey)
 	results := make(chan discoverHotRequestResult, 1)
 	go func() {
-		feed, cursor, err := NewDiscoverRepository(db, "cross-version-checkpoint-admission-secret").GetDiscover(
-			context.Background(), discover.GetDiscoverRequest{Sort: "hot", Limit: 1, Cursor: inputCursor})
+		feed, cursor, err := getDiscoverHotViaGenerator(
+			context.Background(), NewDiscoverRepository(db, "cross-version-checkpoint-admission-secret").(*postgresDiscoverRepo), discoverHotTestRequest{Limit: 1, Cursor: inputCursor})
 		results <- discoverHotRequestResult{feed: discoverURIs(feed), cursor: cursor, err: err}
 	}()
 

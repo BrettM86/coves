@@ -39,7 +39,7 @@ func TestCommentServiceGetCommentsAttributesAccountBanHideToInstance(t *testing.
 			userRepo.users[commenter] = createTestUser(commenter, "author.test")
 			postRepo := newMockPostRepo()
 			postRepo.posts[request.PostURI] = createTestPost(request.PostURI, "did:plc:postauthor", "did:plc:community")
-			service := NewCommentService(repo, userRepo, postRepo, newMockCommunityRepo(), nil, nil, nil, WithInstanceDID(moderationViewInstanceDID))
+			service := NewCommentService(repo, userRepo, postRepo, newMockCommunityRepo(), nil, nil, nil, WithInstanceDID(moderationViewInstanceDID), withMockCommentFeeds(repo))
 
 			response, err := service.GetComments(context.Background(), request)
 			require.NoError(t, err)

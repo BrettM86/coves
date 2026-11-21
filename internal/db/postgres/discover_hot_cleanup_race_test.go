@@ -24,7 +24,7 @@ func TestDiscoverRepo_HotContinuationPinsSnapshotAgainstConcurrentCleanup(t *tes
 	repository := NewDiscoverRepository(db, "cleanup-race-secret").(*postgresDiscoverRepo)
 	repository.discoverHotWorkDeadline = 10 * time.Second
 
-	firstPage, inputCursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 1})
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{Limit: 1})
 	require.NoError(t, err)
 	require.Equal(t, expected[:1], discoverURIs(firstPage))
 	require.NotNil(t, inputCursor)
@@ -54,14 +54,13 @@ func TestDiscoverRepo_HotContinuationPinsSnapshotAgainstConcurrentCleanup(t *tes
 	require.NoError(t, err)
 
 	type continuationResult struct {
-		feed   []*discover.FeedViewPost
+		feed   []*discoverHotTestItem
 		cursor *string
 		err    error
 	}
 	continuationResults := make(chan continuationResult, 1)
 	go func() {
-		feed, cursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{
-			Sort:   "hot",
+		feed, cursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
 			Limit:  1,
 			Cursor: inputCursor,
 		})
@@ -126,8 +125,7 @@ func TestDiscoverRepo_HotContinuationPinsSnapshotAgainstConcurrentCleanup(t *tes
 	updated, err := updateResult.RowsAffected()
 	require.NoError(t, err)
 	require.EqualValues(t, 1, updated, "the admitted continuation must retain its snapshot")
-	remaining, finalCursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{
-		Sort:   "hot",
+	remaining, finalCursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
 		Limit:  10,
 		Cursor: result.cursor,
 	})
@@ -146,7 +144,7 @@ func TestDiscoverRepo_HotContinuationRechecksExpiryAfterWaitingForSnapshotLock(t
 	repository := NewDiscoverRepository(db, "cleanup-expiry-lock-secret").(*postgresDiscoverRepo)
 	repository.discoverHotWorkDeadline = 10 * time.Second
 
-	firstPage, inputCursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{Sort: "hot", Limit: 1})
+	firstPage, inputCursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{Limit: 1})
 	require.NoError(t, err)
 	require.Equal(t, expected[:1], discoverURIs(firstPage))
 	require.NotNil(t, inputCursor)
@@ -175,14 +173,13 @@ func TestDiscoverRepo_HotContinuationRechecksExpiryAfterWaitingForSnapshotLock(t
 	require.NoError(t, err)
 
 	type continuationResult struct {
-		feed   []*discover.FeedViewPost
+		feed   []*discoverHotTestItem
 		cursor *string
 		err    error
 	}
 	continuationResults := make(chan continuationResult, 1)
 	go func() {
-		feed, cursor, err := repository.GetDiscover(ctx, discover.GetDiscoverRequest{
-			Sort:   "hot",
+		feed, cursor, err := getDiscoverHotViaGenerator(ctx, repository, discoverHotTestRequest{
 			Limit:  1,
 			Cursor: inputCursor,
 		})

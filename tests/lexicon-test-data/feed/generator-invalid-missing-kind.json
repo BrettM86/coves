@@ -1,0 +1,7 @@
+{
+  "$type": "social.coves.feed.generator",
+  "did": "did:web:feeds.example.com",
+  "displayName": "Hot This Week",
+  "scopes": ["all"],
+  "createdAt": "2026-11-18T12:00:00Z"
+}

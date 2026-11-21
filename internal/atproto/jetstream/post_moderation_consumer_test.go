@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
@@ -348,10 +348,15 @@ func (f postModerationConsumerFixture) assertReadPaths(t *testing.T, viewerDID s
 		require.NotNil(t, results[0].NotFound, "a deleted post, or one this viewer could not see before the removal, must be notFound")
 		assert.Nil(t, results[0].Moderated)
 	}
-	feed, _, err := postgres.NewCommunityFeedRepository(f.db, "post-moderation-consumer-cursor").GetCommunityFeed(t.Context(),
-		communityFeeds.GetCommunityFeedRequest{Community: pv2Community, Sort: "new", Timeframe: "all", Limit: 10})
+	// The community feed, sort new, through getFeed's built-in new generator.
+	registry := feedgen.NewRegistry(fixtures.InstanceDID(), feedgen.NewBuiltin(postgres.NewNewGenerator(f.db)))
+	feedService := feedgen.NewService(registry, postgres.NewPostHydrator(f.db), postgres.NewCursorSigner("post-moderation-consumer-cursor"))
+	feed, err := feedService.GetFeed(t.Context(), feedgen.GetFeedRequest{
+		Scope: feedgen.Scope{Name: feedgen.ScopeCommunity, CommunityDID: pv2Community},
+		Feed:  registry.URI("new"), Limit: 10,
+	})
 	require.NoError(t, err)
-	for _, item := range feed {
+	for _, item := range feed.Feed {
 		assert.NotEqual(t, f.uri, item.Post.URI, "removed or deleted post must not appear in the community feed")
 	}
 	state, err := f.moderator.GetSubjectState(t.Context(), f.uri)

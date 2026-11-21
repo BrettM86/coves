@@ -11,9 +11,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 
 	coreerrors "Coves/internal/core/errors"
 )
@@ -26,8 +24,6 @@ func domainValidationErrors() map[string]error {
 		"communities":    communities.NewValidationError("name", "must not be empty"),
 		"aggregators":    aggregators.NewValidationError("aggregatorDid", "is required"),
 		"communityFeeds": communityFeeds.NewValidationError("limit", "out of range"),
-		"discover":       discover.NewValidationError("cursor", "is malformed"),
-		"timeline":       timeline.NewValidationError("cursor", "is malformed"),
 	}
 }
 
@@ -73,8 +69,6 @@ func TestDomainPredicatesAgreeWithShared(t *testing.T) {
 		"communities":    communities.IsValidationError,
 		"aggregators":    aggregators.IsValidationError,
 		"communityFeeds": communityFeeds.IsValidationError,
-		"discover":       discover.IsValidationError,
-		"timeline":       timeline.IsValidationError,
 	}
 
 	for domain, err := range domainValidationErrors() {

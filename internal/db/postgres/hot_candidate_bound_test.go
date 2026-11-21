@@ -8,9 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/timeline"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
@@ -94,10 +91,10 @@ func TestDiscoverRepo_HotCandidateBoundServesNewestPosts(t *testing.T) {
 	oldestKept := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "oldestkept", now.Add(-3*time.Hour), 10_000)
 	seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "excluded", now.Add(-190*time.Minute), hotBoundExcludedScore)
 
-	repository := NewDiscoverRepository(db, "hot-bound-secret").(*postgresDiscoverRepo)
-	repository.discoverHotCandidateLimit = 3
+	repository := newDiscoverViaFeed(db)
+	repository.discoverRepo.discoverHotCandidateLimit = 3
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	feed, cursor, err := repository.GetDiscoverViaFeed(context.Background(), discoverViaFeedRequest{Sort: "hot", Limit: 10})
 	require.NoError(t, err, "running past the candidate bound must not be an error")
 	assert.Equal(t, []string{oldestKept, middle, newest}, discoverURIs(feed),
 		"the newest three are served in rank order, and the older high-score post is not among them")
@@ -119,10 +116,10 @@ func TestDiscoverRepo_HotCandidateBoundTieAtCutoffResolvesByURIDescending(t *tes
 	seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "tiea", tiedAt, 100_000)
 	tiedHigherURI := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "tieb", tiedAt, 1_000)
 
-	repository := NewDiscoverRepository(db, "hot-bound-secret").(*postgresDiscoverRepo)
-	repository.discoverHotCandidateLimit = 2
+	repository := newDiscoverViaFeed(db)
+	repository.discoverRepo.discoverHotCandidateLimit = 2
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{Sort: "hot", Limit: 10})
+	feed, cursor, err := repository.GetDiscoverViaFeed(context.Background(), discoverViaFeedRequest{Sort: "hot", Limit: 10})
 	require.NoError(t, err)
 	assert.Equal(t, []string{tiedHigherURI, newest}, discoverURIs(feed))
 	assert.Nil(t, cursor)
@@ -147,10 +144,10 @@ func TestDiscoverRepo_HotCandidateBoundCountsOnlyVisiblePosts(t *testing.T) {
 	olderKept := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "olderkept", now.Add(-2*time.Hour), 1_000)
 	seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "excluded", now.Add(-3*time.Hour), hotBoundExcludedScore)
 
-	repository := NewDiscoverRepository(db, "hot-bound-secret").(*postgresDiscoverRepo)
-	repository.discoverHotCandidateLimit = 2
+	repository := newDiscoverViaFeed(db)
+	repository.discoverRepo.discoverHotCandidateLimit = 2
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+	feed, cursor, err := repository.GetDiscoverViaFeed(context.Background(), discoverViaFeedRequest{
 		ViewerDID: cast.viewer,
 		Sort:      "hot",
 		Limit:     10,
@@ -182,11 +179,11 @@ func openHotBoundTimeline(t *testing.T, db *sql.DB, viewerDID, communityDID stri
 	t.Helper()
 
 	subscribeToCommunity(t, db, viewerDID, communityDID)
-	repository := NewTimelineRepository(db, "hot-bound-secret", options...).(*postgresTimelineRepo)
-	repository.hotCandidateLimit = candidateLimit
+	repository := newTimelineViaFeed(db, options...)
+	repository.setHotCandidateLimit(candidateLimit)
 	return func(t *testing.T, sort string, limit int, cursor *string) ([]string, *string) {
 		t.Helper()
-		feed, nextCursor, err := repository.GetTimeline(context.Background(), timeline.GetTimelineRequest{
+		feed, nextCursor, err := repository.GetTimeline(context.Background(), timelineViaFeedRequest{
 			UserDID: viewerDID,
 			Sort:    sort,
 			Limit:   limit,
@@ -200,11 +197,11 @@ func openHotBoundTimeline(t *testing.T, db *sql.DB, viewerDID, communityDID stri
 func openHotBoundCommunityFeed(t *testing.T, db *sql.DB, viewerDID, communityDID string, candidateLimit int, options ...AccountRestrictionOption) hotBoundRead {
 	t.Helper()
 
-	repository := NewCommunityFeedRepository(db, "hot-bound-secret", options...).(*postgresFeedRepo)
-	repository.hotCandidateLimit = candidateLimit
+	repository := newCommunityFeedViaFeed(db, options...)
+	repository.setHotCandidateLimit(candidateLimit)
 	return func(t *testing.T, sort string, limit int, cursor *string) ([]string, *string) {
 		t.Helper()
-		feed, nextCursor, err := repository.GetCommunityFeed(context.Background(), communityFeeds.GetCommunityFeedRequest{
+		feed, nextCursor, err := repository.GetCommunityFeedViaFeed(context.Background(), communityFeedViaFeedRequest{
 			Community: communityDID,
 			ViewerDID: viewerDID,
 			Sort:      sort,
@@ -497,11 +494,10 @@ func TestDiscoverRepo_HotCandidateBoundAppliesTheAccountBanAuthority(t *testing.
 	olderKept := seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "olderkept", now.Add(-2*time.Hour), 1_000)
 	seedHotBoundDiscoverPost(t, db, cast.viewer, cast.thirdParty, "excluded", now.Add(-3*time.Hour), hotBoundExcludedScore)
 
-	repository := NewDiscoverRepository(db, "hot-bound-secret",
-		WithAccountRestrictionAuthority(hotBoundAuthority)).(*postgresDiscoverRepo)
-	repository.discoverHotCandidateLimit = 2
+	repository := newDiscoverViaFeed(db, WithAccountRestrictionAuthority(hotBoundAuthority))
+	repository.discoverRepo.discoverHotCandidateLimit = 2
 
-	feed, cursor, err := repository.GetDiscover(context.Background(), discover.GetDiscoverRequest{
+	feed, cursor, err := repository.GetDiscoverViaFeed(context.Background(), discoverViaFeedRequest{
 		ViewerDID: cast.viewer,
 		Sort:      "hot",
 		Limit:     10,

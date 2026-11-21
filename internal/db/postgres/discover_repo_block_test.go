@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/core/discover"
 	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
@@ -19,15 +18,7 @@ import (
 // for why there is one of these per read path.
 
 // discoverURIs renders a discover feed as the URIs it returned.
-func discoverURIs(feed []*discover.FeedViewPost) []string {
-	uris := make([]string, 0, len(feed))
-	for _, item := range feed {
-		if item.Post != nil {
-			uris = append(uris, item.Post.URI)
-		}
-	}
-	return uris
-}
+func discoverURIs[T feedItem](feed []T) []string { return feedItemURIs(feed) }
 
 func TestDiscoverRepo_ViewerBlockFiltering(t *testing.T) {
 	t.Parallel()
@@ -44,10 +35,10 @@ func TestDiscoverRepo_ViewerBlockFiltering(t *testing.T) {
 	thirdPartyPost := seedFilterablePost(t, db, communityDID, cast.thirdParty, "discthird", base.Add(time.Hour))
 	viewerPost := seedFilterablePost(t, db, communityDID, cast.viewer, "discviewer", base.Add(2*time.Hour))
 
-	repo := NewDiscoverRepository(db, "test-secret")
+	repo := newDiscoverViaFeed(db)
 	read := func(t *testing.T, viewerDID string) []string {
 		t.Helper()
-		feed, _, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		feed, _, err := repo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 			ViewerDID: viewerDID,
 			Sort:      "new",
 			Limit:     50,
@@ -97,10 +88,10 @@ func TestDiscoverRepo_CommunityBlockFiltering(t *testing.T) {
 	visibleCommunityPost := seedFilterablePost(t, db, visibleCommunityDID, cast.thirdParty, "disccommunityvisible", base.Add(2*time.Hour))
 	allPosts := []string{blockedCommunityPost, viewerPostInBlockedCommunity, visibleCommunityPost}
 
-	repo := NewDiscoverRepository(db, "test-secret")
+	repo := newDiscoverViaFeed(db)
 	read := func(t *testing.T, viewerDID string) []string {
 		t.Helper()
-		feed, _, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		feed, _, err := repo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 			ViewerDID: viewerDID,
 			Sort:      "new",
 			Limit:     50,
@@ -192,10 +183,10 @@ func TestDiscoverRepo_BlockedPostsDoNotConsumeAPageSlot(t *testing.T) {
 
 	insertUserBlock(t, db, cast.viewer, cast.blocked)
 
-	repo := NewDiscoverRepository(db, "test-secret")
+	repo := newDiscoverViaFeed(db)
 	page := func(t *testing.T, cursor *string) ([]string, *string) {
 		t.Helper()
-		feed, next, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		feed, next, err := repo.GetDiscoverViaFeed(ctx, discoverViaFeedRequest{
 			ViewerDID: cast.viewer, Sort: "new", Limit: 2, Cursor: cursor,
 		})
 		require.NoError(t, err)
@@ -267,12 +258,13 @@ func TestDiscoverRepo_BlockedCommunityPostsDoNotConsumeAPageSlot(t *testing.T) {
 
 	insertCommunityBlock(t, db, cast.viewer, blockedCommunityDID)
 
-	repo := NewDiscoverRepository(db, "test-secret")
+	repo := newDiscoverViaFeed(db)
 	page := func(t *testing.T, sort, timeframe string, cursor *string) ([]string, *string) {
 		t.Helper()
-		feed, next, err := repo.GetDiscover(ctx, discover.GetDiscoverRequest{
+		req := discoverViaFeedRequest{
 			ViewerDID: cast.viewer, Sort: sort, Timeframe: timeframe, Limit: 2, Cursor: cursor,
-		})
+		}
+		feed, next, err := repo.GetDiscoverViaFeed(ctx, req)
 		require.NoError(t, err)
 		return discoverURIs(feed), next
 	}

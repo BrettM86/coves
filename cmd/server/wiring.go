@@ -27,13 +27,13 @@ import (
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
+	"Coves/internal/core/feedgen"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/labels"
 	"Coves/internal/core/media"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
@@ -175,8 +175,8 @@ type application struct {
 	communityRecordWriteQueue  *moderation.CommunityRecordWriteQueue
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
-	timelineService            timeline.Service
-	discoverService            discover.Service
+	feedGeneratorService       feedgen.Service
+	feedRegistry               *feedgen.Registry
 	discoverHotStateCleaner    discover.DiscoverHotStateCleaner
 	aggregatorService          aggregators.Service
 	apiKeyService              *aggregators.APIKeyService
@@ -553,7 +553,6 @@ func (a *application) buildServices(ctx context.Context) error {
 		blobService, a.mediaPipeline,
 		communityPDSOptions...,
 	)
-	a.authenticateInstanceWithPDS(ctx)
 
 	a.aggregatorService = aggregators.NewAggregatorService(a.aggregatorRepo, a.communityService)
 	a.apiKeyService = aggregators.NewAPIKeyService(a.aggregatorRepo, a.oauthClient.ClientApp)
@@ -679,15 +678,6 @@ func (a *application) buildServices(ctx context.Context) error {
 		votes.WithCommunityRemovals(postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID)),
 		votes.WithAccountBans(postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)))
 
-	a.commentService = comments.NewCommentService(
-		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,
-		a.oauthClient, a.oauthStore, nil,
-		comments.WithCommunityBans(postgresRepo.NewCommunityBanRepository(a.db)),
-		comments.WithCommunityRemovals(postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID)),
-		comments.WithAccountBans(postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)),
-		comments.WithInstanceDID(a.cfg.Instance.DID),
-		comments.WithLexiconValidator(lexiconValidator),
-	)
 	a.notificationService = notifications.NewService(a.notificationRepo.(notifications.ReadRepository))
 	a.notificationListService = notifications.NewListService(a.notificationRepo.(notifications.ReadRepository), a.userRepo, a.postRepo, a.commentRepo)
 	a.preferencesService = notifications.NewPreferencesService(a.notificationRepo.(notifications.PreferencesRepository))
@@ -707,19 +697,50 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.feedService = communityFeeds.NewCommunityFeedService(
 		postgresRepo.NewCommunityFeedRepository(a.db, a.cfg.CursorSecret, accountRestriction), a.communityService,
 	)
-	a.timelineService = timeline.NewTimelineService(
-		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret, accountRestriction),
-	)
 	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret, accountRestriction)
-	discoverHotStateCleaner, ok := discoverRepository.(discover.DiscoverHotStateCleaner)
-	if !ok {
-		return fmt.Errorf("discover repository does not support expired Hot state cleanup")
-	}
-	a.discoverHotStateCleaner = discoverHotStateCleaner
-	a.discoverService = discover.NewDiscoverService(discoverRepository)
+	a.discoverHotStateCleaner = discoverRepository
+
+	// getFeed: built-in generators addressed by INSTANCE_DID, ranking with the
+	// same cursor secret and account restriction as searchPosts above.
+	feedRegistry := feedgen.NewRegistry(a.cfg.Instance.DID,
+		productionBuiltins(a.db, accountRestriction, discoverRepository)...)
+	a.feedGeneratorService = feedgen.NewService(feedRegistry,
+		postgresRepo.NewPostHydrator(a.db, accountRestriction),
+		postgresRepo.NewCursorSigner(a.cfg.CursorSecret))
+	syncBuiltinFeedRecords(ctx, a.cfg.PDS,
+		passwordRecordLogin(pds.PrivateHostOptions(a.allowPrivateHosts())...),
+		feedRegistry, time.Now())
+	a.feedRegistry = feedRegistry
+
+	// getComments resolves its comment generator (feed or sort) from the same
+	// registry, so it is built after it.
+	a.commentService = comments.NewCommentService(
+		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,
+		a.oauthClient, a.oauthStore, nil,
+		comments.WithCommunityBans(postgresRepo.NewCommunityBanRepository(a.db)),
+		comments.WithCommunityRemovals(postgresRepo.NewCommunityRemovalReader(a.db, a.cfg.Instance.DID)),
+		comments.WithAccountBans(postgresRepo.NewAccountBanReader(a.db, a.cfg.Instance.DID)),
+		comments.WithInstanceDID(a.cfg.Instance.DID),
+		comments.WithLexiconValidator(lexiconValidator),
+		comments.WithFeedRegistry(feedRegistry),
+	)
 
 	slog.Info("domain services initialized")
 	return nil
+}
+
+// productionBuiltins is the built-in generator set the production getFeed and
+// getComments serve and declare records for.
+func productionBuiltins(db *sql.DB, accountRestriction postgresRepo.AccountRestrictionOption, discoverHot feedgen.HydratedPostGenerator) []feedgen.Builtin {
+	return []feedgen.Builtin{
+		feedgen.HotBuiltin(postgresRepo.NewHotGenerator(db, accountRestriction)),
+		feedgen.NewBuiltin(postgresRepo.NewNewGenerator(db, accountRestriction)),
+		feedgen.TopBuiltin(postgresRepo.NewTopGenerator(db, accountRestriction)),
+		feedgen.DiscoverHotBuiltin(discoverHot),
+		feedgen.CommentsHotBuiltin(postgresRepo.NewCommentsHotGenerator(db)),
+		feedgen.CommentsTopBuiltin(postgresRepo.NewCommentsTopGenerator(db)),
+		feedgen.CommentsNewBuiltin(postgresRepo.NewCommentsNewGenerator(db)),
+	}
 }
 
 // buildAcceptanceEngine wires the §5.6 acceptance engine and the driver that
@@ -933,52 +954,6 @@ func (a *application) buildDualAuth() {
 
 	slog.Info("dual auth middleware initialized (OAuth + service JWT + API keys)",
 		"service_jwt_audience", a.cfg.Instance.DID)
-}
-
-// authenticateInstanceWithPDS logs the instance into its own PDS account and
-// hands the resulting access token to the community service.
-//
-// CAVEAT, and the reason none of the messages below claim a capability: the
-// token this obtains is currently inert. communityService stores it in
-// pdsAccessToken, and nothing reads that field — community creation actually
-// authenticates with the per-community PDS accounts issued by
-// PDSAccountProvisioner, each carrying its own token and refresh path. This
-// call is therefore a credential check, not a prerequisite for anything.
-//
-// It is kept rather than deleted because the credentials are still worth
-// validating at boot, and instance-owned writes are a plausible future need.
-// If that need does not materialise, delete this along with authenticateWithPDS,
-// SetPDSAccessToken, and the pdsAccessToken field. What must not happen is the
-// previous state: log lines confidently reporting that community creation is
-// disabled, or will fail, or is now enabled — none of which were true, and each
-// of which sent an operator chasing a phantom.
-//
-// Failure is non-fatal for the same reason: nothing downstream depends on it.
-func (a *application) authenticateInstanceWithPDS(ctx context.Context) {
-	if !a.cfg.PDS.HasInstanceCredentials() {
-		slog.Info("PDS_INSTANCE_HANDLE / PDS_INSTANCE_PASSWORD not set; " +
-			"skipping the instance PDS credential check")
-		return
-	}
-
-	accessToken, err := authenticateWithPDS(ctx, a.cfg.PDS.URL,
-		a.cfg.PDS.InstanceHandle, a.cfg.PDS.InstancePassword)
-	if err != nil {
-		slog.Warn("instance PDS credential check failed; no current feature depends on it",
-			"instance_did", a.cfg.Instance.DID,
-			"pds_url", a.cfg.PDS.URL,
-			"error", err,
-		)
-		return
-	}
-
-	setter, ok := a.communityService.(interface{ SetPDSAccessToken(string) })
-	if !ok {
-		slog.Warn("community service does not accept a PDS access token")
-		return
-	}
-	setter.SetPDSAccessToken(accessToken)
-	slog.Info("instance authenticated with PDS", "instance_did", a.cfg.Instance.DID)
 }
 
 // buildImageProxy sets up the resizing image proxy and publishes the settings
