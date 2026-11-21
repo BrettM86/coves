@@ -44,7 +44,7 @@ docker run --rm -e ACME_EMAIL=edge-test@example.invalid \
 		>"$WORKDIR/caddy.json"
 
 # Stub upstream for every proxied service, one process on three ports:
-# tidepool (80, also approves on-demand certs), coves-prod-frontend (3000) and
+# tidepool (80), coves-prod-frontend (3000) and
 # appview (8080, health_uri /xrpc/_health). It reads the whole request body,
 # counts the bytes it actually read (a peer that disconnects mid-body yields a
 # short count; Content-Length is never echoed), replies
@@ -159,9 +159,9 @@ docker run -d --name "$NAME-caddy" --network "$NETWORK" -p 127.0.0.1::443 \
 
 PORT="$(docker port "$NAME-caddy" 443/tcp | head -1 | sed 's/.*://')"
 
-# Hosts covering each tdpl.io site block: the apex, a pre-issued instance
-# wildcard, and the on-demand catch-all (two-label and one-label forms).
-HOSTS=(tdpl.io alice.lemmy-world.tdpl.io bob.not-listed-instance.tdpl.io single.tdpl.io)
+# The tdpl.io apex is the only tdpl.io site block. Bridged handles resolve
+# over Tidepool's own DNS and need no certificate.
+HOSTS=(tdpl.io)
 
 request() { # host method path -> "status body"
 	local host="$1" method="$2" path="$3" body status

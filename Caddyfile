@@ -9,25 +9,15 @@
 #   - pds.coves.me: PDS canonical hostname (for relay registration)
 #   - coves.me: PDS legacy hostname (kept for compatibility)
 
-# Global options: gate on-demand certificate issuance (used by the Tidepool
-# handle-subdomain block below). Caddy calls this endpoint with ?domain=<host>
-# before requesting a cert; Tidepool answers 200 only for handles it actually
-# serves. Without the gate, the *.tdpl.io wildcard DNS would let any probe of
-# a random subdomain burn a Let's Encrypt issuance attempt.
+# Global options.
 {
     # ACME account email. Also required (since Caddy 2.8) for ZeroSSL to be
     # provisioned as a fallback CA — without it Let's Encrypt is the ONLY
-    # issuer, and hitting LE's 50-new-certs-per-domain-per-week limit with
-    # on-demand handle certs would hard-fail new handshakes instead of
-    # falling back. {$ACME_EMAIL} is substituted from the caddy container's
+    # issuer. {$ACME_EMAIL} is substituted from the caddy container's
     # environment when the Caddyfile is parsed (set ACME_EMAIL in .env; a
     # role address like support@<domain> — never a personal one, this file
     # is public).
     email {$ACME_EMAIL}
-
-    on_demand_tls {
-        ask http://tidepool:80/.well-known/tidepool-tls-ask
-    }
 }
 
 # Community handle subdomains (e.g., gaming.coves.social)
@@ -367,8 +357,7 @@ coves.social {
 # orange-clouded (proxied) at Cloudflare, which is what lets an upstream scanner
 # see the media we serve. Everything else must stay DNS-only — the PDS serves
 # the atproto sync surface (firehose WebSockets, relay traffic), and tdpl.io
-# cannot be proxied at all because its on-demand handle certs need DNS pointing
-# straight at this origin. Because only /img/* exists here, the blast radius of
+# serves the bridge's ActivityPub and atproto sync surface. Because only /img/* exists here, the blast radius of
 # any CDN feature enabled on this zone is exactly the image proxy.
 #
 # TLS is issued via the existing Cloudflare DNS-01 token, which works behind the
@@ -414,7 +403,7 @@ img.coves.social {
 
 # Tidepool's /admin API is bearer-authenticated, but nothing public needs it:
 # operators call it on the box at 127.0.0.1:8091, which skips this Caddy.
-# Refuse it at the edge on every tdpl.io host so the bearer check is not the
+# Refuse it at the edge on tdpl.io so the bearer check is not the
 # only barrier. `path` matching is case-insensitive and runs on the cleaned,
 # unescaped path, so /ADMIN, //admin and /admin%2F... are caught too.
 # Checked end to end by scripts/caddy-edge-test.sh.
@@ -457,153 +446,6 @@ tdpl.io {
     }
 
     encode gzip zstd
-}
-
-# Bridged-handle subdomains: alice.lemmy-world.tdpl.io etc. — always two
-# labels below the apex (name.instance-label.tdpl.io). A wildcard cert only
-# covers ONE label level, so one *.<instance>.tdpl.io wildcard per bridged
-# instance covers all of that instance's users with a single certificate,
-# issued ahead of time via DNS-01 (requires CLOUDFLARE_API_TOKEN_TDPL, a
-# scoped token with Zone:DNS:Edit on the tdpl.io zone ONLY — separate from
-# CLOUDFLARE_API_TOKEN, which is scoped to coves.social).
-#
-# Instance list generated from production bridged_actors (2026-07-13):
-#   docker exec tidepool-prod-postgres psql -U tidepool -d tidepool -t -A -c \
-#     "SELECT DISTINCT split_part(handle,'.',2) FROM bridged_actors
-#      WHERE handle LIKE '%.tdpl.io'
-#        AND array_length(string_to_array(handle,'.'),1) = 4 ORDER BY 1"
-# Instances NOT listed here still work via the on-demand catch-all block
-# below (degraded: per-handle handshake-time issuance) — add a line here
-# when a new instance shows up, then force-recreate caddy.
-*.anarchist-nexus.tdpl.io,
-*.breakfast-haus.tdpl.io,
-*.discuss-online.tdpl.io,
-*.discuss-tchncs-de.tdpl.io,
-*.downonthestreet-eu.tdpl.io,
-*.europe-pub.tdpl.io,
-*.feddit-cl.tdpl.io,
-*.feddit-dk.tdpl.io,
-*.feddit-it.tdpl.io,
-*.feddit-nl.tdpl.io,
-*.feddit-nu.tdpl.io,
-*.feddit-org.tdpl.io,
-*.feddit-uk.tdpl.io,
-*.fedia-io.tdpl.io,
-*.growers-social.tdpl.io,
-*.hexbear-net.tdpl.io,
-*.infosec-pub.tdpl.io,
-*.jlai-lu.tdpl.io,
-*.kakera-kintsugi-moe.tdpl.io,
-*.leminal-space.tdpl.io,
-*.lemmus-org.tdpl.io,
-*.lemmy-blahaj-zone.tdpl.io,
-*.lemmy-ca.tdpl.io,
-*.lemmy-cafe.tdpl.io,
-*.lemmy-curiana-net.tdpl.io,
-*.lemmy-dbzer0-com.tdpl.io,
-*.lemmy-decronym-xyz.tdpl.io,
-*.lemmy-linuxuserspace-show.tdpl.io,
-*.lemmy-manganiello-tech.tdpl.io,
-*.lemmy-ml.tdpl.io,
-*.lemmy-nz.tdpl.io,
-*.lemmy-pt.tdpl.io,
-*.lemmy-radio.tdpl.io,
-*.lemmy-sdf-org.tdpl.io,
-*.lemmy-today.tdpl.io,
-*.lemmy-world.tdpl.io,
-*.lemmy-wtf.tdpl.io,
-*.lemmy-zip.tdpl.io,
-*.literature-cafe.tdpl.io,
-*.mander-xyz.tdpl.io,
-*.mas-to.tdpl.io,
-*.mastodon-social.tdpl.io,
-*.moist-catsweat-com.tdpl.io,
-*.multiverse-soulism-net.tdpl.io,
-*.pawb-social.tdpl.io,
-*.pie-zerojay-com.tdpl.io,
-*.piefed-blahaj-zone.tdpl.io,
-*.piefed-ca.tdpl.io,
-*.piefed-social.tdpl.io,
-*.piefed-world.tdpl.io,
-*.piefed-zeromedia-vip.tdpl.io,
-*.piefed-zip.tdpl.io,
-*.programming-dev.tdpl.io,
-*.quokk-au.tdpl.io,
-*.reddit-kokomo-cloud.tdpl.io,
-*.reddthat-com.tdpl.io,
-*.sh-itjust-works.tdpl.io,
-*.shredderfood-net.tdpl.io,
-*.slrpnk-net.tdpl.io,
-*.sopuli-xyz.tdpl.io,
-*.suppo-fi.tdpl.io,
-*.swg-empire-de.tdpl.io,
-*.tarte-nuage-libre-fr.tdpl.io,
-*.thelemmy-club.tdpl.io {
-    # force_automate: without it, NONE of the wildcards above are ever
-    # issued — the on-demand catch-all below puts *.*.tdpl.io in the same
-    # managed set, and since Caddy 2.10 a covering wildcard silently wins
-    # over its subdomains (caddytls managingWildcardFor), deferring all 64
-    # names to a policy that only issues at handshake time — i.e. never.
-    # force_automate adds these names to the automate cert loader, the
-    # documented bypass. NOTE: must be the directive argument (not a block
-    # subdirective) on Caddy <= 2.11.
-    #
-    # Two issuers, in priority order. A bare `dns` shortcut would build a
-    # SINGLE Let's Encrypt issuer with no fallback — and LE's
-    # 50-new-certs/week bucket for tdpl.io is regularly exhausted by the
-    # on-demand catch-all below, 429ing every wildcard. ZeroSSL (no
-    # per-domain weekly cap) reuses the ACME account already registered in
-    # storage by the pre-2.10 image's default fallback, so no EAB config
-    # is needed here.
-    tls force_automate {
-        issuer acme {
-            dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
-        }
-        issuer acme {
-            dir https://acme.zerossl.com/v2/DV90
-            dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
-        }
-    }
-
-    import tidepool_no_public_admin
-
-    reverse_proxy tidepool:80 {
-        header_up X-Real-IP {remote_host}
-    }
-
-    header {
-        Strict-Transport-Security "max-age=31536000"
-        X-Content-Type-Options "nosniff"
-        -Server
-    }
-}
-
-# On-demand catch-all for bridged handles on instances NOT yet listed in the
-# wildcard block above (and any single-label *.tdpl.io hosts). Certificates
-# are issued on demand at handshake time (per exact hostname, HTTP-01),
-# gated by the global on_demand_tls ask above. Degraded path: issuance
-# blocks the first handshake and draws from Let's Encrypt's
-# 50-new-certs/week bucket — add new instances to the wildcard block above
-# as they appear. Requires the *.tdpl.io DNS record to point DIRECTLY at
-# this server (no CDN proxying). Only /.well-known/atproto-did and
-# resolveHandle matter on these hosts; Tidepool answers from the Host
-# header.
-*.tdpl.io, *.*.tdpl.io {
-    tls {
-        on_demand
-    }
-
-    import tidepool_no_public_admin
-
-    reverse_proxy tidepool:80 {
-        header_up X-Real-IP {remote_host}
-    }
-
-    header {
-        Strict-Transport-Security "max-age=31536000"
-        X-Content-Type-Options "nosniff"
-        -Server
-    }
 }
 
 # PDS Domain (both hostnames point to same PDS)
