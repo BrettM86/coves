@@ -54,7 +54,7 @@ Every other actor, registered aggregators included, has `thumbnailUrl` ignored a
 
 ## Authorization in practice
 
-The first-party aggregators (Kagi News, Reddit Highlights, Bluesky Topics) run as trusted DIDs and map feeds to communities in their own `config.yaml`. They never read authorization records, and no code reads `authorization.config`. The `configSchema` in a service record is validated with JSON Schema only in the enable and updateConfig paths, which are not built.
+The first-party aggregators (Kagi News, Bluesky Topics) run as trusted DIDs and map feeds to communities in their own `config.yaml`. They never read authorization records, and no code reads `authorization.config`. The `configSchema` in a service record is validated with JSON Schema only in the enable and updateConfig paths, which are not built.
 
 `social.coves.aggregator.enable`, `disable` and `updateConfig` have published lexicons but no routes, and their service methods return `ErrNotImplemented`. Nothing in the product writes an authorization record. Authorizing a third-party registered aggregator today means writing the record into the community's repo directly with the community's own credentials.
 

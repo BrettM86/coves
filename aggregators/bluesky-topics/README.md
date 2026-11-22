@@ -6,8 +6,8 @@ lists, a Claude call decides which candidates are actually about the topic,
 and the top few on-topic posts are posted as links to their `bsky.app`
 permalinks with author attribution.
 
-Same scaffold as `../reddit-highlights`: a Python cron job in a container with
-a JSON state file for deduplication.
+It runs as a Python cron job in a container with a JSON state file for
+deduplication.
 
 ## How a run works
 
@@ -164,9 +164,7 @@ uv pip install --python .venv/bin/python -r requirements-dev.txt
 
 Tests are hermetic: HTTP through `responses`, the Anthropic client through a
 fake (plus one test through the real SDK with a mock transport), Coves through
-a fake client. `coves_client.py`, `state_manager.py`, and `uri_sanitizer.py`
-are verbatim copies from `reddit-highlights`; `kagi-news` carries its own
-variants of `coves_client.py` and `state_manager.py`.
+a fake client.
 
 ## Not in scope
 

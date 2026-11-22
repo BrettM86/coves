@@ -34,7 +34,7 @@ Start with the [project README](../README.md) and [CONTRIBUTING.md](../CONTRIBUT
 
 - [PRODUCTION_DEPLOY.md](PRODUCTION_DEPLOY.md): Compose projects, Caddy routing, and the frontend deploy.
 - [PRODUCTION_BACKUPS.md](PRODUCTION_BACKUPS.md): backup timers and restore.
-- Aggregators: [Kagi News](../aggregators/kagi-news/README.md), [Reddit Highlights](../aggregators/reddit-highlights/README.md), [Bluesky Topics](../aggregators/bluesky-topics/README.md), [account and API-key setup](../scripts/aggregator-setup/README.md).
+- Aggregators: [Kagi News](../aggregators/kagi-news/README.md), [Bluesky Topics](../aggregators/bluesky-topics/README.md), [account and API-key setup](../scripts/aggregator-setup/README.md).
 
 ## Plans
 
