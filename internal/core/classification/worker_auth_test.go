@@ -393,3 +393,49 @@ func TestWorkerRunOnce_ProviderAuthPauseResetsOnlyOnTheRefusedModel(t *testing.T
 	require.True(t, paused)
 	assert.Equal(t, clock.Now().Add(10*time.Minute), until, "the second pause is ten minutes")
 }
+
+// A request the provider refuses with 429 was never served, so it gives its
+// daily-cap reservation back; any other failure was served and stays counted.
+// Before this, 4,158 consecutive 429s used up the whole day's cap.
+func TestWorkerRunOnce_RateLimitedRequestReleasesItsReservation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		// wantCounted is the day's counted requests after the failed run.
+		wantCounted int
+		// wantResults is the results stored by a second run under the cap
+		// of one.
+		wantResults int
+	}{
+		{
+			name:        "429 releases the reservation",
+			err:         &classification.ProviderError{Code: classification.ErrorCodeRateLimited, HTTPStatus: 429},
+			wantCounted: 0,
+			wantResults: 1,
+		},
+		{
+			name:        "500 keeps the reservation",
+			err:         &classification.ProviderError{Code: classification.ErrorCodeProviderError, HTTPStatus: 500},
+			wantCounted: 1,
+			wantResults: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := &testClock{now: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)}
+			repo := &deadlineRepository{job: textPostJob(41)}
+			classifier := &scriptedClassifier{errs: []error{tt.err}}
+			worker := newConfiguredWorker(repo, classifier, clock.Now, func(cfg *classification.WorkerConfig) {
+				cfg.DailyRequestCap = 1
+			})
+
+			require.NoError(t, worker.RunOnce(context.Background()))
+			assert.Equal(t, tt.wantCounted, repo.requestsCounted("text-model", "2026-11-22"))
+
+			clock.Advance(time.Minute)
+			require.NoError(t, worker.RunOnce(context.Background()))
+			assert.Len(t, repo.results, tt.wantResults)
+			assert.Equal(t, 1, repo.requestsCounted("text-model", "2026-11-22"))
+		})
+	}
+}

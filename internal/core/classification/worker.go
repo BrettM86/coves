@@ -34,6 +34,10 @@ const codeBatchesDiscarded = "batches_discarded"
 // batches were stored as a partial result.
 const codePartialResultStored = "partial_result_stored"
 
+// codeReleaseRequestFailed is the log code of a rate-limited request whose
+// reservation could not be given back to the daily cap.
+const codeReleaseRequestFailed = "release_request_failed"
+
 // maxPendingDeferral is the longest the deferral backoff grows to, unless
 // the configured PendingDeferral is itself longer.
 const maxPendingDeferral = 6 * time.Hour
@@ -468,6 +472,11 @@ func (w *Worker) classifyBatch(ctx context.Context, job ClaimedJob, index int, r
 	content.Images = images
 	answer, err := w.classifier.Classify(ctx, content, w.policy.Questions)
 	if err != nil {
+		if ErrorCodeOf(err) == ErrorCodeRateLimited {
+			// The provider refused the request without running it, so it
+			// does not count against the cap.
+			w.releaseRequest(ctx, job, modelID, now)
+		}
 		// process records the failure with the job's progress.
 		return BatchProgress{}, false, &requestFailedError{err: err, modelID: modelID}
 	}
@@ -494,6 +503,21 @@ func (w *Worker) classifyBatch(ctx context.Context, job ClaimedJob, index int, r
 		w.logJobEnded(job)
 	}
 	return batch, stored, nil
+}
+
+// releaseRequest gives back the reservation of a request the provider
+// refused with a 429. A failed release is logged and leaves the request
+// counted; it does not change how the job's failure is handled.
+func (w *Worker) releaseRequest(ctx context.Context, job ClaimedJob, modelID string, reservedAt time.Time) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
+	defer cancel()
+	if err := w.repo.ReleaseRequest(writeCtx, modelID, reservedAt); err != nil {
+		w.logger.LogAttrs(ctx, slog.LevelWarn, "classification request reservation not released",
+			slog.String("code", codeReleaseRequestFailed),
+			slog.Int64("job_id", job.ID),
+			slog.String("model_id", modelID),
+			slog.String("error_code", failureCode(err)))
+	}
 }
 
 // fetchContext bounds a batch's image fetches so its request still fits

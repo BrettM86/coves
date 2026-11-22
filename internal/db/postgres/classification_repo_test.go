@@ -180,6 +180,68 @@ func TestClassificationReserveRequestCapsRequestsAcrossModels(t *testing.T) {
 	})
 }
 
+// TestClassificationReleaseRequestGivesBackOneReservation: a release takes
+// one request off the model's usage row for the reserved UTC date, so a
+// reservation on a full day succeeds again; it never goes below zero, does
+// nothing without a row, and leaves other dates alone.
+func TestClassificationReleaseRequestGivesBackOneReservation(t *testing.T) {
+	const (
+		modelA = "@cf/cloudflare/clef-flash"
+		modelB = "@cf/cloudflare/clef"
+	)
+	dayOne := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	dayTwo := dayOne.Add(24 * time.Hour)
+	db := testkit.DB(t)
+	repo := NewClassificationRepository(db, classificationInstanceDID)
+	reserve := func(modelID string, now time.Time) bool {
+		t.Helper()
+		reserved, err := repo.ReserveRequest(t.Context(), modelID, now, 2)
+		require.NoError(t, err)
+		return reserved
+	}
+	requestsOn := func(modelID, usageDate string) (int, bool) {
+		t.Helper()
+		var requests int
+		err := db.QueryRowContext(t.Context(), `
+			SELECT requests FROM classification_usage WHERE model_id = $1 AND usage_date = $2
+		`, modelID, usageDate).Scan(&requests)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false
+		}
+		require.NoError(t, err)
+		return requests, true
+	}
+
+	require.True(t, reserve(modelA, dayOne))
+	require.True(t, reserve(modelA, dayOne))
+	require.False(t, reserve(modelA, dayOne), "the cap of two is reached")
+	require.True(t, reserve(modelA, dayTwo))
+
+	require.NoError(t, repo.ReleaseRequest(t.Context(), modelA, dayOne.Add(3*time.Hour)))
+	requests, _ := requestsOn(modelA, "2026-11-12")
+	assert.Equal(t, 1, requests, "the release takes one request off the day")
+	requests, _ = requestsOn(modelA, "2026-11-13")
+	assert.Equal(t, 1, requests, "the next day's row is unchanged")
+	assert.True(t, reserve(modelA, dayOne), "a reservation after the release fits under the cap")
+	requests, _ = requestsOn(modelA, "2026-11-12")
+	assert.Equal(t, 2, requests)
+
+	require.NoError(t, repo.ReleaseRequest(t.Context(), modelB, dayOne), "releasing a model with no row is a no-op")
+	_, exists := requestsOn(modelB, "2026-11-12")
+	assert.False(t, exists, "the release creates no row")
+	requests, _ = requestsOn(modelA, "2026-11-12")
+	assert.Equal(t, 2, requests, "releasing one model leaves another model's row for the date alone")
+
+	_, err := db.ExecContext(t.Context(), `
+		INSERT INTO classification_usage (model_id, usage_date, requests, input_tokens)
+		VALUES ($1, '2026-11-14'::date, 0, 0)
+	`, modelB)
+	require.NoError(t, err)
+	require.NoError(t, repo.ReleaseRequest(t.Context(), modelB, dayTwo.Add(24*time.Hour)))
+	requests, _ = requestsOn(modelB, "2026-11-14")
+	assert.Equal(t, 0, requests, "a release never takes the count below zero")
+}
+
 // TestClassificationStoreResultWaitsForErasure: an erasure that has deleted
 // a revived job's partial result but not yet its job, and is still open,
 // makes the job's completion wait instead of deadlocking with it. The

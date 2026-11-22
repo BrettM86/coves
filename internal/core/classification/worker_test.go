@@ -26,6 +26,10 @@ type deadlineRepository struct {
 	results     []classification.Result
 	inputTokens int
 	reservedAt  []time.Time
+	// requests counts the reserved requests by model and UTC date, as the
+	// classification_usage rows do; ReserveRequest caps their per-date sum
+	// at dailyCap.
+	requests map[usageKey]int
 	// postImages are the image refs the post subject shows; postImagesSkipped
 	// the image slots the subject itself skips.
 	postImages        []classification.ImageRef
@@ -143,14 +147,54 @@ func (r *deadlineRepository) RecordFailure(ctx context.Context, _ int64, failure
 	return discarded, nil
 }
 
-func (r *deadlineRepository) ReserveRequest(ctx context.Context, _ string, now time.Time, _ int) (bool, error) {
+func (r *deadlineRepository) ReserveRequest(ctx context.Context, modelID string, now time.Time, dailyCap int) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	date := now.UTC().Format(time.DateOnly)
+	total := 0
+	for key, count := range r.requests {
+		if key.date == date {
+			total += count
+		}
+	}
+	if total >= dailyCap {
+		return false, nil
+	}
+	if r.requests == nil {
+		r.requests = map[usageKey]int{}
+	}
+	r.requests[usageKey{modelID: modelID, date: date}]++
 	r.reservedAt = append(r.reservedAt, now)
 	return true, nil
+}
+
+// usageKey is one model's usage on one UTC date.
+type usageKey struct {
+	modelID string
+	date    string
+}
+
+func (r *deadlineRepository) ReleaseRequest(ctx context.Context, modelID string, reservedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := usageKey{modelID: modelID, date: reservedAt.UTC().Format(time.DateOnly)}
+	if r.requests[key] > 0 {
+		r.requests[key]--
+	}
+	return nil
+}
+
+// requestsCounted reports the requests counted for modelID on date.
+func (r *deadlineRepository) requestsCounted(modelID, date string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.requests[usageKey{modelID: modelID, date: date}]
 }
 
 func (r *deadlineRepository) AddInputTokens(ctx context.Context, _ string, _ time.Time, tokens int) error {

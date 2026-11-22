@@ -184,6 +184,10 @@ type Repository interface {
 	// against dailyCap, which caps the day's requests across all models
 	// together, reporting false when the day's cap is reached.
 	ReserveRequest(ctx context.Context, modelID string, now time.Time, dailyCap int) (bool, error)
+	// ReleaseRequest gives back one request reserved for modelID on the UTC
+	// date of reservedAt, never taking the count below zero; it does nothing
+	// when the date has no usage row for the model.
+	ReleaseRequest(ctx context.Context, modelID string, reservedAt time.Time) error
 	// StoreResult stores the result and marks the job classified in one
 	// transaction, writing the claimed job's CommunityDID to the result and
 	// the job, reporting false (and storing nothing) when the job no

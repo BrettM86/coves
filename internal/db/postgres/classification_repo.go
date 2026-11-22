@@ -477,6 +477,36 @@ func (r *ClassificationRepository) ReserveRequest(ctx context.Context, modelID s
 	return true, nil
 }
 
+// ReleaseRequest gives back one request reserved for modelID on reservedAt's
+// UTC date under the date's advisory lock, never taking the count below zero.
+// A date with no usage row for the model is left as it is.
+func (r *ClassificationRepository) ReleaseRequest(ctx context.Context, modelID string, reservedAt time.Time) (err error) {
+	usageDate := classificationUsageDate(reservedAt)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning the classification release: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(`+classificationUsageLockKeySQL+`)`, usageDate); err != nil {
+		return fmt.Errorf("locking the classification usage date: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE classification_usage SET requests = requests - 1
+		WHERE model_id = $1 AND usage_date = $2::date AND requests > 0
+	`, modelID, usageDate); err != nil {
+		return fmt.Errorf("releasing classification request: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("committing the classification release: %w", err)
+	}
+	return nil
+}
+
 // StoreResult marks the job classified, inserts its result with one score
 // alert per result.AlertQuestions key, and discards its stored image batches
 // in one statement, so all happen or none does. A job that no longer exists
