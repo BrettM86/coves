@@ -18,7 +18,7 @@ Read §3.1 and §3.5 before writing a test. §3.6 lists the checks that fail the
 | T0 Unit | none | in-package | nothing out of process | under 60 s | yes |
 | T1 Integration | `integration` | in-package, next to the code | Postgres; some packages also the PDS | under 3 min | within a package (§3.3) |
 | T2 Pipeline | `e2e` | `tests/e2e/` | the full hermetic stack, including a running AppView | under 10 min | no, serial (§3.4) |
-| T3 Live | `live` | `tests/live/` | the public internet | opt-in | n/a |
+| T3 Live | `live` | `tests/live/` | the public internet; the content-classification live tests need no database and run with `go test -tags live -count=1 -run '<names>' ./tests/live/`, reading `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_WORKERS_AI_API_TOKEN` from the environment, never from `.env.dev` | opt-in | n/a |
 
 Rules:
 

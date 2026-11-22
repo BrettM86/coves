@@ -198,8 +198,11 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 		  AND (NOT $4::boolean OR community_post_admissions.evaluated_cid IS NULL)
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired, localObservation,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID, cmd.IsSeed)
+	// The converging transition (pending_reacceptance → accepted) admits the
+	// post just as ApplyAcceptance does, so it re-arms the classification jobs
+	// the worker deferred while the post awaited admission.
+	return r.compareAndSwapWithWithdrawal(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired, localObservation,
+		query, nil, rearmClassificationJobs, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID, cmd.IsSeed)
 }
 
 // ApplyAcceptance applies a community acceptance record write under the §5.2
@@ -267,7 +270,7 @@ func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.A
 			return fmt.Errorf("ApplyAcceptance for %s in %s: reading the standing acceptance: %w", cmd.PostURI, cmd.CommunityDID, err)
 		}
 		result, err = compareAndSwapInTx(ctx, tx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, !standing,
-			query, nil, cmd.CommunityDID, cmd.PostURI,
+			query, nil, rearmClassificationJobs, cmd.CommunityDID, cmd.PostURI,
 			cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
 			cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 		return err
@@ -297,7 +300,7 @@ func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd p
 	query := applyAcceptanceDeleteQuery(communityWatermarkGuard)
 
 	return r.compareAndSwapWithWithdrawal(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
-		query, &communityWithdrawal{rev: cmd.Watermark.Rev},
+		query, &communityWithdrawal{rev: cmd.Watermark.Rev}, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
@@ -329,7 +332,7 @@ func (r *postgresAdmissionRepo) ApplyRemoval(ctx context.Context, cmd posts.Appl
 	err := inAdmissionTransaction(ctx, r.db, func(tx *sql.Tx) error {
 		var err error
 		result, err = compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
-			query, &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+			query, &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true}, nil,
 			cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
 			cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
 		if err != nil || result.Outcome != posts.AdmissionApplied {
@@ -907,7 +910,30 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 	query string,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
-	return r.compareAndSwapWithWithdrawal(ctx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, nil, args...)
+	return r.compareAndSwapWithWithdrawal(ctx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, nil, nil, args...)
+}
+
+// admissionWriteEffect runs inside the compare-and-swap transaction after the
+// guarded write applied, so its writes commit or roll back with the admission.
+type admissionWriteEffect func(ctx context.Context, tx *sql.Tx, admission *posts.Admission) error
+
+// rearmClassificationJobs makes an accepted post's non-terminal classification
+// jobs, and those of the comments whose root is the post, due now and resets
+// their deferral backoff: the worker deferred them while the post was not yet
+// admitted.
+func rearmClassificationJobs(ctx context.Context, tx *sql.Tx, admission *posts.Admission) error {
+	if admission.Status != posts.AdmissionStatusAccepted {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE classification_jobs
+		SET next_attempt_at = NOW(), deferral_count = 0, updated_at = NOW()
+		WHERE status IN `+classificationNonTerminalSQL+`
+		  AND (subject_uri = $1
+		    OR (subject_kind = 'comment'
+		      AND subject_uri IN (SELECT uri FROM comments WHERE root_uri = $1)))`, admission.PostURI); err != nil {
+		return fmt.Errorf("re-arming classification jobs: %w", err)
+	}
+	return nil
 }
 
 type communityWithdrawal struct {
@@ -928,6 +954,7 @@ func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
 	advancesVersion bool,
 	query string,
 	withdrawal *communityWithdrawal,
+	afterWrite admissionWriteEffect,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -947,7 +974,7 @@ func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
 		}
 	}()
 
-	result, err := compareAndSwapInTx(ctx, tx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, withdrawal, args...)
+	result, err := compareAndSwapInTx(ctx, tx, operation, communityDID, postURI, classify, mayLackRow, advancesVersion, query, withdrawal, afterWrite, args...)
 	if err != nil {
 		return posts.AdmissionResult{}, err
 	}
@@ -968,6 +995,7 @@ func compareAndSwapInTx(
 	advancesVersion bool,
 	query string,
 	withdrawal *communityWithdrawal,
+	afterWrite admissionWriteEffect,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
 	var ownCommunityPost, admittedBefore, alreadyRemoved bool
@@ -1050,6 +1078,12 @@ func compareAndSwapInTx(
 		}
 	}
 
+	if wrote && afterWrite != nil {
+		if err := afterWrite(ctx, tx, admission); err != nil {
+			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: %w", operation, postURI, communityDID, err)
+		}
+	}
+
 	return posts.AdmissionResult{Outcome: classify(wrote, admission), Admission: admission}, nil
 }
 
@@ -1064,7 +1098,7 @@ func applyAcceptanceInTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyAccepta
 		return posts.AdmissionResult{}, err
 	}
 	return compareAndSwapInTx(ctx, tx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
-		applyAcceptanceQuery(localCompletionWatermarkGuard), nil, cmd.CommunityDID, cmd.PostURI,
+		applyAcceptanceQuery(localCompletionWatermarkGuard), nil, rearmClassificationJobs, cmd.CommunityDID, cmd.PostURI,
 		cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
@@ -1075,7 +1109,7 @@ func applyAcceptanceDeleteInTx(ctx context.Context, tx *sql.Tx, cmd posts.Commun
 		return posts.AdmissionResult{}, err
 	}
 	return compareAndSwapInTx(ctx, tx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
-		applyAcceptanceDeleteQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev},
+		applyAcceptanceDeleteQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev}, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
@@ -1085,7 +1119,7 @@ func applyRemovalInTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyRemovalCom
 		return posts.AdmissionResult{}, err
 	}
 	return compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
-		applyRemovalQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+		applyRemovalQuery(localCompletionWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true}, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
 }
@@ -1096,7 +1130,7 @@ func applyRemovalDeleteInTx(ctx context.Context, tx *sql.Tx, cmd posts.Community
 		return posts.AdmissionResult{}, err
 	}
 	return compareAndSwapInTx(ctx, tx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
-		applyRemovalDeleteQuery(localCompletionWatermarkGuard), nil,
+		applyRemovalDeleteQuery(localCompletionWatermarkGuard), nil, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 

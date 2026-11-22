@@ -72,7 +72,6 @@ func seedVisibilityPost(t *testing.T, db *sql.DB, communityDID, authorDID, rkey,
 func seedVisibilityPostWithEmbed(t *testing.T, db *sql.DB, communityDID, authorDID, rkey, title, thumbCID string, createdAt time.Time) string {
 	t.Helper()
 
-	uri := postV2URI(authorDID, rkey)
 	embedJSON := fmt.Sprintf(`{
 		"$type": "social.coves.embed.external",
 		"external": {
@@ -82,6 +81,15 @@ func seedVisibilityPostWithEmbed(t *testing.T, db *sql.DB, communityDID, authorD
 			"thumb": {"$type": "blob", "ref": {"$link": "%s"}, "mimeType": "image/jpeg", "size": 52813}
 		}
 	}`, thumbCID)
+	return seedVisibilityPostWithEmbedJSON(t, db, communityDID, authorDID, rkey, title, embedJSON, createdAt)
+}
+
+// seedVisibilityPostWithEmbedJSON is seedVisibilityPost carrying embedJSON as
+// the post's embed.
+func seedVisibilityPostWithEmbedJSON(t *testing.T, db *sql.DB, communityDID, authorDID, rkey, title, embedJSON string, createdAt time.Time) string {
+	t.Helper()
+
+	uri := postV2URI(authorDID, rkey)
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, embed, created_at, score, upvote_count, downvote_count)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)

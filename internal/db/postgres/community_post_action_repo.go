@@ -630,7 +630,7 @@ func applyRemovalRecordTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyRemova
 	}
 
 	result, err := compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, communityRecordChange,
-		applyRemovalQuery(communityWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+		applyRemovalQuery(communityWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true}, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
 	if err != nil || result.Outcome != posts.AdmissionApplied {
@@ -678,7 +678,7 @@ func applyIndexedRemovalTx(ctx context.Context, tx *sql.Tx, cmd posts.ApplyRemov
 		return posts.AdmissionResult{}, err
 	}
 	result, err := compareAndSwapInTx(ctx, tx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired, versionAdvancedByCaller,
-		applyRemovalQuery(communityWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+		applyRemovalQuery(communityWatermarkGuard), &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true}, nil,
 		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut), cmd.Reason)
 	if err != nil || result.Outcome != posts.AdmissionApplied || counted {
@@ -877,7 +877,7 @@ func applyRemovalRecordDeleteTx(ctx context.Context, tx *sql.Tx, cmd posts.Apply
 	}
 
 	result, err := compareAndSwapInTx(ctx, tx, "ApplyRemovalDelete", cmd.CommunityDID, postURI, communityEventOutcome, rowRequired, communityRecordChange,
-		applyRemovalDeleteQuery(communityWatermarkGuard), nil,
+		applyRemovalDeleteQuery(communityWatermarkGuard), nil, nil,
 		cmd.CommunityDID, postURI, rev, int16(posts.CommunityOpDelete))
 	if err != nil {
 		return "", posts.AdmissionResult{}, err

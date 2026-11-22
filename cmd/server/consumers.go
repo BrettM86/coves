@@ -205,6 +205,12 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 			jetstream.WithCommunityRoster(postgresRepo.NewCommunityRoleRepository(a.db)),
 		},
 		jetstream.PrivateHostOptions(a.allowPrivateHosts())...)
+	// Sends each committed nsfw flag change alert before the event is
+	// acknowledged; failures are left to the retry sweep. Checked first: a nil
+	// *Service inside the notifier interface would not compare equal to nil.
+	if a.communitySignals != nil {
+		communityOpts = append(communityOpts, jetstream.WithCommunityFlagNotifier(a.communitySignals))
+	}
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerCommunities,
 		handler: jetstream.NewCommunityEventConsumer(
@@ -282,13 +288,18 @@ func (a *application) buildVoteConsumer() *jetstream.VoteEventConsumer {
 
 // buildCommentConsumer builds the comment consumer registered on the feed.
 func (a *application) buildCommentConsumer() *jetstream.CommentEventConsumer {
-	return jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
+	options := []jetstream.CommentEventConsumerOption{
 		jetstream.WithCommentBridgeTrust(a.bridgeTrust),
 		jetstream.WithCommentMediaReconciler(a.mediaReconciler),
 		jetstream.WithCommentNotifications(a.notificationRepo),
 		jetstream.WithCommentCommunityRemovals(a.communityCommentRemovals),
 		jetstream.WithCommentAccountBanAuthority(a.cfg.Instance.DID),
-		jetstream.WithCommentBlobReferences(a.blobReferenceRepo))
+		jetstream.WithCommentBlobReferences(a.blobReferenceRepo),
+	}
+	if a.classificationRepo != nil {
+		options = append(options, jetstream.WithCommentClassificationEnqueuer(a.classificationRepo, a.classificationEvaluation))
+	}
+	return jetstream.NewCommentEventConsumer(a.commentRepo, a.db, options...)
 }
 
 // buildPostConsumer builds the post consumer registered on the feed.
@@ -304,7 +315,7 @@ func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
 	// takes the permissive branch. The production branch is testable in T0.
 	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver,
 		jetstream.PrivatePostFetcherOptions(a.allowPrivateHosts())...)
-	return jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db,
+	options := []jetstream.PostEventConsumerOption{
 		jetstream.WithPostBridgeTrust(a.bridgeTrust),
 		jetstream.WithPostIdentityResolver(a.identityResolver),
 		jetstream.WithAdmissions(a.admissionRepo),
@@ -320,5 +331,12 @@ func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
 		// most instances is all of them.
 		jetstream.WithAcceptanceCleanup(a.communityWriter),
 		jetstream.WithPostNotifications(a.notificationRepo),
-		jetstream.WithPostBlobReferences(a.blobReferenceRepo))
+		jetstream.WithPostBlobReferences(a.blobReferenceRepo),
+	}
+	// Installed only when the classifier is enabled: a nil repository inside
+	// the enqueuer interface would not compare equal to nil and would be called.
+	if a.classificationRepo != nil {
+		options = append(options, jetstream.WithClassificationEnqueuer(a.classificationRepo, a.classificationEvaluation))
+	}
+	return jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db, options...)
 }

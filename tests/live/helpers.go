@@ -19,6 +19,11 @@
 // They need the test database on localhost:5434 (`make dev-up` provides it) and
 // working internet access. When the network is unavailable these tests are
 // expected to fail rather than pass quietly.
+//
+// The content-classification live tests need no database and run with
+// `go test -tags live -count=1 -run '<names>' ./tests/live/`, reading
+// CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_WORKERS_AI_API_TOKEN from the
+// environment, never from .env.dev.
 package live
 
 import (

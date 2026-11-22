@@ -166,6 +166,9 @@ type Config struct {
 	// Labels holds the label publication settings.
 	Labels LabelsConfig
 
+	// Classifier holds the content classifier settings.
+	Classifier ClassifierConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -180,6 +183,43 @@ type Config struct {
 	// generated key do not survive a restart.
 	EncryptionKeyGenerated bool
 }
+
+// ClassifierConfig holds the content classifier settings.
+type ClassifierConfig struct {
+	Enabled         bool
+	AccountID       string
+	APIToken        string `json:"-"`
+	TextModelID     string
+	ImageModelID    string
+	DailyRequestCap int
+	WorkerInterval  time.Duration
+	Concurrency     int
+	TextCharLimit   int
+	AttemptLimit    int
+	RetryBaseDelay  time.Duration
+	PendingDeferral time.Duration
+	// ScoreAlerts is CLASSIFIER_SCORE_ALERTS, comma-separated
+	// question_key:threshold pairs; cmd/server parses it against the policy.
+	ScoreAlerts              string
+	ScoreAlertAttemptLimit   int
+	ScoreAlertRetryBaseDelay time.Duration
+	ScoreAlertSweepInterval  time.Duration
+}
+
+// String redacts the API token when a Config is formatted with %v or %+v.
+// GoString covers %#v, and the json:"-" tag on APIToken covers JSON encoding.
+func (c ClassifierConfig) String() string {
+	return fmt.Sprintf("{Enabled:%t AccountID:%q APIToken:[REDACTED] TextModelID:%q ImageModelID:%q "+
+		"DailyRequestCap:%d WorkerInterval:%s Concurrency:%d TextCharLimit:%d AttemptLimit:%d "+
+		"RetryBaseDelay:%s PendingDeferral:%s ScoreAlerts:%q ScoreAlertAttemptLimit:%d "+
+		"ScoreAlertRetryBaseDelay:%s ScoreAlertSweepInterval:%s}",
+		c.Enabled, c.AccountID, c.TextModelID, c.ImageModelID, c.DailyRequestCap, c.WorkerInterval,
+		c.Concurrency, c.TextCharLimit, c.AttemptLimit, c.RetryBaseDelay, c.PendingDeferral,
+		c.ScoreAlerts, c.ScoreAlertAttemptLimit, c.ScoreAlertRetryBaseDelay, c.ScoreAlertSweepInterval)
+}
+
+// GoString redacts the API token when a Config is formatted with %#v.
+func (c ClassifierConfig) GoString() string { return c.String() }
 
 // LabelsConfig holds the label publication settings.
 type LabelsConfig struct {
@@ -641,6 +681,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadLabels(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadClassifier(); err != nil {
 		return nil, err
 	}
 
@@ -1289,6 +1332,85 @@ func (c *Config) loadModeration() error {
 		CommunityBansPerModerator:     bansPerModerator,
 		CommunityBansPerCommunity:     bansPerCommunity,
 	}
+	return nil
+}
+
+// loadClassifier reads the content classifier settings. The Cloudflare
+// credentials are required only when the classifier is enabled. Errors name
+// the variable and never echo the token.
+func (c *Config) loadClassifier() error {
+	enabled, err := boolVar("CLASSIFIER_ENABLED", false)
+	if err != nil {
+		return err
+	}
+	classifier := ClassifierConfig{
+		Enabled:      enabled,
+		AccountID:    lookup("CLOUDFLARE_ACCOUNT_ID"),
+		APIToken:     lookup("CLOUDFLARE_WORKERS_AI_API_TOKEN"),
+		TextModelID:  stringVar("CLASSIFIER_TEXT_MODEL_ID", "@cf/cloudflare/clef-flash"),
+		ImageModelID: stringVar("CLASSIFIER_IMAGE_MODEL_ID", "@cf/cloudflare/clef"),
+		ScoreAlerts:  stringVar("CLASSIFIER_SCORE_ALERTS", "sexual_minors:0.3"),
+	}
+	if classifier.DailyRequestCap, err = intVar("CLASSIFIER_DAILY_REQUEST_CAP", 5000); err != nil {
+		return err
+	}
+	if classifier.WorkerInterval, err = durationVar("CLASSIFIER_WORKER_INTERVAL", 30*time.Second); err != nil {
+		return err
+	}
+	if classifier.Concurrency, err = intVar("CLASSIFIER_CONCURRENCY", 2); err != nil {
+		return err
+	}
+	if classifier.TextCharLimit, err = intVar("CLASSIFIER_TEXT_CHAR_LIMIT", 8000); err != nil {
+		return err
+	}
+	if classifier.AttemptLimit, err = intVar("CLASSIFIER_ATTEMPT_LIMIT", 5); err != nil {
+		return err
+	}
+	if classifier.RetryBaseDelay, err = durationVar("CLASSIFIER_RETRY_BASE_DELAY", time.Minute); err != nil {
+		return err
+	}
+	if classifier.PendingDeferral, err = durationVar("CLASSIFIER_PENDING_DEFERRAL", 10*time.Minute); err != nil {
+		return err
+	}
+	if classifier.ScoreAlertAttemptLimit, err = intVar("CLASSIFIER_SCORE_ALERT_ATTEMPT_LIMIT", 8); err != nil {
+		return err
+	}
+	if classifier.ScoreAlertRetryBaseDelay, err = durationVar("CLASSIFIER_SCORE_ALERT_RETRY_BASE_DELAY", time.Minute); err != nil {
+		return err
+	}
+	if classifier.ScoreAlertSweepInterval, err = durationVar("CLASSIFIER_SCORE_ALERT_SWEEP_INTERVAL", 5*time.Minute); err != nil {
+		return err
+	}
+
+	if enabled {
+		if classifier.AccountID == "" {
+			return fmt.Errorf("CLOUDFLARE_ACCOUNT_ID is required when CLASSIFIER_ENABLED is true")
+		}
+		if classifier.APIToken == "" {
+			return fmt.Errorf("CLOUDFLARE_WORKERS_AI_API_TOKEN is required when CLASSIFIER_ENABLED is true")
+		}
+		for _, setting := range []struct {
+			name  string
+			value int64
+		}{
+			{"CLASSIFIER_WORKER_INTERVAL", int64(classifier.WorkerInterval)},
+			{"CLASSIFIER_CONCURRENCY", int64(classifier.Concurrency)},
+			{"CLASSIFIER_TEXT_CHAR_LIMIT", int64(classifier.TextCharLimit)},
+			{"CLASSIFIER_ATTEMPT_LIMIT", int64(classifier.AttemptLimit)},
+			{"CLASSIFIER_DAILY_REQUEST_CAP", int64(classifier.DailyRequestCap)},
+			{"CLASSIFIER_RETRY_BASE_DELAY", int64(classifier.RetryBaseDelay)},
+			{"CLASSIFIER_PENDING_DEFERRAL", int64(classifier.PendingDeferral)},
+			{"CLASSIFIER_SCORE_ALERT_ATTEMPT_LIMIT", int64(classifier.ScoreAlertAttemptLimit)},
+			{"CLASSIFIER_SCORE_ALERT_RETRY_BASE_DELAY", int64(classifier.ScoreAlertRetryBaseDelay)},
+			{"CLASSIFIER_SCORE_ALERT_SWEEP_INTERVAL", int64(classifier.ScoreAlertSweepInterval)},
+		} {
+			if setting.value == 0 {
+				return fmt.Errorf("%s must be greater than 0 when CLASSIFIER_ENABLED is true", setting.name)
+			}
+		}
+	}
+
+	c.Classifier = classifier
 	return nil
 }
 

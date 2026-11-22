@@ -298,14 +298,29 @@ func seedCommunityRemoval(t *testing.T, db *sql.DB, authorityDID, communityDID s
 // at://<did> recorded with subjectKind, and returns the action id.
 func seedInstanceRemoval(t *testing.T, db *sql.DB, authorityDID, did, subjectKind string) string {
 	t.Helper()
+	return seedInstanceRemovalDecision(t, db, authorityDID, "at://"+did, sql.NullString{}, sql.NullString{String: subjectKind, Valid: true}, "spam")
+}
+
+// seedPostInstanceRemoval writes an active instance-scope removal decision on
+// the postv2 record postURI by authorityDID, recorded with reason, and returns
+// the action id.
+func seedPostInstanceRemoval(t *testing.T, db *sql.DB, authorityDID, postURI, reason string) string {
+	t.Helper()
+	return seedInstanceRemovalDecision(t, db, authorityDID, postURI, sql.NullString{String: posts.PostV2Collection, Valid: true}, sql.NullString{}, reason)
+}
+
+// seedInstanceRemovalDecision writes an active instance-scope removal action
+// and decision on subjectURI. A record subject carries its collection and no
+// subject kind; a DID subject carries its kind and no collection.
+func seedInstanceRemovalDecision(t *testing.T, db *sql.DB, authorityDID, subjectURI string, subjectCollection, subjectKind sql.NullString, reason string) string {
+	t.Helper()
 
 	actionID := "queue-account-ban-" + testkit.UniqueID(t)
-	subjectURI := "at://" + did
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO moderation_actions
 		    (id, actor_did, authority_did, scope_kind, subject_uri, subject_collection, subject_kind, action, reason, origin, created_at)
-		VALUES ($1, 'did:plc:queuebanadmin', $2, 'instance', $3, NULL, $4, 'remove', 'spam', 'local', NOW())
-	`, actionID, authorityDID, subjectURI, subjectKind)
+		VALUES ($1, 'did:plc:queuebanadmin', $2, 'instance', $3, $4, $5, 'remove', $6, 'local', NOW())
+	`, actionID, authorityDID, subjectURI, subjectCollection, subjectKind, reason)
 	require.NoError(t, err)
 	_, err = db.ExecContext(context.Background(), `
 		INSERT INTO moderation_decisions

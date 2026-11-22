@@ -22,9 +22,11 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/bridgedvotes"
+	"Coves/internal/core/classification"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/communitysignals"
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/feedgen"
@@ -231,6 +233,47 @@ type application struct {
 	// closeOnce guards Close, which is reached from both serve and run's
 	// deferred cleanup on every shutdown.
 	closeOnce sync.Once
+
+	// communitySignals sends community nsfw flag alerts (after commit, from
+	// the community consumer, and by its retry sweep) and the weekly digest.
+	communitySignals      *communitysignals.Service
+	communitySignalConfig communitysignals.Config
+
+	// classificationRepo, classificationEvaluation and classificationWorker
+	// are set only when CLASSIFIER_ENABLED is true; otherwise they are nil
+	// and the post consumer enqueues nothing.
+	classificationRepo       *postgresRepo.ClassificationRepository
+	classificationEvaluation classification.Evaluation
+	// classificationScoreAlerts is the parsed CLASSIFIER_SCORE_ALERTS, set by
+	// buildClassifier when the classifier is enabled.
+	classificationScoreAlerts []classification.ScoreAlertThreshold
+	classificationWorker      *classification.Worker
+	// newClassificationWorker is set by buildClassifier and called by
+	// buildClassificationWorker after the image proxy is built.
+	newClassificationWorker func(...classification.WorkerOption) *classification.Worker
+	// classificationReview serves the admin review endpoints. It is built
+	// whether or not the classifier is enabled, so stored results stay
+	// reviewable while the worker is off.
+	classificationReview *classification.ReviewService
+	// classificationReenqueue and classificationSummary serve the admin
+	// operations endpoints. Both are built whether or not the classifier is
+	// enabled; with it disabled the re-enqueue service has no evaluation and
+	// refuses every request.
+	classificationReenqueue *classification.ReenqueueService
+	classificationSummary   *classification.SummaryService
+	// classificationMetrics serves the admin metrics endpoint, built whether
+	// or not the classifier is enabled.
+	classificationMetrics *classification.MetricsService
+	// classificationAuthPause is the worker's pause on a refused Cloudflare
+	// token, shared with the metrics; nil when the classifier is disabled.
+	classificationAuthPause *classification.ProviderAuthPause
+	// classificationScoreAlertService delivers score alerts after commit and
+	// by its retry sweep. It is set only when CLASSIFIER_ENABLED is true; it
+	// sends only when Telegram is configured.
+	classificationScoreAlertService *classification.ScoreAlertService
+
+	// imageProxyService is nil when the image proxy is disabled.
+	imageProxyService *imageproxy.ImageProxyService
 }
 
 // buildApplication constructs every repository, service, and middleware the
@@ -284,6 +327,17 @@ func buildApplication(
 	if err = app.buildAuth(); err != nil {
 		return nil, err
 	}
+	// The classifier comes before the repositories: the community repository
+	// enqueues classification jobs under its evaluation.
+	if err = app.buildClassifier(); err != nil {
+		return nil, err
+	}
+	if err = app.buildClassificationReview(); err != nil {
+		return nil, err
+	}
+	if err = app.buildClassificationOperations(); err != nil {
+		return nil, err
+	}
 	app.buildRepositories()
 	if err = app.buildServices(ctx); err != nil {
 		return nil, err
@@ -299,6 +353,7 @@ func buildApplication(
 	if err != nil {
 		return nil, err
 	}
+	app.buildClassificationWorker()
 	app.moderationService, app.mediaReconciler, err = buildModeration(app.cfg, moderationDependencies{
 		subjectReader:     moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
 		store:             moderationStore,
@@ -482,7 +537,15 @@ func (a *application) buildRepositories() {
 	// hidden from every other viewer on these read paths.
 	accountRestriction := postgresRepo.WithAccountRestrictionAuthority(a.cfg.Instance.DID)
 	a.userRepo = postgresRepo.NewUserRepository(a.db)
-	a.communityRepo = postgresRepo.NewCommunityRepository(a.db, a.credentialCipher, accountRestriction)
+	// The instance domain marks a community whose origin is this instance as
+	// native in its nsfw flag events.
+	communityOptions := []postgresRepo.AccountRestrictionOption{
+		accountRestriction, postgresRepo.WithLocalInstanceDomain(a.cfg.Instance.Domain),
+	}
+	if a.classificationRepo != nil {
+		communityOptions = append(communityOptions, postgresRepo.WithCommunityClassification(a.classificationEvaluation))
+	}
+	a.communityRepo = postgresRepo.NewCommunityRepository(a.db, a.credentialCipher, communityOptions...)
 	a.postRepo = postgresRepo.NewPostRepository(a.db, accountRestriction)
 	a.voteRepo = postgresRepo.NewVoteRepository(a.db)
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db, accountRestriction)
@@ -758,6 +821,9 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.communityReportQueue = adminreports.NewCommunityQueueService(
 		postgresRepo.NewCommunityReportQueueRepository(a.db), a.communityRoleAuthorizer,
 	)
+	if err := a.buildCommunitySignals(); err != nil {
+		return err
+	}
 	a.communitySuggestionService = communitysuggestions.NewService(
 		postgresRepo.NewCommunitySuggestionRepository(a.db),
 	)
@@ -1093,6 +1159,7 @@ func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 	}
 
 	a.imageProxyHandler = handler
+	a.imageProxyService = service
 	publishURLConfig()
 
 	slog.Info("image proxy enabled",

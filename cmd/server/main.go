@@ -141,6 +141,7 @@ func run() error {
 	startDiscoverHotCleanupJob(backgroundCtx, &backgroundWG, app.discoverHotStateCleaner,
 		discoverHotCleanupInterval, discoverHotCleanupDerivedRowBatchSize)
 	startNotificationRetentionJob(backgroundCtx, &backgroundWG, app.notificationRetentionSweeper, notificationRetentionInterval)
+	startCommunitySignalJobs(backgroundCtx, &backgroundWG, app.communitySignals, app.communitySignalConfig.SweepInterval)
 	startModerationIdempotencySweepJob(backgroundCtx, &backgroundWG,
 		postgresRepo.NewModerationRepository(db), moderationIdempotencySweepInterval)
 	// Retries the #account confirmations that failed, with the store and
@@ -148,6 +149,13 @@ func run() error {
 	startAccountStatusRecheckJob(backgroundCtx, &backgroundWG,
 		accountstatus.NewReconciler(app.accountStatusStore, app.accountStatusConfirmer, time.Now),
 		accountStatusRecheckInterval)
+	if app.classificationWorker != nil {
+		startClassifierJob(backgroundCtx, &backgroundWG, app.classificationWorker, app.cfg.Classifier.WorkerInterval)
+	}
+	if app.classificationScoreAlertService != nil {
+		startScoreAlertSweepJob(backgroundCtx, &backgroundWG, app.classificationScoreAlertService,
+			app.cfg.Classifier.ScoreAlertSweepInterval)
+	}
 	if app.cdnPurgeQueue != nil {
 		startCDNPurgeSweepJob(backgroundCtx, &backgroundWG, app.cdnPurgeQueue, cdnPurgeSweepInterval)
 	}

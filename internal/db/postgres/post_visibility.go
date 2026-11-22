@@ -142,12 +142,20 @@ func authorVisiblePostsJoin(viewerParam, authorityParam int) (joinSQL, whereSQL 
 // caller chooses.
 func postsVisibleUnder(viewerExpr, authorityExpr, communityRemovalSQL string) (joinSQL, whereSQL string) {
 	joinSQL, admittedSQL := admittedPostsPredicate(viewerExpr)
-	whereSQL = admittedSQL + ` AND NOT EXISTS (
+	whereSQL = admittedSQL + ` AND ` + postNotHiddenSQL(viewerExpr, authorityExpr, communityRemovalSQL)
+	return joinSQL, whereSQL
+}
+
+// postNotHiddenSQL is the non-admission half of postsVisibleUnder: no active
+// removal decision on the post, its author not restricted for viewerExpr, and
+// communityRemovalSQL. The classification queue reads it with the anonymous
+// viewer to tell a hard-hidden post from one only awaiting admission.
+func postNotHiddenSQL(viewerExpr, authorityExpr, communityRemovalSQL string) string {
+	return `NOT EXISTS (
 				SELECT 1 FROM moderation_decisions d
 				WHERE d.subject_uri = p.uri AND d.kind = 'removal' AND d.active
 			) AND ` + visibleToViewerUnlessRestrictedSQL("p.author_did", viewerExpr, authorityExpr) + `
 			AND ` + communityRemovalSQL
-	return joinSQL, whereSQL
 }
 
 // admittedPostsPredicate is the viewer-bound admission half of

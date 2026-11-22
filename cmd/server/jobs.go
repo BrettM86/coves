@@ -44,7 +44,16 @@ const (
 // interval, matching the dead letter redriver: work that accumulated while the
 // process was down should not have to wait out a 30- or 60-minute tick, and a
 // frequently-restarted deployment would otherwise never run these jobs at all.
+//
+// Each cycle's deadline is the interval; runTickerWithTimeout sets another.
 func runTicker(ctx context.Context, wg *sync.WaitGroup, name string, interval time.Duration, work func(context.Context)) {
+	runTickerWithTimeout(ctx, wg, name, interval, interval, work)
+}
+
+// runTickerWithTimeout is runTicker with each cycle bounded by cycleTimeout
+// instead of the interval, for a job whose cycle can outlast its interval. A
+// cycle still running at a tick delays the next cycle; ticks are not queued.
+func runTickerWithTimeout(ctx context.Context, wg *sync.WaitGroup, name string, interval, cycleTimeout time.Duration, work func(context.Context)) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -52,7 +61,7 @@ func runTicker(ctx context.Context, wg *sync.WaitGroup, name string, interval ti
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		runGuarded(ctx, name, interval, work)
+		runGuarded(ctx, name, cycleTimeout, work)
 
 		for {
 			select {
@@ -60,7 +69,7 @@ func runTicker(ctx context.Context, wg *sync.WaitGroup, name string, interval ti
 				slog.Info("background job stopped", "job", name)
 				return
 			case <-ticker.C:
-				runGuarded(ctx, name, interval, work)
+				runGuarded(ctx, name, cycleTimeout, work)
 			}
 		}
 	}()

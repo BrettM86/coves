@@ -1025,16 +1025,29 @@ func commentServedUnderDeclaredRootPredicate(viewerParam int) string {
 // O(thread depth) index lookups. commentAlias must be a fixed SQL alias,
 // never a caller-supplied value.
 func commentChainCommunitySQL(commentAlias string) string {
-	return `(WITH RECURSIVE chain (uri, parent_uri) AS (
+	return commentChainPostSQL(commentAlias, "community_did")
+}
+
+// commentChainPostSQL is commentChainCommunitySQL for any column of the
+// indexed post the parent chain reaches. column must be a fixed column name.
+func commentChainPostSQL(commentAlias, column string) string {
+	return `(` + commentChainSQL(commentAlias) + `
+				SELECT chain_post.` + column + `
+				FROM chain
+				JOIN posts chain_post ON chain_post.uri = chain.parent_uri
+				WHERE NOT EXISTS (SELECT 1 FROM comments chain_parent WHERE chain_parent.uri = chain.parent_uri))`
+}
+
+// commentChainSQL is the recursive CTE head of the comment's parent chain: a
+// relation chain(uri, parent_uri) holding the comment and each indexed
+// ancestor comment. The statement that follows it selects from chain.
+func commentChainSQL(commentAlias string) string {
+	return `WITH RECURSIVE chain (uri, parent_uri) AS (
 					SELECT ` + commentAlias + `.uri, ` + commentAlias + `.parent_uri
 					UNION
 					SELECT chain_comment.uri, chain_comment.parent_uri
 					FROM comments chain_comment JOIN chain ON chain_comment.uri = chain.parent_uri
-				)
-				SELECT chain_post.community_did
-				FROM chain
-				JOIN posts chain_post ON chain_post.uri = chain.parent_uri
-				WHERE NOT EXISTS (SELECT 1 FROM comments chain_parent WHERE chain_parent.uri = chain.parent_uri))`
+				)`
 }
 
 // GetByRootAndRkey retrieves a comment within a thread (root post) by its record key

@@ -1,6 +1,9 @@
 package postgres
 
-import "Coves/internal/core/accountbans"
+import (
+	"Coves/internal/core/accountbans"
+	"Coves/internal/core/classification"
+)
 
 // accountRestrictedSQL is THE account-restriction read: a boolean SQL
 // expression that is true while the account whose DID didExpr evaluates to is
@@ -48,6 +51,14 @@ func visibleToViewerUnlessRestrictedSQL(authorExpr, viewerExpr, authorityExpr st
 // WithAccountRestrictionAuthority.
 type accountRestriction struct {
 	authorityDID string
+	// localInstanceDomain is this instance's own domain, set with
+	// WithLocalInstanceDomain. Only the community repository reads it, to
+	// record flag events of communities with that origin as native.
+	localInstanceDomain string
+	// communityClassification is the evaluation community writes enqueue
+	// classification jobs under, set with WithCommunityClassification. Nil
+	// enqueues nothing. Only the community repository reads it.
+	communityClassification *classification.Evaluation
 }
 
 // AccountRestrictionOption configures the account-ban authority of a content

@@ -213,6 +213,14 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		communityProfileSubjectURI(community.DID), embedblobs.ProfileReferences(avatarCID, bannerCID)); err != nil {
 		return nil, fmt.Errorf("failed to replace community profile blob references: %w", err)
 	}
+	// A community first indexed with the nsfw warning records a false->true
+	// flag event in this transaction.
+	if err := r.recordFlagChangeTx(ctx, tx, community.DID, community.Origin, nil, community.ContentWarnings); err != nil {
+		return nil, err
+	}
+	if err := r.enqueueCommunityClassificationTx(ctx, tx, community.DID, community.RecordCID, true); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit community create transaction: %w", err)
 	}
@@ -548,6 +556,29 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 	}
 	defer tx.Rollback()
 
+	// Lock the row and read the stored warnings and the mutable classified
+	// fields first, so the flag event and the classification job below compare
+	// against the version this update replaces even when another update of the
+	// same community runs concurrently. The name is immutable, so Update
+	// neither writes nor compares it.
+	var (
+		storedWarnings                       []string
+		storedDisplayName, storedDescription string
+		storedAvatarCID, storedBannerCID     string
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT content_warnings, COALESCE(display_name, ''), COALESCE(description, ''),
+		       COALESCE(avatar_cid, ''), COALESCE(banner_cid, '')
+		FROM communities WHERE did = $1 FOR UPDATE`,
+		community.DID).Scan(pq.Array(&storedWarnings), &storedDisplayName, &storedDescription,
+		&storedAvatarCID, &storedBannerCID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, communities.ErrCommunityNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock community for update: %w", err)
+	}
+
 	query := `
 		UPDATE communities
 		SET display_name = $2, description = $3, description_facets = $4,
@@ -606,6 +637,16 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 	if err := NewBlobReferenceRepository(r.db).ReplaceSubjectTx(ctx, tx, community.DID,
 		communityProfileSubjectURI(community.DID), embedblobs.ProfileReferences(avatarCID, bannerCID)); err != nil {
 		return nil, fmt.Errorf("failed to replace community profile blob references: %w", err)
+	}
+	if err := r.recordFlagChangeTx(ctx, tx, community.DID, community.Origin, storedWarnings, community.ContentWarnings); err != nil {
+		return nil, err
+	}
+	classifiedFieldsChanged := storedDisplayName != community.DisplayName ||
+		storedDescription != community.Description ||
+		storedAvatarCID != avatarCID ||
+		storedBannerCID != bannerCID
+	if err := r.enqueueCommunityClassificationTx(ctx, tx, community.DID, community.RecordCID, classifiedFieldsChanged); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit community update transaction: %w", err)

@@ -123,6 +123,9 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterCommunityReportQueueRoutes(r, app.instanceAdminAuth, app.communityReportQueue,
 		adminreport.NewReportSubjectViewer(app.postService, app.commentService))
 	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
+	routes.RegisterClassificationAdminRoutes(r, app.classificationReview, app.instanceAdminAuth)
+	routes.RegisterClassificationOperationsRoutes(r, app.classificationReenqueue, app.classificationSummary, app.instanceAdminAuth)
+	routes.RegisterClassificationMetricsRoutes(r, app.classificationMetrics, app.instanceAdminAuth)
 	routes.RegisterLabelRoutes(r, postgresRepo.NewLabelRepository(app.db))
 	if app.labelStream != nil {
 		routes.RegisterLabelStreamRoutes(r, app.labelStream)

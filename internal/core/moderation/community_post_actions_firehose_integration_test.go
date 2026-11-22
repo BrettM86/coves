@@ -343,6 +343,20 @@ func TestCommunityPostFirehoseDB_BackfilledRemoval(t *testing.T) {
 func (f *communityPostDBFixture) seedBackfilledRemoval(t *testing.T) seededCommunityPost {
 	t.Helper()
 	post := f.seedAcceptedPost(t, postDBAlpha)
+	require.EqualValues(t, 100, testkit.MigrateDownOne(t, f.db, 100),
+		"100 (classification partial results) must be rolled back first")
+	require.EqualValues(t, 99, testkit.MigrateDownOne(t, f.db, 99),
+		"099 (classification deferral backoff) must be rolled back first")
+	require.EqualValues(t, 98, testkit.MigrateDownOne(t, f.db, 98),
+		"098 (classification score alerts) must be rolled back first")
+	require.EqualValues(t, 97, testkit.MigrateDownOne(t, f.db, 97),
+		"097 (classification verdicts) must be rolled back first")
+	require.EqualValues(t, 96, testkit.MigrateDownOne(t, f.db, 96),
+		"096 (classification image batches) must be rolled back first")
+	require.EqualValues(t, 95, testkit.MigrateDownOne(t, f.db, 95),
+		"095 (classification queue) must be rolled back first")
+	require.EqualValues(t, 94, testkit.MigrateDownOne(t, f.db, 94),
+		"094 (community nsfw flag events) must be rolled back first")
 	require.EqualValues(t, 93, testkit.MigrateDownOne(t, f.db, 93),
 		"093 (community report notifications) must be rolled back first")
 	require.EqualValues(t, 92, testkit.MigrateDownOne(t, f.db, 92),

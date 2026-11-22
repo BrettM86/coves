@@ -13,6 +13,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/blobreferences"
 	"Coves/internal/core/bridgedvotes"
+	"Coves/internal/core/classification"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/moderation"
@@ -71,6 +72,12 @@ type PostEventConsumer struct {
 	// communityBans indexes social.coves.moderation.ban records. nil leaves
 	// them unindexed.
 	communityBans communities.BanRepository
+
+	// classificationEnqueuer queues a classification job, under
+	// classificationEvaluation, in the transaction that indexes or edits a
+	// post. nil disables classification enqueueing.
+	classificationEnqueuer   ClassificationEnqueuer
+	classificationEvaluation classification.Evaluation
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.
@@ -394,6 +401,9 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 	// guard atomically (indexed_at must be strictly older than the event, unless the
 	// event carries no timestamp), and indexed_at is advanced to the event time on
 	// every applied update so the NEXT stale replay is blocked too.
+	//
+	// The FROM subquery locks the row and reads its pre-update classified
+	// fields, so RETURNING can report whether title, content or embed changed.
 	updateQuery := `
 		UPDATE posts
 		SET
@@ -427,8 +437,15 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 				- CASE
 					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
 					THEN $9 ELSE bridged_downvote_count END
-		WHERE id = $1 AND deleted_at IS NULL
+		FROM (
+			SELECT id AS old_id, title AS old_title, content AS old_content, embed AS old_embed
+			FROM posts WHERE id = $1 FOR UPDATE
+		) old
+		WHERE id = old.old_id AND deleted_at IS NULL
 		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
+		RETURNING community_did,
+			(old.old_title IS DISTINCT FROM title OR old.old_content IS DISTINCT FROM content
+			  OR old.old_embed IS DISTINCT FROM embed)
 	`
 	// REV GATE + UPDATE in one transaction. The gate (strictly-newer rev wins)
 	// is the cross-feed ordering guard: the time_us recency guard in the WHERE
@@ -458,13 +475,13 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 	var erased bool
 	var storedFacets string
 	var storedCreatedAt time.Time
+	// Take the erasure lock before locking the post row, avoiding a cycle
+	// with account deletion that holds the erasure lock first.
+	erased, err = c.authorErasureGateTx(ctx, tx, in.authorDID)
+	if err != nil {
+		return false, fmt.Errorf("check post author erasure before updating: %w", err)
+	}
 	if c.notifications != nil {
-		// Take the erasure lock before locking the post row, avoiding a cycle
-		// with account deletion that holds the erasure lock first.
-		erased, err = c.notifications.ErasureGateTx(ctx, tx, in.authorDID)
-		if err != nil {
-			return false, fmt.Errorf("check post author erasure before updating: %w", err)
-		}
 		err = tx.QueryRowContext(ctx,
 			`SELECT COALESCE(content_facets::text, ''), created_at
 			 FROM posts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, in.storedID,
@@ -478,30 +495,32 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 		}
 	}
 
-	result, err := tx.ExecContext(ctx, updateQuery,
+	var communityDID string
+	var classifiedFieldsChanged bool
+	err = tx.QueryRowContext(ctx, updateQuery,
 		in.storedID, in.cid, in.title, in.content,
 		in.facets, in.embed, in.labels,
 		in.bridgedUpvotes, in.bridgedDownvotes, in.bridgedAsOf,
 		in.timeUS,
-	)
-	if err != nil {
-		return false, fmt.Errorf("failed to update post: %w", err)
-	}
+	).Scan(&communityDID, &classifiedFieldsChanged)
 
 	// A post can be soft-deleted — or overtaken by a concurrent NEWER update (recency
 	// guard) — between the load above and this UPDATE; the WHERE guards then match no
-	// rows. Report that as a skip instead of falsely logging a successful update
-	// (mirrors vote_consumer's RowsAffected check). Both cases are success: the row's
-	// current state supersedes this event.
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("failed to check post update result: %w", err)
-	}
-	if rowsAffected == 0 {
+	// rows. Report that as a skip instead of falsely logging a successful update.
+	// Both cases are success: the row's current state supersedes this event.
+	if errors.Is(err, sql.ErrNoRows) {
 		// The deferred rollback also reverts the gate advance — conservative: a
 		// replay re-evaluates against whatever state superseded this event.
 		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", in.uri)
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to update post: %w", err)
+	}
+	if !erased {
+		if err := c.enqueuePostClassificationTx(ctx, tx, in.uri, in.cid, in.authorDID, communityDID, classifiedFieldsChanged); err != nil {
+			return false, err
+		}
 	}
 	if c.blobReferences != nil {
 		if err := c.replacePostBlobReferences(ctx, tx, in.authorDID, in.uri, in.embed); err != nil {
@@ -545,8 +564,9 @@ func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
 
 // indexPostIfRevWins atomically indexes a post and reconciles comment counts.
 // This fixes the race condition where comments arrive before their parent post.
-// When notifications are wired, the author's erasure gate is checked before
-// touching the post row; an erased author's post is indexed without mentions.
+// When notifications or classification are wired, the author's erasure gate
+// is checked before touching the post row; an erased author's post is indexed
+// without mentions or a classification job.
 //
 // It reports whether the insert APPLIED: false means the rev gate refused the
 // event, or the row already existed. Callers that must not act on content they
@@ -577,12 +597,9 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 		return false, nil
 	}
 
-	var erased bool
-	if c.notifications != nil {
-		erased, err = c.notifications.ErasureGateTx(ctx, tx, post.AuthorDID)
-		if err != nil {
-			return false, fmt.Errorf("check post author erasure before indexing: %w", err)
-		}
+	erased, err := c.authorErasureGateTx(ctx, tx, post.AuthorDID)
+	if err != nil {
+		return false, fmt.Errorf("check post author erasure before indexing: %w", err)
 	}
 	// The ban subject lock on the author, step (c) of the lock order
 	// (community_ban_hides.go): a community indexed on the author's DID sees
@@ -695,6 +712,12 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 		// This could cause data inconsistency where the displayed count doesn't match reality
 		// Roll back the transaction to maintain consistency
 		return false, fmt.Errorf("failed to reconcile comment_count for %s: %w", post.URI, reconcileErr)
+	}
+
+	if !erased {
+		if err := c.enqueuePostClassificationTx(ctx, tx, post.URI, post.CID, post.AuthorDID, post.CommunityDID, true); err != nil {
+			return false, err
+		}
 	}
 
 	if c.notifications != nil && !erased {

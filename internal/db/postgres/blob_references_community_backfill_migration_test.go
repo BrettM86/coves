@@ -23,6 +23,20 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	var existingCommunities int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM communities`).Scan(&existingCommunities))
 	require.Zero(t, existingCommunities, "the cloned database must contain no communities")
+	require.EqualValues(t, 100, testkit.MigrateDownOne(t, db, 100),
+		"100 (classification partial results) must be rolled back first")
+	require.EqualValues(t, 99, testkit.MigrateDownOne(t, db, 99),
+		"099 (classification deferral backoff) must be rolled back first")
+	require.EqualValues(t, 98, testkit.MigrateDownOne(t, db, 98),
+		"098 (classification score alerts) must be rolled back first")
+	require.EqualValues(t, 97, testkit.MigrateDownOne(t, db, 97),
+		"097 (classification verdicts) must be rolled back first")
+	require.EqualValues(t, 96, testkit.MigrateDownOne(t, db, 96),
+		"096 (classification image batches) must be rolled back first")
+	require.EqualValues(t, 95, testkit.MigrateDownOne(t, db, 95),
+		"095 (classification queue) must be rolled back first")
+	require.EqualValues(t, 94, testkit.MigrateDownOne(t, db, 94),
+		"094 (community nsfw flag events) must be rolled back first")
 	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
 		"093 (community report notifications) must be rolled back first")
 	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
@@ -168,6 +182,20 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 	require.Equal(t, oldUpdated, updated.UTC().Format(time.RFC3339))
 	firstRun := referencesSnapshot()
 	require.NotEqual(t, "[]", firstRun)
+	require.EqualValues(t, 100, testkit.MigrateDownOne(t, db, 100),
+		"100 (classification partial results) must be rolled back first")
+	require.EqualValues(t, 99, testkit.MigrateDownOne(t, db, 99),
+		"099 (classification deferral backoff) must be rolled back first")
+	require.EqualValues(t, 98, testkit.MigrateDownOne(t, db, 98),
+		"098 (classification score alerts) must be rolled back first")
+	require.EqualValues(t, 97, testkit.MigrateDownOne(t, db, 97),
+		"097 (classification verdicts) must be rolled back first")
+	require.EqualValues(t, 96, testkit.MigrateDownOne(t, db, 96),
+		"096 (classification image batches) must be rolled back first")
+	require.EqualValues(t, 95, testkit.MigrateDownOne(t, db, 95),
+		"095 (classification queue) must be rolled back first")
+	require.EqualValues(t, 94, testkit.MigrateDownOne(t, db, 94),
+		"094 (community nsfw flag events) must be rolled back first")
 	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
 		"093 (community report notifications) must be rolled back first")
 	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),
@@ -232,6 +260,20 @@ func TestCommunityBlobReferencesBackfill064_PreservesExistingReferencesAndCommun
 
 func TestCommunityBlobReferencesBackfill064_PagesPastCommunitiesWithoutImages(t *testing.T) {
 	db := testkit.DB(t)
+	require.EqualValues(t, 100, testkit.MigrateDownOne(t, db, 100),
+		"100 (classification partial results) must be rolled back first")
+	require.EqualValues(t, 99, testkit.MigrateDownOne(t, db, 99),
+		"099 (classification deferral backoff) must be rolled back first")
+	require.EqualValues(t, 98, testkit.MigrateDownOne(t, db, 98),
+		"098 (classification score alerts) must be rolled back first")
+	require.EqualValues(t, 97, testkit.MigrateDownOne(t, db, 97),
+		"097 (classification verdicts) must be rolled back first")
+	require.EqualValues(t, 96, testkit.MigrateDownOne(t, db, 96),
+		"096 (classification image batches) must be rolled back first")
+	require.EqualValues(t, 95, testkit.MigrateDownOne(t, db, 95),
+		"095 (classification queue) must be rolled back first")
+	require.EqualValues(t, 94, testkit.MigrateDownOne(t, db, 94),
+		"094 (community nsfw flag events) must be rolled back first")
 	require.EqualValues(t, 93, testkit.MigrateDownOne(t, db, 93),
 		"093 (community report notifications) must be rolled back first")
 	require.EqualValues(t, 92, testkit.MigrateDownOne(t, db, 92),

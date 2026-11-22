@@ -132,6 +132,30 @@ type CommunityEventConsumer struct {
 	// enforces as a hard gate. See pds.bearerClientConfig.transportOptions, the
 	// same field for the same reason.
 	transportOptions []covesoauth.Option
+
+	// flagNotifier delivers the community nsfw flag alerts a create or update
+	// recorded, after that write committed. nil sends nothing.
+	flagNotifier CommunityFlagNotifier
+}
+
+// CommunityFlagNotifier delivers a community's pending nsfw flag change
+// alerts after its profile change has committed. It records failures itself
+// and never fails the event.
+type CommunityFlagNotifier interface {
+	DeliverPending(ctx context.Context, communityDID string)
+}
+
+// WithCommunityFlagNotifier installs the notifier the consumer calls,
+// synchronously, after every successful community create or update.
+func WithCommunityFlagNotifier(n CommunityFlagNotifier) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.flagNotifier = n }
+}
+
+// notifyFlagChange hands a committed community write to the flag notifier.
+func (c *CommunityEventConsumer) notifyFlagChange(ctx context.Context, communityDID string) {
+	if c.flagNotifier != nil {
+		c.flagNotifier.DeliverPending(ctx, communityDID)
+	}
 }
 
 // CommunityConsumerOption configures optional CommunityEventConsumer behaviour.
@@ -1187,6 +1211,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	}
 
 	log.Printf("Indexed new community: %s (%s)", community.Handle, community.DID)
+	c.notifyFlagChange(ctx, community.DID)
 	return nil
 }
 
@@ -1395,6 +1420,7 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	}
 
 	log.Printf("Updated community: %s (%s)", existing.Handle, existing.DID)
+	c.notifyFlagChange(ctx, existing.DID)
 	return nil
 }
 

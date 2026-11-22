@@ -13,6 +13,7 @@ import (
 	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/blobreferences"
+	"Coves/internal/core/classification"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/moderation"
@@ -65,6 +66,11 @@ type CommentEventConsumer struct {
 	accountBanAuthorityDID string
 	// nil disables blob reference writes.
 	blobReferences blobreferences.Repository
+	// classificationEnqueuer queues a classification job, under
+	// classificationEvaluation, in the transaction that indexes or edits a
+	// comment. nil disables classification enqueueing.
+	classificationEnqueuer   ClassificationEnqueuer
+	classificationEvaluation classification.Evaluation
 }
 
 // CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
@@ -159,10 +165,27 @@ func WithCommentNotifications(repository notifications.Repository) CommentEventC
 func (c *CommentEventConsumer) NotificationsWired() bool { return c.notifications != nil }
 
 // ErasureGated reports whether comment events from erased accounts are dropped.
-// The gate rides on the notifications repository's ErasureGateTx, which reads the
-// erasure marker under the shared erasure lock inside the write transaction, so it
-// is active exactly when notifications are wired.
-func (c *CommentEventConsumer) ErasureGated() bool { return c.notifications != nil }
+// The gate rides on the notifications repository's or the classification
+// enqueuer's ErasureGateTx, which reads the erasure marker under the shared
+// erasure lock inside the write transaction, so it is active exactly when
+// either is wired.
+func (c *CommentEventConsumer) ErasureGated() bool {
+	return c.notifications != nil || c.classificationEnqueuer != nil
+}
+
+// commenterErasureGateTx takes commenterDID's shared erasure lock in tx and
+// reports whether the account is erased, through the notifications repository
+// or, when only classification is wired, the classification enqueuer. With
+// neither wired it reports false.
+func (c *CommentEventConsumer) commenterErasureGateTx(ctx context.Context, tx *sql.Tx, commenterDID string) (bool, error) {
+	if c.notifications != nil {
+		return c.notifications.ErasureGateTx(ctx, tx, commenterDID)
+	}
+	if c.classificationEnqueuer != nil {
+		return c.classificationEnqueuer.ErasureGateTx(ctx, tx, commenterDID)
+	}
+	return false, nil
+}
 
 // WithCommentBlobReferences indexes the blobs served by an indexed comment embed.
 func WithCommentBlobReferences(repository blobreferences.Repository) CommentEventConsumerOption {
@@ -541,8 +564,13 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 				- CASE
 					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
 					THEN $9 ELSE bridged_downvote_count END
-		WHERE uri = $1 AND deleted_at IS NULL
+		FROM (
+			SELECT id AS old_id, content AS old_content, embed AS old_embed
+			FROM comments WHERE uri = $1 FOR UPDATE
+		) old
+		WHERE id = old.old_id AND deleted_at IS NULL
 		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
+		RETURNING (old.old_content IS DISTINCT FROM content OR old.old_embed IS DISTINCT FROM embed)
 	`
 	// REV GATE + UPDATE in one transaction. The gate (strictly-newer rev wins)
 	// is the cross-feed ordering guard: the time_us recency guard in the WHERE
@@ -572,10 +600,10 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	var erased bool
 	var storedFacets, lockedParentURI, lockedRootURI string
 	var storedCreatedAt time.Time
-	if c.notifications != nil {
+	if c.ErasureGated() {
 		// Acquire the erasure lock before locking any content row, so Delete
 		// cannot wait for a row held by an edit waiting for the erasure lock.
-		erased, err = c.notifications.ErasureGateTx(ctx, tx, repoDID)
+		erased, err = c.commenterErasureGateTx(ctx, tx, repoDID)
 		if err != nil {
 			return fmt.Errorf("check comment actor erasure before updating: %w", err)
 		}
@@ -614,15 +642,13 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		}
 	}
 
-	result, err := tx.ExecContext(ctx, updateQuery,
+	var classifiedFieldsChanged bool
+	err = tx.QueryRowContext(ctx, updateQuery,
 		uri, commit.CID, commentRecord.Content,
 		facetsJSON, embedJSON, labelsJSON, pq.Array(commentRecord.Langs),
 		incomingUp, incomingDn, incomingAsOf,
 		timeUS,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update comment: %w", err)
-	}
+	).Scan(&classifiedFieldsChanged)
 
 	// The comment can be soft-deleted — or overtaken by a concurrent NEWER update
 	// (recency guard) — between the load above and this UPDATE; the WHERE guards then
@@ -630,18 +656,20 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	// event, so skip instead of erroring (an error would re-dead-letter the event).
 	// The deferred rollback also reverts the gate advance, which is the conservative
 	// choice: a replay re-evaluates against whatever state superseded this event.
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check comment update result: %w", err)
-	}
-	if rowsAffected == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		log.Printf("Update event for comment that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update comment: %w", err)
 	}
 	if c.blobReferences != nil {
 		if err := c.replaceCommentBlobReferences(ctx, tx, repoDID, uri, embedJSON); err != nil {
 			return err
 		}
+	}
+	if err := c.enqueueCommentClassificationTx(ctx, tx, uri, commit.CID, repoDID, storedRootURI, classifiedFieldsChanged); err != nil {
+		return err
 	}
 
 	if c.notifications != nil && !erased {
@@ -848,11 +876,11 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	}
 
 	var erased bool
-	if c.notifications != nil {
+	if c.ErasureGated() {
 		// Lock before touching comments or posts: waiting for the shared erasure
 		// lock while holding a content row could deadlock with Delete, which holds
 		// the exclusive erasure lock while waiting for that row.
-		erased, err = c.notifications.ErasureGateTx(ctx, tx, comment.CommenterDID)
+		erased, err = c.commenterErasureGateTx(ctx, tx, comment.CommenterDID)
 		if err != nil {
 			return fmt.Errorf("check comment actor erasure before indexing: %w", err)
 		}
@@ -945,15 +973,23 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 						-- counts plus the incoming bridged values (see the resurrect
 						-- path below for the migration 031 invariant).
 						score = upvote_count + $11 - downvote_count - $12
-					WHERE id = $14
+					FROM (
+						SELECT id AS old_id, content AS old_content, embed AS old_embed
+						FROM comments WHERE id = $14 FOR UPDATE
+					) old
+					WHERE id = old.old_id
+					RETURNING (old.old_content IS DISTINCT FROM content OR old.old_embed IS DISTINCT FROM embed)
 				`
-				if _, err = tx.ExecContext(ctx, recreateQuery,
+				// As in updateComment: a new CID whose content and embed are
+				// unchanged enqueues only while a non-terminal job exists.
+				var classifiedFieldsChanged bool
+				if err = tx.QueryRowContext(ctx, recreateQuery,
 					comment.CID, comment.RootCID, comment.ParentCID,
 					comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels,
 					pq.Array(comment.Langs), comment.CreatedAt, comment.IndexedAt,
 					comment.BridgedUpvoteCount, comment.BridgedDownvoteCount, comment.BridgedStatsAsOf,
 					existingID,
-				); err != nil {
+				).Scan(&classifiedFieldsChanged); err != nil {
 					return fmt.Errorf("failed to apply re-created comment content: %w", err)
 				}
 				if c.blobReferences != nil {
@@ -980,6 +1016,9 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 							return err
 						}
 					}
+				}
+				if err := c.enqueueCommentClassificationTx(ctx, tx, comment.URI, comment.CID, comment.CommenterDID, comment.RootURI, classifiedFieldsChanged); err != nil {
+					return err
 				}
 				// Parent unchanged and the row was never decounted, so parent counts
 				// are already correct — commit without the increment sections below.
@@ -1141,6 +1180,10 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		if err := c.replaceCommentBlobReferences(ctx, tx, comment.CommenterDID, comment.URI, comment.Embed); err != nil {
 			return err
 		}
+	}
+	// A resurrection or a fresh insert is a new record: classify it.
+	if err := c.enqueueCommentClassificationTx(ctx, tx, comment.URI, comment.CID, comment.CommenterDID, comment.RootURI, true); err != nil {
+		return err
 	}
 
 	// 1.2. Classify the new (or re-created) record against the community ban

@@ -179,6 +179,17 @@ a publish command names any of them:
   the community's repo at the subject's derived key, carrying `subject`, `role`
   and `createdAt`; awaiting publication)
 
+Also held back: the content classifier review, operations and metrics
+endpoints, which only this instance's admins call
+(`docs/PRD_CONTENT_CLASSIFICATION.md` R5, R6):
+
+- `moderation/listClassificationResults.json`
+- `moderation/recordClassificationVerdict.json`
+- `moderation/getClassificationPrecision.json`
+- `moderation/enqueueClassification.json`
+- `moderation/getCommunityClassificationSummary.json`
+- `moderation/getClassificationMetrics.json`
+
 `goat lex publish` sweeps every schema in a directory operand, so the commands
 below name files, never the `actor`, `moderation` or `community` directory.
 `community/rules.json` and `community/moderator.json` share the published

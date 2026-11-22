@@ -135,6 +135,12 @@ func TestLexiconPublishingRunbookSafety(t *testing.T) {
 		"moderation/ruleProposal.json",
 		"moderation/tribunalVote.json",
 		"moderation/vote.json",
+		"moderation/listClassificationResults.json",
+		"moderation/recordClassificationVerdict.json",
+		"moderation/getClassificationPrecision.json",
+		"moderation/enqueueClassification.json",
+		"moderation/getCommunityClassificationSummary.json",
+		"moderation/getClassificationMetrics.json",
 		"community/rules.json",
 		"community/moderator.json",
 	}

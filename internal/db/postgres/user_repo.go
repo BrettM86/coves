@@ -694,6 +694,17 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM moderation_content_snapshots WHERE author_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete moderation content snapshots for did=%s: %w", did, err)
 	}
+	// The author's classification results and jobs go too. A worker storing
+	// a result takes the author's shared erasure lock first, so it either
+	// commits before this erasure holds the exclusive lock (and the deletes
+	// remove what it stored) or waits for this commit, then finds no job and
+	// stores nothing.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM classification_results WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete classification results for did=%s: %w", did, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM classification_jobs WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete classification jobs for did=%s: %w", did, err)
+	}
 
 	// 12. Delete notifications for this recipient or actor after content deletes.
 	// A notification consumer locks the recipient's content row (count/reply_count

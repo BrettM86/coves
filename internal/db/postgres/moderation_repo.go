@@ -807,6 +807,15 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 	return &moderationTransaction{tx: tx}
 }
 
+// hiddenReasonActionExistsSQL is whether any moderation action on the subject
+// at subjectURIExpr has a reason in reasonsExpr, a text array of the hidden
+// reasons (moderation.HiddenActionReasons). The admin log withholds such a
+// subject's current text.
+func hiddenReasonActionExistsSQL(subjectURIExpr, reasonsExpr string) string {
+	return `EXISTS (SELECT 1 FROM moderation_actions hidden
+		WHERE hidden.subject_uri = ` + subjectURIExpr + ` AND hidden.reason = ANY(` + reasonsExpr + `::text[]))`
+}
+
 // ListActions reads a page of the action log.
 //
 // Each row's SubjectAccess is decided now, not when the action was recorded: a
@@ -844,8 +853,7 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		LEFT JOIN LATERAL (
 		    SELECT p.cid, p.title, p.content, p.embed FROM posts p
 		    WHERE a.action = ANY($23::text[]) AND p.uri = a.subject_uri AND p.deleted_at IS NULL
-		      AND NOT EXISTS (SELECT 1 FROM moderation_actions hidden
-		                      WHERE hidden.subject_uri = a.subject_uri AND hidden.reason = ANY($15::text[]))
+		      AND NOT `+hiddenReasonActionExistsSQL("a.subject_uri", "$15")+`
 		) current_post ON TRUE
 		CROSS JOIN LATERAL (
 		    SELECT CASE WHEN
@@ -860,8 +868,7 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		            AND p.deleted_at IS NOT NULL) AS author_deleted,
 		    NULLIF(a.subject_root_uri, '') IS NOT NULL AND (
 		        NOT EXISTS (SELECT 1 FROM posts p WHERE p.uri = a.subject_root_uri)
-		        OR EXISTS (SELECT 1 FROM moderation_actions root_action
-		                   WHERE root_action.subject_uri = a.subject_root_uri AND root_action.reason = ANY($15::text[]))
+		        OR `+hiddenReasonActionExistsSQL("a.subject_root_uri", "$15")+`
 		    ) AS root_withheld
 		) subject_access
 		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
