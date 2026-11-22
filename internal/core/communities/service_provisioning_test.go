@@ -42,7 +42,7 @@ import (
 
 const (
 	// The instance identity these tests provision under. It matches the
-	// AppView's default (internal/config: INSTANCE_DID defaults to
+	// AppView's default (internal/config: SERVER_DID defaults to
 	// did:web:coves.social, and the domain is derived from it), and the domain
 	// must be one of the PDS' PDS_SERVICE_HANDLE_DOMAINS or account creation is
 	// refused.

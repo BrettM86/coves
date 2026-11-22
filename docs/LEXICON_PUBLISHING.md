@@ -188,8 +188,8 @@ network.
 ## Publishing identity and DNS delegation
 
 The publisher is `did:web:coves.social` (handle `coves.social`) on
-`https://pds.coves.me`. This is the instance's own account: `INSTANCE_DID` and
-`PDS_INSTANCE_HANDLE` in `.env.prod.example`. The schema records live in its
+`https://pds.coves.me`. This is the server's own account: `SERVER_DID` and
+`SERVER_HANDLE` in `.env.prod.example`. The schema records live in its
 repo.
 
 DNS delegation is one TXT record per unique NSID authority, each with content

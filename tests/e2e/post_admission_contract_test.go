@@ -248,7 +248,7 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 // aggregator bot presents to post.create.
 //
 // The audience is communityInstanceDID for the reason that constant documents:
-// INSTANCE_DID is unset in .env.ci, so the AppView's DualAuth validator was
+// SERVER_DID is unset in .env.ci, so the AppView's DualAuth validator was
 // built with internal/config's compiled-in default, and a JWT for any other
 // audience is refused before the signature is even consulted. lxm is pinned to
 // the one route the token is spent on; the AppView validates service JWTs

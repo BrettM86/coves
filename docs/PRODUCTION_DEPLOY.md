@@ -48,7 +48,7 @@ The authoritative reference is `coves-frontend/docs/ENVIRONMENT.md`. These value
 
 ## Compose and Caddy changes
 
-Deploy with Compose directly from `/opt/coves`. Compose reads `/opt/coves/.env` (not in the repository) for `${VAR}` interpolation, and a value there overrides the `${VAR:-default}` defaults in the compose file. After bumping a pin in the compose file, check that `.env` does not still set the variable, or the bump does nothing. Do not shell-source `.env`: some values (for example `OTEL_EXPORTER_OTLP_HEADERS`) are unquoted and contain spaces, which Compose accepts and bash does not.
+Deploy with Compose directly from `/opt/coves`. Compose reads `/opt/coves/.env` (not in the repository) for `${VAR}` interpolation, and a value there overrides the `${VAR:-default}` defaults in the compose file. After bumping a pin in the compose file, check that `.env` does not still set the variable, or the bump does nothing. The server identity variables were renamed: `SERVER_HANDLE`, `SERVER_REPO_PASSWORD`, `SERVER_DID`, `SERVER_DOMAIN` and `SERVER_ATPROTO_PUBLIC_KEY` replace `PDS_INSTANCE_HANDLE`, `PDS_INSTANCE_PASSWORD`, `INSTANCE_DID`, `INSTANCE_DOMAIN` and `INSTANCE_ATPROTO_PUBLIC_KEY`. The old names still work as a deprecated fallback. An old name set alone logs a warning naming it and its replacement; an old name set to the same value as its replacement is silent; an old name with a different value logs a warning and is ignored. The `INSTANCE_*` and `PDS_INSTANCE_*` lines in `docker-compose.prod.yml` exist only so a rollback to a pre-rename image still works, and can be dropped once that rollback is no longer needed. Do not shell-source `.env`: some values (for example `OTEL_EXPORTER_OTLP_HEADERS`) are unquoted and contain spaces, which Compose accepts and bash does not.
 
 To deploy the AppView, tag the image with the commit so `docker ps` shows what is running (`.env` sets `VERSION=latest`, and an exported value beats it):
 
@@ -110,7 +110,7 @@ cd /opt/coves
   docker run --rm --network coves-prod-network \
     -e DATABASE_URL -e ENCRYPTION_KEY -e OAUTH_SEAL_SECRET -e CURSOR_SECRET \
     -e IMAGE_PROXY_BASE_URL="${IMAGE_PROXY_BASE_URL:-https://img.coves.social}" \
-    -e INSTANCE_DID=did:web:coves.social -e INSTANCE_DOMAIN=coves.social \
+    -e SERVER_DID=did:web:coves.social -e SERVER_DOMAIN=coves.social \
     -e APPVIEW_PUBLIC_URL=https://coves.social -e PDS_URL=https://coves.me \
     -e 'JETSTREAM_FEEDS=bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080' \
     -e AUTH_SKIP_VERIFY=false -e SKIP_DID_WEB_VERIFICATION=false \

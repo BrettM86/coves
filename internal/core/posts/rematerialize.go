@@ -380,7 +380,7 @@ type RematerializeReport struct {
 	// with an active removal, none of them by InstanceDID at instance scope.
 	// Such a post is hidden on the read path but NOT skipped here. Moderation
 	// writes only (instance DID, instance) removals, so a non-zero count means
-	// this tool's INSTANCE_DID differs from the server's.
+	// this tool's SERVER_DID differs from the server's.
 	UnmatchedRemovals int
 }
 

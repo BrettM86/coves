@@ -10,6 +10,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,34 @@ func stringVar(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// renamedVar reads an environment variable that was renamed, falling back to
+// its deprecated name. It exists for the transition while deployments still set
+// the old names; once they have been renamed, callers go back to lookup or
+// stringVar (SERVER_DID's explicit default then collapses back into stringVar).
+// The new name wins whenever it is set. A deprecated name set alone, or set to a
+// value that differs from the new one, logs a warning naming both variables —
+// never the value, since some of these are passwords. Identical values on both
+// names are silent: production compose sets both spellings during the
+// transition so an image rollback still works.
+func renamedVar(name, deprecated string) string {
+	value := lookup(name)
+	deprecatedValue := lookup(deprecated)
+	switch {
+	case deprecatedValue == "":
+		return value
+	case value == "":
+		slog.Warn("deprecated environment variable is set; rename it",
+			"deprecated", deprecated, "replacement", name)
+		return deprecatedValue
+	case value == deprecatedValue:
+		return value
+	default:
+		slog.Warn("deprecated environment variable differs from its replacement and is ignored",
+			"deprecated", deprecated, "replacement", name)
+		return value
+	}
 }
 
 // boolVar reports whether key is set to a recognised truthy value. Anything

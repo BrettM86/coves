@@ -80,13 +80,33 @@ services:
       # Database
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
 
-      # Instance identity
+      # Server identity. The INSTANCE_* lines (here and the #atproto key below)
+      # are deprecated duplicates of the SERVER_* lines, kept so a rollback to a
+      # pre-rename image still works. Identical values on both spellings are
+      # silent in the new image. Keep both lines of each pair in step when
+      # editing; drop the INSTANCE_* lines once no pre-rename image may be
+      # rolled back to.
+      SERVER_DID: did:web:coves.social
+      SERVER_DOMAIN: coves.social
       INSTANCE_DID: did:web:coves.social
       INSTANCE_DOMAIN: coves.social
       APPVIEW_PUBLIC_URL: https://coves.social
 
       # PDS connection (separate domain!)
       PDS_URL: https://coves.me
+      # The server's own account on the PDS (not the PDS admin), used to
+      # publish the built-in feed generator records. PDS_INSTANCE_* are
+      # deprecated pass-throughs that fall back to the SERVER_* values, so a
+      # rollback to a pre-rename image still gets credentials after
+      # /opt/coves/.env is renamed. SERVER_* has no such fallback, so a
+      # not-yet-renamed .env still makes the new image warn about the old
+      # names. Identical values on both spellings are silent. Keep both lines of each pair in step when
+      # editing; drop the PDS_INSTANCE_* lines once no pre-rename image may be
+      # rolled back to.
+      SERVER_HANDLE: ${SERVER_HANDLE:-}
+      SERVER_REPO_PASSWORD: ${SERVER_REPO_PASSWORD:-}
+      PDS_INSTANCE_HANDLE: ${PDS_INSTANCE_HANDLE:-${SERVER_HANDLE:-}}
+      PDS_INSTANCE_PASSWORD: ${PDS_INSTANCE_PASSWORD:-${SERVER_REPO_PASSWORD:-}}
 
       # Jetstream feeds: every consumer runs once per feed; per-consumer
       # collection filters are derived in code (jetstream.WantedCollections).
@@ -169,6 +189,7 @@ services:
       # Public #atproto key of did:web:coves.social, as listed in
       # static/.well-known/did.json. Keep the two in step. Required with
       # LABEL_SIGNING_KEY, and must differ from the label key.
+      SERVER_ATPROTO_PUBLIC_KEY: zQ3shu1T3Y3MYoC1n7fCqkZqyrk8FiY3PV3BYM2JwyqcXFY6s
       INSTANCE_ATPROTO_PUBLIC_KEY: zQ3shu1T3Y3MYoC1n7fCqkZqyrk8FiY3PV3BYM2JwyqcXFY6s
 
       # Trusted virtual bridge PDS hosts. Required for Tidepool-authored

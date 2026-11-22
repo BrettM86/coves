@@ -751,8 +751,8 @@ func logCensus(report posts.RematerializeReport, dryRun bool) {
 		prefix, scopeName(report.CommunityScope), report.Discovered, report.Done, report.Fallbacks,
 		report.RemainingLegacy, report.SkippedRemoved, report.UnmatchedRemovals, report.ScopeComplete)
 	if report.UnmatchedRemovals > 0 {
-		log.Printf("rematerialize-posts: WARNING — %d legacy post(s) carry an active removal that is not by this tool's INSTANCE_DID at instance scope. "+
-			"They are hidden on the read path but were NOT skipped. A non-zero count usually means INSTANCE_DID differs from the server's.",
+		log.Printf("rematerialize-posts: WARNING — %d legacy post(s) carry an active removal that is not by this tool's SERVER_DID at instance scope. "+
+			"They are hidden on the read path but were NOT skipped. A non-zero count usually means SERVER_DID differs from the server's.",
 			report.UnmatchedRemovals)
 	}
 	for _, state := range censusOrder {

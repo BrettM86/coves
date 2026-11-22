@@ -1428,7 +1428,7 @@ func TestRematerializeRun_NonMatchingRemovalGoesThroughTheCensusAndMigrates(t *t
 }
 
 // Moderation writes only removals by the instance DID at instance scope, so an
-// active removal that matches neither means this tool's INSTANCE_DID differs
+// active removal that matches neither means this tool's SERVER_DID differs
 // from the server's. Such a post still migrates, but the run counts it.
 func TestRematerializeRun_CountsActiveRemovalsThatDoNotMatchTheInstance(t *testing.T) {
 	ctx := context.Background()

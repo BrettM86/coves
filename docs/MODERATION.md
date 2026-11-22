@@ -16,7 +16,7 @@ Content state is several independent facts, never one `deleted` flag: the author
 
 ## Authority
 
-Admins are the DIDs listed in `MODERATION_ADMINS`. An empty list grants nobody, and config validation rejects an entry that is not a DID. `RequireInstanceAdmin` in `internal/api/middleware/admin_auth.go` checks the caller's DID (OAuth session or PDS service JWT) against the list before any handler or idempotency replay runs. Never authorize by handle, community creatorship, PDS ownership or a caller-supplied actor field. The authority DID on every action is `INSTANCE_DID`.
+Admins are the DIDs listed in `MODERATION_ADMINS`. An empty list grants nobody, and config validation rejects an entry that is not a DID. `RequireInstanceAdmin` in `internal/api/middleware/admin_auth.go` checks the caller's DID (OAuth session or PDS service JWT) against the list before any handler or idempotency replay runs. Never authorize by handle, community creatorship, PDS ownership or a caller-supplied actor field. The authority DID on every action is `SERVER_DID`.
 
 Any admin may reverse another admin's decision within the same authority and scope, and history keeps both actors. Removing a DID from the list does not erase or retract its past actions.
 

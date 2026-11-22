@@ -302,7 +302,7 @@ stack_prefetch_modules() {
 # stack_start brings the services up in the order their dependencies force.
 stack_start() {
     # Staged deliberately: the AppView is NOT started with the rest. It
-    # authenticates to the PDS as PDS_INSTANCE_HANDLE, and in a fresh PDS that
+    # authenticates to the PDS as SERVER_HANDLE, and in a fresh PDS that
     # account and the moderation admins do not exist yet.
     step "Starting infrastructure (Postgres ×4, PLC, PDS ×2, relay, Turnstile stub)"
     # Jetstream is deliberately absent from this --wait list. `up --wait` fails

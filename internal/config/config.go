@@ -415,23 +415,24 @@ type InstanceConfig struct {
 	// poller's own default applies.
 	BridgedVotePollSweepCap int
 
-	// AtprotoPublicKey is the public multibase of the instance #atproto key
-	// (INSTANCE_ATPROTO_PUBLIC_KEY), published in the instance DID document.
+	// AtprotoPublicKey is the public multibase of the server's #atproto key
+	// (SERVER_ATPROTO_PUBLIC_KEY), published in the server's DID document.
 	AtprotoPublicKey string
 }
 
-// PDSConfig holds this instance's PDS settings: the default PDS URL, the
-// instance account, and the PDS admin password.
+// PDSConfig holds this server's PDS settings: the default PDS URL, the
+// server's own account on that PDS, and the PDS admin password.
 type PDSConfig struct {
 	// URL is the default PDS for this instance.
 	URL string
 
-	// InstanceHandle and InstancePassword authenticate the instance's PDS
-	// account, which publishes the built-in feed generator records at
-	// startup. When either is empty, startup logs an ERROR and no feed
-	// generator records are published.
-	InstanceHandle   string
-	InstancePassword string
+	// ServerHandle and ServerRepoPassword (SERVER_HANDLE, SERVER_REPO_PASSWORD)
+	// authenticate the server's own account on the PDS — not the PDS admin —
+	// which publishes the built-in feed generator records at startup. When
+	// either is empty, startup logs an ERROR and no feed generator records are
+	// published.
+	ServerHandle       string
+	ServerRepoPassword string
 
 	// AdminPassword mints single-use PDS invite codes after a successful
 	// captcha, and mints the invite for each community PDS account. Empty
@@ -440,10 +441,10 @@ type PDSConfig struct {
 	AdminPassword string
 }
 
-// HasInstanceCredentials reports whether the instance can authenticate with
-// its PDS account to publish the built-in feed generator records.
-func (p PDSConfig) HasInstanceCredentials() bool {
-	return p.InstanceHandle != "" && p.InstancePassword != ""
+// HasServerCredentials reports whether the server can authenticate with
+// its own PDS account to publish the built-in feed generator records.
+func (p PDSConfig) HasServerCredentials() bool {
+	return p.ServerHandle != "" && p.ServerRepoPassword != ""
 }
 
 // JetstreamConfig holds the firehose feed topology.
@@ -644,10 +645,10 @@ func Load() (*Config, error) {
 	}
 
 	cfg.PDS = PDSConfig{
-		URL:              stringVar("PDS_URL", "http://localhost:3001"),
-		InstanceHandle:   lookup("PDS_INSTANCE_HANDLE"),
-		InstancePassword: lookup("PDS_INSTANCE_PASSWORD"),
-		AdminPassword:    lookup("PDS_ADMIN_PASSWORD"),
+		URL:                stringVar("PDS_URL", "http://localhost:3001"),
+		ServerHandle:       renamedVar("SERVER_HANDLE", "PDS_INSTANCE_HANDLE"),
+		ServerRepoPassword: renamedVar("SERVER_REPO_PASSWORD", "PDS_INSTANCE_PASSWORD"),
+		AdminPassword:      lookup("PDS_ADMIN_PASSWORD"),
 	}
 
 	cfg.Signup = SignupConfig{
@@ -1094,23 +1095,26 @@ func (c *Config) loadInstance() error {
 		return err
 	}
 
-	atprotoPublicKey := lookup("INSTANCE_ATPROTO_PUBLIC_KEY")
+	atprotoPublicKey := renamedVar("SERVER_ATPROTO_PUBLIC_KEY", "INSTANCE_ATPROTO_PUBLIC_KEY")
 	if atprotoPublicKey != "" {
 		if _, err := atcrypto.ParsePublicMultibase(atprotoPublicKey); err != nil {
-			return fmt.Errorf("INSTANCE_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
+			return fmt.Errorf("SERVER_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
 		}
 	}
 
-	did := stringVar("INSTANCE_DID", "did:web:coves.social")
+	did := renamedVar("SERVER_DID", "INSTANCE_DID")
+	if did == "" {
+		did = "did:web:coves.social"
+	}
 
 	// For did:web the DID *is* the domain claim, so deriving the domain from
 	// it keeps the two from drifting apart. Only non-web DIDs (did:plc) need
-	// INSTANCE_DOMAIN, and then it is required.
+	// SERVER_DOMAIN, and then it is required.
 	var domain string
 	if suffix, ok := strings.CutPrefix(did, "did:web:"); ok {
 		domain = suffix
 	} else {
-		domain = lookup("INSTANCE_DOMAIN")
+		domain = renamedVar("SERVER_DOMAIN", "INSTANCE_DOMAIN")
 	}
 
 	communityCreation := communities.CreationPolicy(lookup("COMMUNITY_CREATION"))
@@ -1289,7 +1293,7 @@ func (c *Config) loadModeration() error {
 }
 
 // loadLabels reads the label publication settings. It runs after loadInstance
-// because the instance #atproto key must differ from the label key.
+// because the server's #atproto key must differ from the label key.
 //
 // Errors name the variable and never echo a private key's value.
 func (c *Config) loadLabels() error {
@@ -1316,8 +1320,8 @@ func (c *Config) loadLabels() error {
 
 	if labelsConfig.SigningKey != nil {
 		if c.Instance.AtprotoPublicKey == "" {
-			return errors.New("INSTANCE_ATPROTO_PUBLIC_KEY is required with LABEL_SIGNING_KEY; " +
-				"the instance DID document lists it as #atproto beside the #atproto_label key")
+			return errors.New("SERVER_ATPROTO_PUBLIC_KEY is required with LABEL_SIGNING_KEY; " +
+				"the server's DID document lists it as #atproto beside the #atproto_label key")
 		}
 		labelPublicKey, err := labelsConfig.SigningKey.PublicKey()
 		if err != nil {
@@ -1325,10 +1329,10 @@ func (c *Config) loadLabels() error {
 		}
 		atprotoPublicKey, err := atcrypto.ParsePublicMultibase(c.Instance.AtprotoPublicKey)
 		if err != nil {
-			return fmt.Errorf("INSTANCE_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
+			return fmt.Errorf("SERVER_ATPROTO_PUBLIC_KEY must be a public key multibase: %w", err)
 		}
 		if atprotoPublicKey.Multibase() == labelPublicKey.Multibase() {
-			return errors.New("INSTANCE_ATPROTO_PUBLIC_KEY must differ from the LABEL_SIGNING_KEY public key; " +
+			return errors.New("SERVER_ATPROTO_PUBLIC_KEY must differ from the LABEL_SIGNING_KEY public key; " +
 				"the label key is a separate #atproto_label key")
 		}
 	}
@@ -1450,14 +1454,14 @@ func (c *Config) Validate() error {
 
 	if c.Instance.Domain == "" {
 		problems = append(problems,
-			"INSTANCE_DOMAIN is required when INSTANCE_DID is not a did:web DID")
+			"SERVER_DOMAIN is required when SERVER_DID is not a did:web DID")
 	}
 	if !strings.HasPrefix(c.Instance.DID, "did:") {
 		// This becomes the audience every aggregator service JWT is validated
 		// against, so a non-DID value fails every aggregator request at
 		// runtime rather than at startup.
 		problems = append(problems, fmt.Sprintf(
-			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID,
+			"SERVER_DID must be a DID (got %q)", c.Instance.DID,
 		))
 	}
 

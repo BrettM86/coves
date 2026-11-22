@@ -114,7 +114,7 @@ const (
 	communityProfileCollection = "social.coves.community.profile"
 
 	// communityInstanceDID is the AppView's instance identity, which in the CI
-	// stack is internal/config's compiled-in default: INSTANCE_DID is unset in
+	// stack is internal/config's compiled-in default: SERVER_DID (and the deprecated INSTANCE_DID) is unset in
 	// .env.ci, so Instance.DID is "did:web:coves.social" and Instance.Domain is
 	// derived from it.
 	//

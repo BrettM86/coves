@@ -27,8 +27,8 @@ import (
 //
 // # WHICH AT-URI IS THE FEED
 //
-// The feed is named at://<INSTANCE_DID>/social.coves.feed.generator/hot, built
-// from the AppView's configured instance DID. In this stack INSTANCE_DID is
+// The feed is named at://<SERVER_DID>/social.coves.feed.generator/hot, built
+// from the AppView's configured instance DID. In this stack SERVER_DID is
 // unset, so the AppView runs on internal/config's default, which this package
 // records once as communityInstanceDID. The PDS record's own at-uri carries the
 // instance PDS account's did:plc and is a different string; that is expected,
@@ -83,9 +83,9 @@ func homeFeedPost(ctx context.Context, viewer *testkit.AppView, feed, uri string
 func TestFeedGetFeedContract_HotBuiltinPublishedAndServedForHome(t *testing.T) {
 	p := newPipeline(t)
 
-	instanceHandle := os.Getenv("PDS_INSTANCE_HANDLE")
+	instanceHandle := os.Getenv("SERVER_HANDLE")
 	require.NotEmpty(t, instanceHandle,
-		"PDS_INSTANCE_HANDLE must be set (the runner reads it from .env.ci, as the AppView does); run 'make ci'")
+		"SERVER_HANDLE must be set (the runner reads it from .env.ci, as the AppView does); run 'make ci'")
 
 	// The AppView writes the record at startup; the health check may answer
 	// before the write lands, so the record is waited for rather than read once.

@@ -38,7 +38,7 @@ func prodEnv(t *testing.T) {
 	t.Setenv("ENCRYPTION_KEY", validEncryptionKey)
 	t.Setenv("CURSOR_SECRET", "a-real-cursor-secret-long-enough")
 	t.Setenv("JETSTREAM_FEEDS", "bsky=wss://jetstream2.us-east.bsky.network")
-	t.Setenv("INSTANCE_DID", "did:web:coves.social")
+	t.Setenv("SERVER_DID", "did:web:coves.social")
 	t.Setenv("APPVIEW_PUBLIC_URL", "https://coves.social")
 	t.Setenv("PDS_URL", "https://pds.coves.social")
 	t.Setenv("IMAGE_PROXY_BASE_URL", "https://img.coves.social")
@@ -352,20 +352,20 @@ func TestLoad_RejectsLocalhostURLsInProduction(t *testing.T) {
 	})
 }
 
-// INSTANCE_DID becomes the audience every aggregator service JWT is validated
+// SERVER_DID becomes the audience every aggregator service JWT is validated
 // against, so a non-DID value fails every aggregator request at runtime.
 func TestLoad_RejectsNonDIDInstanceDID(t *testing.T) {
 	clearEnv(t)
 	prodEnv(t)
-	t.Setenv("INSTANCE_DID", "coves.social")
-	t.Setenv("INSTANCE_DOMAIN", "coves.social")
+	t.Setenv("SERVER_DID", "coves.social")
+	t.Setenv("SERVER_DOMAIN", "coves.social")
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("Load() accepted an INSTANCE_DID that is not a DID")
+		t.Fatal("Load() accepted a SERVER_DID that is not a DID")
 	}
-	if !strings.Contains(err.Error(), "INSTANCE_DID") {
-		t.Errorf("error = %q, want it to mention INSTANCE_DID", err.Error())
+	if !strings.Contains(err.Error(), "SERVER_DID") {
+		t.Errorf("error = %q, want it to mention SERVER_DID", err.Error())
 	}
 }
 
@@ -479,20 +479,20 @@ func TestLoad_InstanceDomain(t *testing.T) {
 		},
 		{
 			// A did:web instance must not be able to mint handles under
-			// someone else's domain, so INSTANCE_DOMAIN cannot override it.
-			name:       "did:web ignores a conflicting INSTANCE_DOMAIN",
+			// someone else's domain, so SERVER_DOMAIN cannot override it.
+			name:       "did:web ignores a conflicting SERVER_DOMAIN",
 			did:        "did:web:example.social",
 			domain:     "riotgames.com",
 			wantDomain: "example.social",
 		},
 		{
-			name:       "did:plc uses INSTANCE_DOMAIN",
+			name:       "did:plc uses SERVER_DOMAIN",
 			did:        "did:plc:abc123",
 			domain:     "example.social",
 			wantDomain: "example.social",
 		},
 		{
-			name:    "did:plc without INSTANCE_DOMAIN is rejected",
+			name:    "did:plc without SERVER_DOMAIN is rejected",
 			did:     "did:plc:abc123",
 			wantErr: true,
 		},
@@ -501,8 +501,8 @@ func TestLoad_InstanceDomain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearEnv(t)
 			prodEnv(t)
-			t.Setenv("INSTANCE_DID", tc.did)
-			t.Setenv("INSTANCE_DOMAIN", tc.domain)
+			t.Setenv("SERVER_DID", tc.did)
+			t.Setenv("SERVER_DOMAIN", tc.domain)
 
 			cfg, err := Load()
 			if tc.wantErr {
@@ -660,7 +660,7 @@ func TestValidate_ReportsAllProblems(t *testing.T) {
 		t.Fatal("Validate() returned nil for an invalid production config")
 	}
 	for _, want := range []string{
-		"INSTANCE_DOMAIN", "OAUTH_SEAL_SECRET", "ENCRYPTION_KEY", "CURSOR_SECRET", "JETSTREAM_FEEDS",
+		"SERVER_DOMAIN", "OAUTH_SEAL_SECRET", "ENCRYPTION_KEY", "CURSOR_SECRET", "JETSTREAM_FEEDS",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %s; got:\n%s", want, err.Error())
@@ -1124,7 +1124,7 @@ func TestMigrationDSN_StripsKeywordFormTimeout(t *testing.T) {
 	}
 }
 
-func TestPDSConfig_HasInstanceCredentials(t *testing.T) {
+func TestPDSConfig_HasServerCredentials(t *testing.T) {
 	tests := []struct {
 		name     string
 		handle   string
@@ -1138,9 +1138,9 @@ func TestPDSConfig_HasInstanceCredentials(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := PDSConfig{InstanceHandle: tc.handle, InstancePassword: tc.password}
-			if got := p.HasInstanceCredentials(); got != tc.want {
-				t.Errorf("HasInstanceCredentials() = %v, want %v", got, tc.want)
+			p := PDSConfig{ServerHandle: tc.handle, ServerRepoPassword: tc.password}
+			if got := p.HasServerCredentials(); got != tc.want {
+				t.Errorf("HasServerCredentials() = %v, want %v", got, tc.want)
 			}
 		})
 	}

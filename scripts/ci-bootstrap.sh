@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Seeds the CI stack: registers both PDSes with the relay, then creates the
-# instance account and two moderation admin accounts before the AppView boots.
+# server account and two moderation admin accounts before the AppView boots.
 #
 # Both halves must happen after the infrastructure is healthy and before the
 # AppView boots, which is why they share a stage in scripts/lib/ci-stack.sh
@@ -8,11 +8,11 @@
 #
 # WHY THE PDS ACCOUNT STEP EXISTS
 #
-# The AppView writes community records to the PDS as PDS_INSTANCE_HANDLE (see
-# PDSConfig.HasInstanceCredentials in internal/config). The dev stack's PDS
-# volume persists, so that account was created once — by hand, or by a
-# scripts/create-test-account.sh that no longer exists in the tree — and has
-# been there ever since.
+# The AppView publishes its built-in feed generator records to the PDS as
+# SERVER_HANDLE (see PDSConfig.HasServerCredentials in internal/config). The
+# dev stack's PDS volume persists, so that account was created once — by
+# hand, or by a scripts/create-test-account.sh that no longer exists in the
+# tree — and has been there ever since.
 #
 # CI starts from an empty PDS on every run, so the account has to be created
 # each time, and it has to exist before the AppView boots. That ordering is why
@@ -26,9 +26,30 @@ PDS_URL=${PDS_URL:-http://localhost:3001}
 PDS2_URL=${PDS2_URL:-http://localhost:3011}
 RELAY_URL=${RELAY_URL:-http://localhost:2470}
 RELAY_ADMIN_KEY=${RELAY_ADMIN_KEY:-ci-relay-admin-key}
-HANDLE=${PDS_INSTANCE_HANDLE:?PDS_INSTANCE_HANDLE must be set (see .env.ci)}
-PASSWORD=${PDS_INSTANCE_PASSWORD:?PDS_INSTANCE_PASSWORD must be set (see .env.ci)}
-EMAIL=${COVES_CI_INSTANCE_EMAIL:-instance@local.coves.dev}
+# renamed_var NAME DEPRECATED prints NAME's value, or DEPRECATED's when NAME
+# is unset; whitespace-only counts as unset, matching internal/config. The
+# deprecated names are a fallback while env files still use them.
+renamed_var() {
+    local value
+    value=$(trim "${!1:-}")
+    if [ -z "$value" ]; then
+        value=$(trim "${!2:-}")
+    fi
+    printf '%s' "$value"
+}
+trim() {
+    local value=$1
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+HANDLE=$(renamed_var SERVER_HANDLE PDS_INSTANCE_HANDLE)
+PASSWORD=$(renamed_var SERVER_REPO_PASSWORD PDS_INSTANCE_PASSWORD)
+if [ -z "$HANDLE" ] || [ -z "$PASSWORD" ]; then
+    echo "SERVER_HANDLE and SERVER_REPO_PASSWORD must be set (see .env.ci)" >&2
+    exit 1
+fi
+EMAIL=${COVES_CI_SERVER_EMAIL:-instance@local.coves.dev}
 ADMIN_ONE_HANDLE=${CI_MODERATION_ADMIN_ONE_HANDLE:?CI_MODERATION_ADMIN_ONE_HANDLE must be set (see .env.ci)}
 ADMIN_ONE_PASSWORD=${CI_MODERATION_ADMIN_ONE_PASSWORD:?CI_MODERATION_ADMIN_ONE_PASSWORD must be set (see .env.ci)}
 ADMIN_TWO_HANDLE=${CI_MODERATION_ADMIN_TWO_HANDLE:?CI_MODERATION_ADMIN_TWO_HANDLE must be set (see .env.ci)}
@@ -171,7 +192,7 @@ provision_account() {
     PROVISIONED_DID=$account_did
 }
 
-provision_account "instance" "$HANDLE" "$EMAIL" "$PASSWORD"
+provision_account "server" "$HANDLE" "$EMAIL" "$PASSWORD"
 provision_account "moderation admin one" "$ADMIN_ONE_HANDLE" "${CI_MODERATION_ADMIN_ONE_EMAIL:-modadmin-one@local.coves.dev}" "$ADMIN_ONE_PASSWORD"
 admin_one_did=$PROVISIONED_DID
 provision_account "moderation admin two" "$ADMIN_TWO_HANDLE" "${CI_MODERATION_ADMIN_TWO_EMAIL:-modadmin-two@local.coves.dev}" "$ADMIN_TWO_PASSWORD"

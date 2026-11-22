@@ -769,7 +769,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret, accountRestriction)
 	a.discoverHotStateCleaner = discoverRepository
 
-	// getFeed: built-in generators addressed by INSTANCE_DID, ranking with the
+	// getFeed: built-in generators addressed by SERVER_DID, ranking with the
 	// same cursor secret and account restriction as searchPosts above.
 	feedRegistry := feedgen.NewRegistry(a.cfg.Instance.DID,
 		productionBuiltins(a.db, accountRestriction, discoverRepository)...)

@@ -45,6 +45,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,11 +130,16 @@ func Community(ctx context.Context, db *sql.DB, name, ownerHandle string) (strin
 
 // InstanceDID is the hosting instance's DID as the tests see it.
 //
-// Read from the environment the AppView reads it from, with the same default
-// the config package uses, so a fixture community is hosted by whoever the
-// process under test believes it is.
+// Read from the environment the AppView reads it from (SERVER_DID, then the
+// deprecated INSTANCE_DID), so a fixture community is hosted by whoever the
+// process under test believes it is. Values are trimmed and blank counts as
+// unset, as in internal/config. The fallback default deliberately differs from
+// config's did:web:coves.social: tests never claim the production identity.
 func InstanceDID() string {
-	if did := os.Getenv("INSTANCE_DID"); did != "" {
+	if did := strings.TrimSpace(os.Getenv("SERVER_DID")); did != "" {
+		return did
+	}
+	if did := strings.TrimSpace(os.Getenv("INSTANCE_DID")); did != "" {
 		return did
 	}
 	return "did:web:test.coves.social"

@@ -55,7 +55,7 @@ func (c *syncRecordClient) PutRecord(ctx context.Context, collection, rkey strin
 
 // Not parallel: each row replaces slog.Default while the sync runs.
 func TestSyncBuiltinFeedRecords(t *testing.T) {
-	withCredentials := config.PDSConfig{URL: "http://pds.test", InstanceHandle: "instance.pds.test", InstancePassword: syncTestPassword}
+	withCredentials := config.PDSConfig{URL: "http://pds.test", ServerHandle: "instance.pds.test", ServerRepoPassword: syncTestPassword}
 
 	for _, tc := range []struct {
 		name           string
@@ -68,7 +68,7 @@ func TestSyncBuiltinFeedRecords(t *testing.T) {
 	}{
 		{
 			name:          "missing credentials logs an error without logging in",
-			pdsCfg:        config.PDSConfig{URL: "http://pds.test", InstanceHandle: "instance.pds.test"},
+			pdsCfg:        config.PDSConfig{URL: "http://pds.test", ServerHandle: "instance.pds.test"},
 			client:        &syncRecordClient{getErr: pds.ErrNotFound},
 			wantLoginCall: false,
 			wantErrorLog:  true,

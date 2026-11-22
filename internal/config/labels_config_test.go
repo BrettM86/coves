@@ -74,20 +74,20 @@ func TestLoadLabelPublicationConfigRejectsInvalidValues(t *testing.T) {
 		{
 			name:        "signing key without an instance atproto key",
 			env:         map[string]string{"LABEL_SIGNING_KEY": labelSigningKeyPrivateMultibase},
-			wantMention: "INSTANCE_ATPROTO_PUBLIC_KEY",
+			wantMention: "SERVER_ATPROTO_PUBLIC_KEY",
 		},
 		{
 			name: "instance atproto key equal to the label key",
 			env: map[string]string{
-				"LABEL_SIGNING_KEY":           labelSigningKeyPrivateMultibase,
-				"INSTANCE_ATPROTO_PUBLIC_KEY": labelSigningKeyPublicMultibase,
+				"LABEL_SIGNING_KEY":         labelSigningKeyPrivateMultibase,
+				"SERVER_ATPROTO_PUBLIC_KEY": labelSigningKeyPublicMultibase,
 			},
-			wantMention: "INSTANCE_ATPROTO_PUBLIC_KEY",
+			wantMention: "SERVER_ATPROTO_PUBLIC_KEY",
 		},
 		{
 			name:        "malformed instance atproto key",
-			env:         map[string]string{"INSTANCE_ATPROTO_PUBLIC_KEY": "not-a-key"},
-			wantMention: "INSTANCE_ATPROTO_PUBLIC_KEY",
+			env:         map[string]string{"SERVER_ATPROTO_PUBLIC_KEY": "not-a-key"},
+			wantMention: "SERVER_ATPROTO_PUBLIC_KEY",
 		},
 	}
 	for _, test := range tests {
@@ -114,7 +114,7 @@ func TestLoadLabelPublicationConfigParsesValidValues(t *testing.T) {
 	t.Setenv("IS_DEV_ENV", "true")
 	t.Setenv("LABEL_SIGNING_KEY", labelSigningKeyPrivateMultibase)
 	t.Setenv("LABEL_SIGNING_KEY_RETIRING", retiringLabelKeyPublicMultibase)
-	t.Setenv("INSTANCE_ATPROTO_PUBLIC_KEY", instanceAtprotoPublicMultibase)
+	t.Setenv("SERVER_ATPROTO_PUBLIC_KEY", instanceAtprotoPublicMultibase)
 	t.Setenv("DID_WEB_HOSTS", "coves.social=127.0.0.1:8081")
 
 	cfg, err := Load()
@@ -130,7 +130,7 @@ func TestLoadLabelPublicationConfigParsesValidValues(t *testing.T) {
 }
 
 func TestClearEnvForTestClearsLabelPublicationSettings(t *testing.T) {
-	names := []string{"LABEL_SIGNING_KEY", "LABEL_SIGNING_KEY_RETIRING", "INSTANCE_ATPROTO_PUBLIC_KEY", "DID_WEB_HOSTS"}
+	names := []string{"LABEL_SIGNING_KEY", "LABEL_SIGNING_KEY_RETIRING", "SERVER_ATPROTO_PUBLIC_KEY", "DID_WEB_HOSTS"}
 	for _, name := range names {
 		t.Setenv(name, "set")
 	}

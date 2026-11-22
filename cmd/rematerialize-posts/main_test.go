@@ -439,7 +439,7 @@ func TestLogCensus_PrintsEachCountUnderItsOwnLabel(t *testing.T) {
 	}
 }
 
-// A removal that is not (INSTANCE_DID, instance) hides the post on the read path
+// A removal that is not (SERVER_DID, instance) hides the post on the read path
 // but does not stop the tool migrating it. Moderation writes only that pair, so
 // the census must say so when it sees one.
 func TestLogCensus_WarnsAboutUnmatchedRemovalsOnlyWhenThereAreAny(t *testing.T) {
@@ -455,12 +455,12 @@ func TestLogCensus_WarnsAboutUnmatchedRemovalsOnlyWhenThereAreAny(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			output.Reset()
 			logCensus(posts.RematerializeReport{Discovered: 11, UnmatchedRemovals: tc.unmatched}, false)
-			warning := lineContaining(output.String(), "INSTANCE_DID")
+			warning := lineContaining(output.String(), "SERVER_DID")
 			if !tc.wantWarning {
 				assert.Emptyf(t, warning, "no unmatched removal was seen, so no warning belongs in:\n%s", output.String())
 				return
 			}
-			require.NotEmptyf(t, warning, "no INSTANCE_DID warning in:\n%s", output.String())
+			require.NotEmptyf(t, warning, "no SERVER_DID warning in:\n%s", output.String())
 			assert.Contains(t, warning, "13 legacy post(s)")
 			assert.Contains(t, warning, "hidden on the read path")
 			assert.Contains(t, warning, "NOT skipped")

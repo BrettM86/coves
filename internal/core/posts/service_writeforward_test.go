@@ -67,7 +67,7 @@ import (
 
 const (
 	// The instance identity these tests provision communities under. It matches
-	// the AppView's default (internal/config: INSTANCE_DID defaults to
+	// the AppView's default (internal/config: SERVER_DID defaults to
 	// did:web:coves.social), and the domain must be one of the PDS'
 	// PDS_SERVICE_HANDLE_DOMAINS or account creation is refused.
 	instanceDID    = "did:web:coves.social"
