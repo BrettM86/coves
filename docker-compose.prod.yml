@@ -364,6 +364,12 @@ services:
       # Note: Root domain (coves.social) handle works via .well-known resolution
       PDS_SERVICE_HANDLE_DOMAINS: .coves.social
 
+      # OAuth clients this PDS trusts. The authorize page only shows a
+      # client's logo_uri (and fuller client details) for trusted clients;
+      # everyone else gets a generic "i" badge. Web and mobile both sign in
+      # through the AppView, so this one client_id covers both.
+      PDS_OAUTH_TRUSTED_CLIENTS: https://coves.social/oauth-client-metadata.json
+
       # Security (set real values in .env)
       PDS_JWT_SECRET: ${PDS_JWT_SECRET}
       PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}

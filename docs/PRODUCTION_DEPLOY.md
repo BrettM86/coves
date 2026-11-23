@@ -18,7 +18,7 @@ A new non-XRPC Go route must be added to `@appview`, or the frontend answers it 
 
 Other rules in the block:
 
-- The apex `/` splits on `Accept`. An explicit `text/html` goes to the frontend. Everything else, including a request with no `Accept` header, goes to Tidepool's instance actor, which must answer peers that send no `Accept`. A bare `curl https://coves.social/` therefore returns actor JSON.
+- The apex `/` splits on `Accept`. A request asking for `activity+json` or `ld+json`, or sending no `Accept` header at all, goes to Tidepool's instance actor, which must answer peers that send no `Accept`. Everything else, including `Accept: */*`, goes to the frontend. A bare `curl https://coves.social/` therefore returns the HTML home page; `curl -H 'Accept: application/activity+json' https://coves.social/` returns the actor JSON.
 - `/img/*` on `coves.social` is a 301 to `img.coves.social`. The AppView serves the image proxy on any host, and only the media hostname passes through the scanning edge.
 - `/.well-known/*` is served from `./static` by Caddy and shadows the AppView's own handlers. WebFinger, NodeInfo and `/ap/*` go to Tidepool.
 - The frontend catch-all caps request bodies at 1 MB, because the frontend's `/api/proxy` buffers bodies in memory with no limit of its own. Raise it if a media upload is ever routed through the frontend.
@@ -32,7 +32,7 @@ The AppView's fallback CSP is set-if-absent inside the `@appview` handle only. `
 curl -sI -H 'Accept: text/html' https://coves.social/ | grep -io "'nonce-[^']*'"
 ```
 
-The `Accept` header matters: without it the apex goes to Tidepool.
+The `Accept: text/html` header keeps the check explicit; curl's default `*/*` also reaches the frontend. Only an `activity+json` or `ld+json` Accept, or no Accept header at all (`-H 'Accept:'`), reaches Tidepool.
 
 ## Frontend environment contract
 

@@ -123,29 +123,31 @@ coves.social {
     # Caddyfile order, so the matched reverse_proxy is tried before the
     # fallback.
     #
-    # The split is inverted on purpose: EXPLICIT text/html goes to the web
-    # app; everything else — activity+json, ld+json, AND a request with no
-    # Accept header at all — falls through to Tidepool. The bridge's
-    # instance actor (tidepool: internal/personas/instance.go) requires
-    # that a peer sending no Accept still gets the actor, and a positive
-    # @ap matcher can never satisfy that (an absent header matches
-    # nothing). Browsers always send text/html at the apex, so they are
-    # unaffected; the one visible consequence is that a bare `curl /`
-    # (Accept: */*) now gets the actor JSON, which is the AS2-conventional
-    # answer for a non-browser client.
+    # The split favours the web app: ActivityPub peers are recognised by
+    # what they ask for (activity+json or ld+json), plus a request with NO
+    # Accept header at all, which the bridge's instance actor (tidepool:
+    # internal/personas/instance.go) must still answer. Everything else,
+    # including the generic `Accept: */*` that link unfurlers, favicon
+    # fetchers and other non-browser crawlers send, gets the HTML home page.
+    # That page is what carries the favicon <link>s Google and other
+    # fetchers read; before this, a `*/*` fetch of the home page got the
+    # actor JSON and no icon.
+    # Content negotiation for AP is unaffected: Mastodon, Lemmy, PieFed and
+    # friends all ask for activity+json or ld+json explicitly.
     handle / {
-        @html header Accept *text/html*
-        # The web app: the SvelteKit frontend, with the SAME upstream options
-        # as the frontend catch-all below (see there for why each matters).
-        reverse_proxy @html coves-prod-frontend:3000 {
+        # Media types are case-insensitive, hence lowerAscii.
+        @ap expression `{header.Accept} == "" || {header.Accept}.lowerAscii().contains("activity+json") || {header.Accept}.lowerAscii().contains("ld+json")`
+        # Peers and absent-Accept fetchers: the instance actor.
+        reverse_proxy @ap tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
+        # Fallback: the web app, with the SAME upstream options as the
+        # frontend catch-all below (see there for why each matters).
+        reverse_proxy coves-prod-frontend:3000 {
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-Host {host}
-        }
-        # Fallback: the instance actor (peers, absent-Accept fetchers).
-        reverse_proxy tidepool:80 {
-            header_up X-Real-IP {remote_host}
         }
     }
 
@@ -258,7 +260,7 @@ coves.social {
     # src/lib/server/security-headers.ts), and the launch gate is
     # `curl -sI -H 'Accept: text/html' https://coves.social/` showing
     # 'nonce-' in script-src (the Accept header matters: the apex split
-    # above sends anything else to Tidepool).
+    # above sends AP media types and a missing Accept to Tidepool).
     #
     # The frontend's build assets, service worker and the files under its
     # static/ dir are served by adapter-node's sirv AHEAD of the app's hooks
@@ -267,7 +269,7 @@ coves.social {
     # a script governs the worker it becomes — without touching any page
     # response. Set-if-absent, like every other default in this file.
     @frontend_static {
-        path /_app/* /service-worker.js /manifest.json /robots.txt /favicon.svg /font/* /logo_512.png /logo_maskable_512.png
+        path /_app/* /service-worker.js /manifest.json /robots.txt /favicon.svg /favicon.ico /favicon-96x96.png /apple-touch-icon.png /font/* /logo_512.png /logo_maskable_512.png
     }
     handle @frontend_static {
         reverse_proxy coves-prod-frontend:3000 {
@@ -277,6 +279,10 @@ coves.social {
             header_up X-Forwarded-Host {host}
         }
         header ?Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+        # sirv has no type for .ico and sends an EMPTY Content-Type, which a
+        # set-if-absent `?` treats as present; `>` replaces it after the proxy.
+        @ico path /favicon.ico
+        header @ico >Content-Type image/x-icon
     }
     handle {
         # The frontend's /api/proxy buffers request bodies in Node memory,

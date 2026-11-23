@@ -24,7 +24,7 @@ import (
 // the same site block. Adding a path here is a routing decision, not a way to
 // make the test pass — the Caddyfile comment on `@appview` lists the same set.
 var caddyfileAllowlistExceptions = map[string]string{
-	"/":     "apex is split by Accept: text/html -> frontend, otherwise Tidepool's instance actor",
+	"/":     "apex is split by Accept: activity+json, ld+json or none -> Tidepool's instance actor, otherwise the frontend",
 	"/img/": "301 to the media hostname img.coves.social; never served from the apex",
 	"/.well-known/": "served by the static file_server from ./static (DID document, app links); " +
 		"the AppView's own /.well-known handlers are shadowed there by design",
