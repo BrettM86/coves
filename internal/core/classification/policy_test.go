@@ -9,13 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestLoadPolicy pins the v1 policy: its version and the six question keys in
+// TestLoadPolicy pins the v2 policy: its version and the six question keys in
 // order, each a noul question with instructions (B1).
 func TestLoadPolicy(t *testing.T) {
 	policy, err := classification.LoadPolicy()
 	require.NoError(t, err)
 
-	assert.Equal(t, "v1", policy.Version)
+	assert.Equal(t, "v2", policy.Version)
 
 	keys := make([]string, 0, len(policy.Questions))
 	for _, question := range policy.Questions {

@@ -19,13 +19,13 @@ type Policy struct {
 	Questions []Question `json:"questions"`
 }
 
-//go:embed policy/v1.json
-var policyV1 []byte
+//go:embed policy/v2.json
+var policyV2 []byte
 
 // LoadPolicy returns the current classification policy.
 func LoadPolicy() (Policy, error) {
 	var policy Policy
-	if err := json.Unmarshal(policyV1, &policy); err != nil {
+	if err := json.Unmarshal(policyV2, &policy); err != nil {
 		return Policy{}, fmt.Errorf("decoding classification policy: %w", err)
 	}
 	if policy.Version == "" || len(policy.Questions) == 0 {

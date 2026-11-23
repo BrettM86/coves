@@ -191,7 +191,7 @@ Re-enqueueing a range revives a failed job that holds a partial result. When the
 
 ### Score alerts
 
-After a result is stored, each `CLASSIFIER_SCORE_ALERTS` pair whose question scores at or above the threshold sends one Telegram message: `Classifier score alert: result <id>, question <key>, subject <post|comment|community>`. The message carries nothing else. Question keys are those of the policy (`internal/core/classification/policy/v1.json`): `sexual_explicit`, `sexual_suggestive`, `sexual_minors`, `graphic_violence`, `hate_harassment`, `spam_scam`. A failed send is retried by the sweep; an alert that reaches `CLASSIFIER_SCORE_ALERT_ATTEMPT_LIMIT` stays undelivered and is counted in the metrics below.
+After a result is stored, each `CLASSIFIER_SCORE_ALERTS` pair whose question scores at or above the threshold sends one Telegram message: `Classifier score alert: result <id>, question <key>, subject <post|comment|community>`. The message carries nothing else. Question keys are those of the policy (`internal/core/classification/policy/v2.json`): `sexual_explicit`, `sexual_suggestive`, `sexual_minors`, `graphic_violence`, `hate_harassment`, `spam_scam`. A failed send is retried by the sweep; an alert that reaches `CLASSIFIER_SCORE_ALERT_ATTEMPT_LIMIT` stays undelivered and is counted in the metrics below.
 
 To find the subject of an alert, list results with `GET /xrpc/social.coves.moderation.listClassificationResults?question=<key>&minProbability=<threshold in parts per million>&subjectKind=<kind>` as an admin and pick the entry whose `id` is the alert's result ID; its `subjectUri` and `subject` name the content.
 

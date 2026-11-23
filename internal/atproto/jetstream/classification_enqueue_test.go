@@ -32,7 +32,7 @@ import (
 
 const clsInstanceDID = "did:web:classification-jetstream.test"
 
-// clsCanned is the canned provider answer, one literal per v1 policy key.
+// clsCanned is the canned provider answer, one literal per current policy key.
 var clsCanned = map[string]float64{
 	"sexual_explicit":   0.11,
 	"sexual_suggestive": 0.12,
