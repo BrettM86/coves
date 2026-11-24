@@ -6,11 +6,13 @@ import (
 	"fmt"
 )
 
-// Question is one classifier question asked of every subject.
+// Question is one classifier question. One with RequiresImage is asked only
+// in requests that carry an image; the others are asked in every request.
 type Question struct {
-	Key          string `json:"key"`
-	Type         string `json:"type"`
-	Instructions string `json:"instructions"`
+	Key           string `json:"key"`
+	Type          string `json:"type"`
+	Instructions  string `json:"instructions"`
+	RequiresImage bool   `json:"requiresImage"`
 }
 
 // Policy is a versioned set of classifier questions.
@@ -19,13 +21,13 @@ type Policy struct {
 	Questions []Question `json:"questions"`
 }
 
-//go:embed policy/v2.json
-var policyV2 []byte
+//go:embed policy/v3.json
+var policyV3 []byte
 
 // LoadPolicy returns the current classification policy.
 func LoadPolicy() (Policy, error) {
 	var policy Policy
-	if err := json.Unmarshal(policyV2, &policy); err != nil {
+	if err := json.Unmarshal(policyV3, &policy); err != nil {
 		return Policy{}, fmt.Errorf("decoding classification policy: %w", err)
 	}
 	if policy.Version == "" || len(policy.Questions) == 0 {

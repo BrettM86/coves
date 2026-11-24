@@ -453,3 +453,146 @@ func TestWorkerRunOnce_HangingFirstBatchFetchesLeaveTimeForTheTextRequest(t *tes
 	assert.Equal(t, 4, repo.results[0].ImagesSkipped)
 	assert.Equal(t, "text-model", repo.results[0].ModelID)
 }
+
+// questionClassifier records the question keys of every Classify call and
+// answers each question it was asked, and only those, with 0.9.
+type questionClassifier struct {
+	mu        sync.Mutex
+	questions [][]string
+}
+
+func (c *questionClassifier) Classify(_ context.Context, _ classification.Content, questions []classification.Question) (classification.Classification, error) {
+	keys := make([]string, 0, len(questions))
+	probabilities := make(map[string]float64, len(questions))
+	for _, question := range questions {
+		keys = append(keys, question.Key)
+		probabilities[question.Key] = 0.9
+	}
+	c.mu.Lock()
+	c.questions = append(c.questions, keys)
+	c.mu.Unlock()
+	return classification.Classification{ModelID: "image-model", Probabilities: probabilities, InputTokens: 10}, nil
+}
+
+// textOnlyQuestionKeys are the current policy's questions asked of a request
+// that carries no image.
+var textOnlyQuestionKeys = []string{
+	"sexual_explicit",
+	"sexual_suggestive",
+	"graphic_violence",
+	"hate_harassment",
+	"spam_scam",
+}
+
+// imageQuestionKeys are the current policy's questions asked of a request
+// that carries at least one image.
+var imageQuestionKeys = []string{
+	"sexual_explicit",
+	"sexual_suggestive",
+	"sexual_minors",
+	"graphic_violence",
+	"hate_harassment",
+	"spam_scam",
+}
+
+// newCurrentPolicyWorker returns a test worker that asks the current
+// policy's questions.
+func newCurrentPolicyWorker(t *testing.T, repo classification.Repository, classifier classification.Classifier, opts ...classification.WorkerOption) *classification.Worker {
+	t.Helper()
+	policy, err := classification.LoadPolicy()
+	require.NoError(t, err)
+	return newPolicyWorker(repo, classifier, time.Now, policy, func(*classification.WorkerConfig) {}, opts...)
+}
+
+// A request with no image omits the sexual_minors question, so the stored
+// result has no sexual_minors score; the other five are still asked (B2).
+func TestWorkerRunOnce_PostWithoutImagesIsNotAskedSexualMinors(t *testing.T) {
+	repo := &deadlineRepository{job: imagePostJob(50)}
+	classifier := &questionClassifier{}
+	worker := newCurrentPolicyWorker(t, repo, classifier, classification.WithImageFetcher(cidImageFetcher{}))
+
+	require.NoError(t, worker.RunOnce(context.Background()))
+
+	assert.Equal(t, [][]string{textOnlyQuestionKeys}, classifier.questions)
+	require.Len(t, repo.results, 1)
+	assert.Equal(t, map[string]float64{
+		"sexual_explicit":   0.9,
+		"sexual_suggestive": 0.9,
+		"graphic_violence":  0.9,
+		"hate_harassment":   0.9,
+		"spam_scam":         0.9,
+	}, repo.results[0].Probabilities)
+}
+
+// A request carrying an image asks every question, sexual_minors included
+// (B3).
+func TestWorkerRunOnce_PostWithFetchedImageIsAskedSexualMinors(t *testing.T) {
+	repo := &deadlineRepository{job: imagePostJob(51), postImages: imageRefs(nineImageCIDs[0:1]...)}
+	classifier := &questionClassifier{}
+	worker := newCurrentPolicyWorker(t, repo, classifier, classification.WithImageFetcher(cidImageFetcher{}))
+
+	require.NoError(t, worker.RunOnce(context.Background()))
+
+	assert.Equal(t, [][]string{imageQuestionKeys}, classifier.questions)
+	require.Len(t, repo.results, 1)
+	assert.Equal(t, 0.9, repo.results[0].Probabilities["sexual_minors"])
+}
+
+// A post whose images all fail to fetch goes out as text only, so it is not
+// asked sexual_minors (B4).
+func TestWorkerRunOnce_PostWhoseImagesAllFailIsNotAskedSexualMinors(t *testing.T) {
+	repo := &deadlineRepository{job: imagePostJob(52), postImages: imageRefs(nineImageCIDs[0:2]...)}
+	classifier := &questionClassifier{}
+	worker := newCurrentPolicyWorker(t, repo, classifier, classification.WithImageFetcher(failingImageFetcher{failures: map[string]error{
+		nineImageCIDs[0]: imageproxy.ErrBlobBlocked,
+		nineImageCIDs[1]: errors.New("connection refused"),
+	}}))
+
+	require.NoError(t, worker.RunOnce(context.Background()))
+
+	assert.Equal(t, [][]string{textOnlyQuestionKeys}, classifier.questions)
+	require.Len(t, repo.results, 1)
+	assert.NotContains(t, repo.results[0].Probabilities, "sexual_minors")
+	assert.Equal(t, 0, repo.results[0].ImagesSent)
+	assert.Equal(t, 2, repo.results[0].ImagesSkipped)
+}
+
+// The question set is chosen per request: a first batch whose images all
+// fail is a text-only request without sexual_minors, and a later batch with
+// a fetched image is still asked every question, so the result has a
+// sexual_minors score (B5a).
+func TestWorkerRunOnce_LaterImageBatchIsAskedSexualMinorsAfterTextOnlyFirstBatch(t *testing.T) {
+	unfetchable := map[string]error{}
+	for _, cid := range nineImageCIDs[0:4] {
+		unfetchable[cid] = errors.New("connection refused")
+	}
+	repo := &deadlineRepository{job: imagePostJob(53), postImages: imageRefs(nineImageCIDs[0:5]...)}
+	classifier := &questionClassifier{}
+	worker := newCurrentPolicyWorker(t, repo, classifier, classification.WithImageFetcher(failingImageFetcher{failures: unfetchable}))
+
+	require.NoError(t, worker.RunOnce(context.Background()))
+
+	assert.Equal(t, [][]string{textOnlyQuestionKeys, imageQuestionKeys}, classifier.questions)
+	require.Len(t, repo.results, 1)
+	assert.Equal(t, 0.9, repo.results[0].Probabilities["sexual_minors"])
+	assert.Equal(t, 1, repo.results[0].ImagesSent)
+	assert.Equal(t, 4, repo.results[0].ImagesSkipped)
+}
+
+// A later batch whose images all fail sends no request, so the sexual_minors
+// score from the first batch's images is kept in the result (B5b).
+func TestWorkerRunOnce_SexualMinorsFromFirstImageBatchSurvivesUnfetchableLaterBatch(t *testing.T) {
+	repo := &deadlineRepository{job: imagePostJob(54), postImages: imageRefs(nineImageCIDs[0:5]...)}
+	classifier := &questionClassifier{}
+	worker := newCurrentPolicyWorker(t, repo, classifier, classification.WithImageFetcher(failingImageFetcher{failures: map[string]error{
+		nineImageCIDs[4]: errors.New("connection refused"),
+	}}))
+
+	require.NoError(t, worker.RunOnce(context.Background()))
+
+	assert.Equal(t, [][]string{imageQuestionKeys}, classifier.questions)
+	require.Len(t, repo.results, 1)
+	assert.Equal(t, 0.9, repo.results[0].Probabilities["sexual_minors"])
+	assert.Equal(t, 4, repo.results[0].ImagesSent)
+	assert.Equal(t, 1, repo.results[0].ImagesSkipped)
+}

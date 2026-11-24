@@ -511,7 +511,8 @@ func TestClassificationWorkerClosesHiddenSubjects(t *testing.T) {
 
 // TestClassificationWorkerStoresResultWithoutContent: a truncated post's
 // result row carries its identity, the model, the policy and the literal
-// probabilities, holds no content, and the request carries no identity (B7).
+// probabilities of the questions a text-only request is asked, holds no
+// content, and the request carries no identity (B7).
 func TestClassificationWorkerStoresResultWithoutContent(t *testing.T) {
 	f := newClassificationFixture(t, cloudflaretest.Canned(classificationCanned, classificationCannedInputTokens))
 	worker := f.worker(t, func(cfg *classification.WorkerConfig) { cfg.TextCharLimit = 20 })
@@ -553,11 +554,10 @@ func TestClassificationWorkerStoresResultWithoutContent(t *testing.T) {
 	assert.Equal(t, map[string]float64{
 		"sexual_explicit":   0.01,
 		"sexual_suggestive": 0.02,
-		"sexual_minors":     0.03,
 		"graphic_violence":  0.04,
 		"hate_harassment":   0.05,
 		"spam_scam":         0.06,
-	}, probabilities)
+	}, probabilities, "a text-only request is not asked sexual_minors")
 
 	var stored string
 	require.NoError(t, f.db.QueryRowContext(t.Context(),

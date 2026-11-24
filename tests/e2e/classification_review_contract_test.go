@@ -61,7 +61,7 @@ func TestClassificationReviewAPIContract(t *testing.T) {
 	admin := testkit.ModerationAdmin(t, 1)
 	nonAdmin := p.IndexedAccount(t, "clsoutsider")
 
-	precisionParams := url.Values{"modelId": {"@cf/test/model"}, "policyVersion": {"v2"}, "threshold": {"500000"}}
+	precisionParams := url.Values{"modelId": {"@cf/test/model"}, "policyVersion": {"v3"}, "threshold": {"500000"}}
 	verdictInput := map[string]any{
 		"resultId": 999999999,
 		"answers":  []map[string]any{{"question": "spam_scam", "present": true}},
@@ -96,7 +96,7 @@ func TestClassificationReviewAPIContract(t *testing.T) {
 		var response classificationPrecisionResponse
 		require.NoError(t, json.Unmarshal(body, &response))
 		assert.Equal(t, "@cf/test/model", response.ModelID)
-		assert.Equal(t, "v2", response.PolicyVersion)
+		assert.Equal(t, "v3", response.PolicyVersion)
 		assert.Equal(t, int64(500000), response.Threshold)
 		assert.Equal(t, 0, response.VerdictedCount)
 		assert.Equal(t, 0, response.UnreviewableCount)

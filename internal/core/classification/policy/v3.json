@@ -1,0 +1,36 @@
+{
+  "version": "v3",
+  "questions": [
+    {
+      "key": "sexual_explicit",
+      "type": "noul",
+      "instructions": "Give the probability that the content is sexually explicit: it depicts or describes sexual acts, genitals, or nudity in a sexual context in graphic detail, or links to pornography. Non-sexual nudity (medical, educational, artistic without sexual focus), sex education, and frank but non-graphic discussion of sexuality do not count."
+    },
+    {
+      "key": "sexual_suggestive",
+      "type": "noul",
+      "instructions": "Give the probability that the content is sexually suggestive without being explicit: lingerie, underwear, swimwear or partial nudity presented for sexual appeal, sexually provocative poses or close-ups that focus on breasts, buttocks or groin, sexual innuendo, or invitations to sexual contact. Fashion, editorial, portrait or glamour photography of clothed people does not count, even when the pose, styling or expression is elegant or alluring. Clinical, educational, or news discussion of sex and relationships does not count."
+    },
+    {
+      "key": "sexual_minors",
+      "type": "noul",
+      "requiresImage": true,
+      "instructions": "Give the probability that the content sexualizes minors: it depicts, describes, solicits, or links to sexual content involving anyone who is or appears to be under 18, sexualizes children's bodies, or grooms or solicits a minor. Discussion of child safety, abuse prevention, or news reporting about such crimes without sexualizing anyone does not count."
+    },
+    {
+      "key": "graphic_violence",
+      "type": "noul",
+      "instructions": "Give the probability that the content depicts or describes graphic violence or gore: severe injury, mutilation, killing, torture, or dead bodies in vivid detail, or glorifies or celebrates such violence. Mentions of violence in news, history, or fiction without vivid gore, and threats without graphic description, count only weakly."
+    },
+    {
+      "key": "hate_harassment",
+      "type": "noul",
+      "instructions": "Give the probability that the content is hateful or harassing: it attacks, dehumanizes, or uses slurs against people based on a protected characteristic (such as race, ethnicity, religion, nationality, gender, sexual orientation, gender identity, or disability), or it targets an individual with threats, intimidation, sustained insults, or exposure of private information. Criticism of ideas, institutions, or public conduct, and reclaimed or quoted language discussed in context, do not count."
+    },
+    {
+      "key": "spam_scam",
+      "type": "noul",
+      "instructions": "Give the probability that the content is spam or a scam: unsolicited advertising unrelated to the discussion, repetitive promotional text, phishing or credential harvesting, fake giveaways, crypto or investment schemes, fund-recovery offers, impersonation of officials or brands, or pressure to move to Telegram, WhatsApp, or another private channel for money. Ordinary posts that share a relevant link or mention a product in genuine discussion do not count."
+    }
+  ]
+}

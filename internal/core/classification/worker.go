@@ -386,7 +386,8 @@ func (w *Worker) settleUnclassifiable(ctx context.Context, job ClaimedJob, curre
 // classifyBatch fetches one batch's images, then sends its request and
 // stores its progress, reporting whether the batch is done. Images that
 // cannot be fetched are counted skipped; a batch with no fetched image is a
-// text-only request to the text model, or, when answered reports the text
+// text-only request to the text model, without the questions that require an
+// image, or, when answered reports the text
 // already answered, no request at all: the batch is stored with only its
 // skipped count, no model and no answer, so a later run does not fetch it
 // again. A batch with image refs reloads and checks the subject after the
@@ -470,7 +471,18 @@ func (w *Worker) classifyBatch(ctx context.Context, job ClaimedJob, index int, r
 	}
 
 	content.Images = images
-	answer, err := w.classifier.Classify(ctx, content, w.policy.Questions)
+	questions := w.policy.Questions
+	if len(images) == 0 {
+		// A request without an image is not asked the questions that
+		// require one, so a text-only result has no score for them.
+		questions = make([]Question, 0, len(w.policy.Questions))
+		for _, question := range w.policy.Questions {
+			if !question.RequiresImage {
+				questions = append(questions, question)
+			}
+		}
+	}
+	answer, err := w.classifier.Classify(ctx, content, questions)
 	if err != nil {
 		if ErrorCodeOf(err) == ErrorCodeRateLimited {
 			// The provider refused the request without running it, so it

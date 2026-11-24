@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/embedblobs"
 	"Coves/internal/classifier/cloudflare/cloudflaretest"
 	"Coves/internal/core/classification"
 
@@ -29,7 +30,7 @@ var scoreAlertMinorsAndSpam = []classification.ScoreAlertThreshold{
 	{QuestionKey: "spam_scam", Threshold: 0.5},
 }
 
-// scoreAlertProbabilities is a full v1 answer whose sexual_minors and
+// scoreAlertProbabilities is a full answer whose sexual_minors and
 // spam_scam probabilities are minors and spam; every other key is low.
 func scoreAlertProbabilities(minors, spam float64) map[string]float64 {
 	return map[string]float64{
@@ -86,13 +87,26 @@ func (f *classificationFixture) resultID(t *testing.T, subjectURI string) int64 
 }
 
 // scoreAlertWorker builds the alert service over the real repository with
-// sender and cfg, on the fixture's clock, and a worker that raises alerts
-// against thresholds and notifies that service.
-func (f *classificationFixture) scoreAlertWorker(t *testing.T, thresholds []classification.ScoreAlertThreshold, sender classification.MessageSender, cfg classification.ScoreAlertDeliveryConfig) (*classification.Worker, *classification.ScoreAlertService) {
+// sender and cfg, on the fixture's clock, and a worker that reads subject
+// images from pds, raises alerts against thresholds and notifies that
+// service.
+func (f *classificationFixture) scoreAlertWorker(t *testing.T, pds *classificationImagePDS, thresholds []classification.ScoreAlertThreshold, sender classification.MessageSender, cfg classification.ScoreAlertDeliveryConfig) (*classification.Worker, *classification.ScoreAlertService) {
 	t.Helper()
 	service := classification.NewScoreAlertService(NewClassificationScoreAlertRepository(f.db), sender, cfg, f.clock.Now, signalLogger())
-	worker := f.workerOn(t, f.transport, nil, classification.WithScoreAlerts(thresholds, service))
+	worker := f.imageWorker(t, pds, nil, classification.WithScoreAlerts(thresholds, service))
 	return worker, service
+}
+
+// imagePost seeds a visible post carrying one fetchable, referenced image
+// from pds, so its request is asked every question, sexual_minors included.
+// It returns the post URI.
+func (f *classificationFixture) imagePost(t *testing.T, pds *classificationImagePDS, authorDID, rkey, title string) string {
+	t.Helper()
+	postURI := postV2URI(authorDID, rkey)
+	cid := pds.addImage(t, 701)
+	f.referenceBlobs(t, authorDID, postURI, postImageReferences(cid))
+	require.Equal(t, postURI, f.visiblePostWithEmbed(t, f.community, authorDID, rkey, title, "", classificationGalleryJSON(cid)))
+	return postURI
 }
 
 // sweepAt sets the clock to at and runs one alert sweep.
@@ -117,10 +131,11 @@ func scoreAlertTime(at time.Time) sql.NullTime { return sql.NullTime{Time: at, V
 func TestClassificationScoreAlertRetriesThenDeliversOnce(t *testing.T) {
 	f := newClassificationFixture(t, cloudflaretest.Canned(scoreAlertProbabilities(0.31, 0.2), classificationCannedInputTokens))
 	sender := &signalSender{err: errors.New("telegram unavailable")}
-	worker, service := f.scoreAlertWorker(t, scoreAlertMinorsAndSpam, sender,
+	pds := &classificationImagePDS{}
+	worker, service := f.scoreAlertWorker(t, pds, scoreAlertMinorsAndSpam, sender,
 		classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute})
 
-	postURI := f.visiblePost(t, f.community, f.author(t, "clsalertpost"), "3lclsalert0001", "Alert lighthouse gulls")
+	postURI := f.imagePost(t, pds, f.author(t, "clsalertpost"), "3lclsalert0001", "Alert lighthouse gulls")
 	f.enqueue(t, postURI, classificationT0)
 
 	f.run(t, worker, classificationT0)
@@ -160,16 +175,20 @@ func TestClassificationScoreAlertOnePerMetPair(t *testing.T) {
 	for _, row := range []struct {
 		name          string
 		probabilities map[string]float64
-		seed          func(t *testing.T, f *classificationFixture) string
+		seed          func(t *testing.T, f *classificationFixture, pds *classificationImagePDS) string
 		// want lists the expected alerts' (question, subject kind).
 		want [][2]string
 	}{
 		{
 			name:          "comment meeting both thresholds",
 			probabilities: scoreAlertProbabilities(0.5, 0.9),
-			seed: func(t *testing.T, f *classificationFixture) string {
+			seed: func(t *testing.T, f *classificationFixture, pds *classificationImagePDS) string {
 				root := f.visiblePost(t, f.community, f.author(t, "clsalertroot"), "3lclsalertrt01", "Alert root heron")
-				comment := seedClassificationComment(t, f.db, f.author(t, "clsalertcmt"), "3lclsalertcm01", root, root, "Alert reply heron")
+				commenterDID := f.author(t, "clsalertcmt")
+				cid := pds.addImage(t, 702)
+				comment := seedClassificationCommentWithEmbed(t, f.db, commenterDID, "3lclsalertcm01", root, root, "Alert reply heron",
+					classificationGalleryJSON(cid))
+				f.referenceBlobs(t, commenterDID, comment, []embedblobs.Reference{{CID: cid, Kind: embedblobs.KindCommentImage}})
 				f.enqueueComment(t, comment, classificationT0)
 				return comment
 			},
@@ -178,8 +197,8 @@ func TestClassificationScoreAlertOnePerMetPair(t *testing.T) {
 		{
 			name:          "post meeting no threshold",
 			probabilities: scoreAlertProbabilities(0.29, 0.49),
-			seed: func(t *testing.T, f *classificationFixture) string {
-				post := f.visiblePost(t, f.community, f.author(t, "clsalertnone"), "3lclsalertno01", "Quiet harbour terns")
+			seed: func(t *testing.T, f *classificationFixture, pds *classificationImagePDS) string {
+				post := f.imagePost(t, pds, f.author(t, "clsalertnone"), "3lclsalertno01", "Quiet harbour terns")
 				f.enqueue(t, post, classificationT0)
 				return post
 			},
@@ -188,13 +207,16 @@ func TestClassificationScoreAlertOnePerMetPair(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			f := newClassificationFixture(t, cloudflaretest.Canned(row.probabilities, classificationCannedInputTokens))
 			sender := &signalSender{}
-			worker, _ := f.scoreAlertWorker(t, scoreAlertMinorsAndSpam, sender,
+			pds := &classificationImagePDS{}
+			worker, _ := f.scoreAlertWorker(t, pds, scoreAlertMinorsAndSpam, sender,
 				classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute})
-			subjectURI := row.seed(t, f)
+			subjectURI := row.seed(t, f, pds)
 
 			f.run(t, worker, classificationT0)
 
 			assert.Equal(t, "classified", f.job(t, subjectURI).Status)
+			assert.Equal(t, row.probabilities["sexual_minors"], f.result(t, subjectURI).Probabilities["sexual_minors"],
+				"the subject carries an image, so its sexual_minors score is stored")
 			resultID := f.resultID(t, subjectURI)
 			got := [][2]string{}
 			for _, alert := range f.scoreAlerts(t) {
@@ -217,10 +239,11 @@ func TestClassificationScoreAlertOnePerMetPair(t *testing.T) {
 func TestClassificationScoreAlertStopsAtTheAttemptLimit(t *testing.T) {
 	f := newClassificationFixture(t, cloudflaretest.Canned(scoreAlertProbabilities(0.9, 0.1), classificationCannedInputTokens))
 	sender := &signalSender{err: errors.New("telegram unavailable")}
-	worker, service := f.scoreAlertWorker(t, scoreAlertMinorsAndSpam, sender,
+	pds := &classificationImagePDS{}
+	worker, service := f.scoreAlertWorker(t, pds, scoreAlertMinorsAndSpam, sender,
 		classification.ScoreAlertDeliveryConfig{AttemptLimit: 2, RetryBaseDelay: time.Minute})
 
-	postURI := f.visiblePost(t, f.community, f.author(t, "clsalertlimit"), "3lclsalertlm01", "Limit puffin burrow")
+	postURI := f.imagePost(t, pds, f.author(t, "clsalertlimit"), "3lclsalertlm01", "Limit puffin burrow")
 	f.enqueue(t, postURI, classificationT0)
 
 	f.run(t, worker, classificationT0)
@@ -251,7 +274,7 @@ func TestClassificationScoreAlertStopsAtTheAttemptLimit(t *testing.T) {
 func TestClassificationScoreAlertNotRaisedForADiscardedResult(t *testing.T) {
 	f := newClassificationFixture(t, cloudflaretest.Canned(scoreAlertProbabilities(0.9, 0.9), classificationCannedInputTokens))
 	sender := &signalSender{}
-	worker, service := f.scoreAlertWorker(t, scoreAlertMinorsAndSpam, sender,
+	worker, service := f.scoreAlertWorker(t, &classificationImagePDS{}, scoreAlertMinorsAndSpam, sender,
 		classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute})
 
 	postURI := f.visiblePost(t, f.community, f.author(t, "clsalertgone"), "3lclsalertgn01", "Discarded cormorant roost")
@@ -288,8 +311,9 @@ func TestClassificationScoreAlertDeliveryIsExactlyOnce(t *testing.T) {
 	// unsent. It returns the result's job ID and the two alert messages.
 	seedTwoAlerts := func(t *testing.T, f *classificationFixture, label string) (jobID int64, minorsText, spamText string) {
 		t.Helper()
-		worker := f.workerOn(t, f.transport, nil, classification.WithScoreAlerts(scoreAlertMinorsAndSpam, nil))
-		postURI := f.visiblePost(t, f.community, f.author(t, label), "3lclsalertxo01", "Exactly once kittiwake ledge")
+		pds := &classificationImagePDS{}
+		worker := f.imageWorker(t, pds, nil, classification.WithScoreAlerts(scoreAlertMinorsAndSpam, nil))
+		postURI := f.imagePost(t, pds, f.author(t, label), "3lclsalertxo01", "Exactly once kittiwake ledge")
 		f.enqueue(t, postURI, classificationT0)
 		f.run(t, worker, classificationT0)
 		require.Len(t, f.scoreAlerts(t), 2, "both thresholds are met, so two alerts are stored")
@@ -421,4 +445,53 @@ func TestClassificationScoreAlertDeliveryIsExactlyOnce(t *testing.T) {
 			assert.Equal(t, scoreAlertTime(secondLease), alert.NextAttemptAt, "the newer claim's lease stands")
 		}
 	})
+}
+
+// TestClassificationSexualMinorsIsAskedOnlyWithAnImage: with a provider
+// that answers 0.9 to every question and a sexual_minors alert at 0.3, a
+// text-only post is not asked sexual_minors, so its result has no
+// sexual_minors score and raises no alert; a post with a fetched image is
+// asked it, stores its score and raises its alert.
+func TestClassificationSexualMinorsIsAskedOnlyWithAnImage(t *testing.T) {
+	f := newClassificationFixture(t, cloudflaretest.Canned(map[string]float64{
+		"sexual_explicit":   0.9,
+		"sexual_suggestive": 0.9,
+		"sexual_minors":     0.9,
+		"graphic_violence":  0.9,
+		"hate_harassment":   0.9,
+		"spam_scam":         0.9,
+	}, classificationCannedInputTokens))
+	sender := &signalSender{}
+	pds := &classificationImagePDS{}
+	worker, _ := f.scoreAlertWorker(t, pds, []classification.ScoreAlertThreshold{{QuestionKey: "sexual_minors", Threshold: 0.3}},
+		sender, classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute})
+
+	textPost := f.visiblePost(t, f.community, f.author(t, "clsminorstext"), "3lclsminorstx1", "Court report on an abuse trial")
+	imagePost := f.imagePost(t, pds, f.author(t, "clsminorsimage"), "3lclsminorsim1", "Beach day photos")
+	f.enqueue(t, textPost, classificationT0)
+	f.enqueue(t, imagePost, classificationT0)
+
+	f.run(t, worker, classificationT0)
+
+	assert.Equal(t, "classified", f.job(t, textPost).Status)
+	assert.Equal(t, "classified", f.job(t, imagePost).Status)
+	assert.Equal(t, map[string]float64{
+		"sexual_explicit":   0.9,
+		"sexual_suggestive": 0.9,
+		"graphic_violence":  0.9,
+		"hate_harassment":   0.9,
+		"spam_scam":         0.9,
+	}, f.result(t, textPost).Probabilities, "the text-only post is not asked sexual_minors")
+	assert.Equal(t, map[string]float64{
+		"sexual_explicit":   0.9,
+		"sexual_suggestive": 0.9,
+		"sexual_minors":     0.9,
+		"graphic_violence":  0.9,
+		"hate_harassment":   0.9,
+		"spam_scam":         0.9,
+	}, f.result(t, imagePost).Probabilities, "the image post is asked every question")
+	alerts := f.scoreAlerts(t)
+	require.Len(t, alerts, 1, "only the image post raises a sexual_minors alert")
+	assert.Equal(t, f.resultID(t, imagePost), alerts[0].ResultID)
+	assert.Equal(t, "sexual_minors", alerts[0].QuestionKey)
 }

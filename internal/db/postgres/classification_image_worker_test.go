@@ -345,15 +345,18 @@ func TestClassificationWorkerSkipsBlockedAndUnreferencedImages(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		// seed stores the post's images and returns its embed.
-		seed            func(t *testing.T, f *classificationFixture, pds *classificationImagePDS, authorDID, postURI string) string
-		wantURL         string
-		wantHasImages   bool
-		wantWidths      []int
-		wantModelID     string
-		wantSent        int
-		wantSkipped     int
-		wantTextUsage   int
-		wantImagesUsage int
+		seed          func(t *testing.T, f *classificationFixture, pds *classificationImagePDS, authorDID, postURI string) string
+		wantURL       string
+		wantHasImages bool
+		wantWidths    []int
+		wantModelID   string
+		// wantProbabilities are the stored answers: a text-only request
+		// is not asked sexual_minors.
+		wantProbabilities map[string]float64
+		wantSent          int
+		wantSkipped       int
+		wantTextUsage     int
+		wantImagesUsage   int
 	}{
 		{
 			name: "blocked and unreferenced images are skipped",
@@ -371,6 +374,10 @@ func TestClassificationWorkerSkipsBlockedAndUnreferencedImages(t *testing.T) {
 			wantSent:        2,
 			wantSkipped:     2,
 			wantImagesUsage: 1,
+			wantProbabilities: map[string]float64{
+				"sexual_explicit": 0.01, "sexual_suggestive": 0.02, "sexual_minors": 0.03,
+				"graphic_violence": 0.04, "hate_harassment": 0.05, "spam_scam": 0.06,
+			},
 		},
 		{
 			name: "no fetchable image sends text only to the text model",
@@ -384,6 +391,10 @@ func TestClassificationWorkerSkipsBlockedAndUnreferencedImages(t *testing.T) {
 			wantModelID:   "@cf/cloudflare/clef-flash",
 			wantSkipped:   2,
 			wantTextUsage: 1,
+			wantProbabilities: map[string]float64{
+				"sexual_explicit": 0.01, "sexual_suggestive": 0.02,
+				"graphic_violence": 0.04, "hate_harassment": 0.05, "spam_scam": 0.06,
+			},
 		},
 		{
 			name: "a video embed is skipped and nothing of it is sent",
@@ -396,6 +407,10 @@ func TestClassificationWorkerSkipsBlockedAndUnreferencedImages(t *testing.T) {
 			wantModelID:   "@cf/cloudflare/clef-flash",
 			wantSkipped:   1,
 			wantTextUsage: 1,
+			wantProbabilities: map[string]float64{
+				"sexual_explicit": 0.01, "sexual_suggestive": 0.02,
+				"graphic_violence": 0.04, "hate_harassment": 0.05, "spam_scam": 0.06,
+			},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -415,11 +430,8 @@ func TestClassificationWorkerSkipsBlockedAndUnreferencedImages(t *testing.T) {
 			}}, f.sent(t))
 			assert.Equal(t, "classified", f.job(t, postURI).Status)
 			assert.Equal(t, classificationResultRow{
-				ModelID: row.wantModelID,
-				Probabilities: map[string]float64{
-					"sexual_explicit": 0.01, "sexual_suggestive": 0.02, "sexual_minors": 0.03,
-					"graphic_violence": 0.04, "hate_harassment": 0.05, "spam_scam": 0.06,
-				},
+				ModelID:       row.wantModelID,
+				Probabilities: row.wantProbabilities,
 				ImagesSent:    row.wantSent,
 				ImagesSkipped: row.wantSkipped,
 			}, f.result(t, postURI))

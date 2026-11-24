@@ -280,8 +280,14 @@ func newClockedWorker(repo classification.Repository, classifier classification.
 
 // newConfiguredWorker returns a test worker whose config configure adjusts.
 func newConfiguredWorker(repo classification.Repository, classifier classification.Classifier, now func() time.Time, configure func(*classification.WorkerConfig), opts ...classification.WorkerOption) *classification.Worker {
+	return newPolicyWorker(repo, classifier, now, classification.Policy{Version: "v1"}, configure, opts...)
+}
+
+// newPolicyWorker returns a test worker that asks policy's questions and
+// whose config configure adjusts.
+func newPolicyWorker(repo classification.Repository, classifier classification.Classifier, now func() time.Time, policy classification.Policy, configure func(*classification.WorkerConfig), opts ...classification.WorkerOption) *classification.Worker {
 	cfg := classification.WorkerConfig{
-		Evaluation:      classification.Evaluation{PolicyVersion: "v1", TextModelID: "text-model", ImageModelID: "image-model"},
+		Evaluation:      classification.Evaluation{PolicyVersion: policy.Version, TextModelID: "text-model", ImageModelID: "image-model"},
 		Concurrency:     1,
 		BatchSize:       1,
 		TextCharLimit:   8000,
@@ -291,7 +297,7 @@ func newConfiguredWorker(repo classification.Repository, classifier classificati
 		DailyRequestCap: 100,
 	}
 	configure(&cfg)
-	return classification.NewWorker(repo, classifier, classification.Policy{Version: "v1"}, cfg, now, slog.New(slog.NewTextHandler(io.Discard, nil)), opts...)
+	return classification.NewWorker(repo, classifier, policy, cfg, now, slog.New(slog.NewTextHandler(io.Discard, nil)), opts...)
 }
 
 // A request cut off by the cycle deadline was already counted against the

@@ -998,17 +998,17 @@ func TestClassificationReviewPrecision(t *testing.T) {
 		resultSeed.modelID, resultSeed.policyVersion = modelID, policyVersion
 		return seedClassificationResult(t, db, resultSeed)
 	}
-	e1 := seed(post1, "e1-post", reviewModelOne, "v2", 0.9, 0.2)
-	e2 := seed(comment, "e2-comment", reviewModelOne, "v2", 0.6, 0.7)
-	e3 := seed(community, "e3-community", reviewModelOne, "v2", 0.5, 0.1)
-	e4 := seed(post2, "e4-two-admins", reviewModelOne, "v2", 0.8, 0.6)
-	seed(post3, "e5-unverdicted", reviewModelOne, "v2", 0.95, 0.95)
-	e6 := seed(post4, "e6-edited", reviewModelOne, "v2", 0.9, 0.9)
-	e7 := seed(post5, "e7-deleted", reviewModelOne, "v2", 0.1, 0.9)
-	e8 := seed(post6, "e8-greater-admin-later", reviewModelOne, "v2", 0.7, 0.8)
-	e9 := seed(editedComment, "e9-edited-comment", reviewModelOne, "v2", 0.9, 0.9)
-	e10 := seed(editedCommunity, "e10-edited-community", reviewModelOne, "v2", 0.9, 0.9)
-	otherModel := seed(post1, "decoy-model", reviewModelTwo, "v2", 0.9, 0.9)
+	e1 := seed(post1, "e1-post", reviewModelOne, "v3", 0.9, 0.2)
+	e2 := seed(comment, "e2-comment", reviewModelOne, "v3", 0.6, 0.7)
+	e3 := seed(community, "e3-community", reviewModelOne, "v3", 0.5, 0.1)
+	e4 := seed(post2, "e4-two-admins", reviewModelOne, "v3", 0.8, 0.6)
+	seed(post3, "e5-unverdicted", reviewModelOne, "v3", 0.95, 0.95)
+	e6 := seed(post4, "e6-edited", reviewModelOne, "v3", 0.9, 0.9)
+	e7 := seed(post5, "e7-deleted", reviewModelOne, "v3", 0.1, 0.9)
+	e8 := seed(post6, "e8-greater-admin-later", reviewModelOne, "v3", 0.7, 0.8)
+	e9 := seed(editedComment, "e9-edited-comment", reviewModelOne, "v3", 0.9, 0.9)
+	e10 := seed(editedCommunity, "e10-edited-community", reviewModelOne, "v3", 0.9, 0.9)
+	otherModel := seed(post1, "decoy-model", reviewModelTwo, "v3", 0.9, 0.9)
 	otherPolicy := seed(post1, "decoy-policy", reviewModelOne, "v0", 0.9, 0.9)
 
 	record := func(resultID int64, adminDID string, at time.Time, spam, hate bool) {
@@ -1039,10 +1039,10 @@ func TestClassificationReviewPrecision(t *testing.T) {
 	editReviewSubject(t, db, editedComment, "bafyclsprecisioncommentedited")
 	editReviewSubject(t, db, editedCommunity, "bafyclsprecisioncommunityedited")
 
-	report, err := r.service.Precision(ctx, classification.PrecisionRequest{ModelID: reviewModelOne, PolicyVersion: "v2", Threshold: 0.5})
+	report, err := r.service.Precision(ctx, classification.PrecisionRequest{ModelID: reviewModelOne, PolicyVersion: "v3", Threshold: 0.5})
 	require.NoError(t, err)
 	assert.Equal(t, reviewModelOne, report.ModelID)
-	assert.Equal(t, "v2", report.PolicyVersion)
+	assert.Equal(t, "v3", report.PolicyVersion)
 	assert.InDelta(t, 0.5, report.Threshold, 1e-9)
 	assert.Equal(t, 5, report.VerdictedCount, "e1-e4 and e8 are verdicted and reviewable")
 	assert.Equal(t, 4, report.UnreviewableCount,

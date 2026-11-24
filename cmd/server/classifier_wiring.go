@@ -170,7 +170,7 @@ func (a *application) buildClassificationWorker() {
 		return
 	}
 	if a.imageProxyService == nil {
-		slog.Warn("content classifier: image proxy disabled, images will be counted as skipped and not classified")
+		slog.Warn("content classifier: image proxy disabled, images will be counted as skipped and not classified, and questions that require an image will not be asked")
 		a.classificationWorker = a.newClassificationWorker()
 		return
 	}
