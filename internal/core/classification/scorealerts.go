@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // ScoreAlertThreshold is one CLASSIFIER_SCORE_ALERTS entry: an alert is
@@ -75,13 +78,76 @@ type ScoreAlert struct {
 	QuestionKey string
 	SubjectKind SubjectKind
 	Attempts    int
+	// SubjectURI is the result's subject: an AT-URI for a post or comment,
+	// the community DID for a community.
+	SubjectURI   string
+	CommunityDID string
+	// RootURI is a comment's root post AT-URI; empty for other kinds or when
+	// the comment row is gone.
+	RootURI string
 }
 
-// RenderScoreAlert renders the operator message for an alert. It carries the
-// result ID, question key and subject kind only, never subject identity.
-func RenderScoreAlert(alert ScoreAlert) string {
-	return fmt.Sprintf("Classifier score alert: result %d, question %s, subject %s",
-		alert.ResultID, alert.QuestionKey, alert.SubjectKind)
+// RenderScoreAlert renders the operator message for an alert. The first line
+// carries the result ID, question key and subject kind. A URI line follows
+// with the subject identifier verbatim when there is one, and an Open line
+// with the subject's web link under webBaseURL when one can be built. The
+// message names the subject, so it is sent to operators and never logged;
+// the Telegram client disables link previews, so Telegram never fetches the
+// linked page.
+func RenderScoreAlert(alert ScoreAlert, webBaseURL string) string {
+	lines := []string{fmt.Sprintf("Classifier score alert: result %d, question %s, subject %s",
+		alert.ResultID, alert.QuestionKey, alert.SubjectKind)}
+	if alert.SubjectURI != "" {
+		lines = append(lines, "URI: "+alert.SubjectURI)
+		if link, ok := scoreAlertLink(alert, webBaseURL); ok {
+			lines = append(lines, "Open: "+link)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// scoreAlertLink builds the subject's web link, escaping each path segment.
+// ok is false when the base URL is empty, the community DID is missing, or a
+// needed AT-URI (the subject, or a comment's root post) does not parse to a
+// repository and record key.
+func scoreAlertLink(alert ScoreAlert, webBaseURL string) (string, bool) {
+	base := strings.TrimSuffix(webBaseURL, "/")
+	if base == "" || alert.CommunityDID == "" {
+		return "", false
+	}
+	community := base + "/c/" + url.PathEscape(alert.CommunityDID)
+	switch alert.SubjectKind {
+	case SubjectKindCommunity:
+		return community, true
+	case SubjectKindPost:
+		author, rkey, ok := scoreAlertRecord(alert.SubjectURI)
+		if !ok {
+			return "", false
+		}
+		return community + "/post/" + author + "/" + rkey, true
+	case SubjectKindComment:
+		rootAuthor, rootKey, ok := scoreAlertRecord(alert.RootURI)
+		if !ok {
+			return "", false
+		}
+		commenter, commentKey, ok := scoreAlertRecord(alert.SubjectURI)
+		if !ok {
+			return "", false
+		}
+		return community + "/post/" + rootAuthor + "/" + rootKey + "/comment/" + commenter + "/" + commentKey, true
+	default:
+		return "", false
+	}
+}
+
+// scoreAlertRecord returns the escaped repository and record key of a record
+// AT-URI; ok is false when uri does not parse or has no record key.
+func scoreAlertRecord(uri string) (repository, recordKey string, ok bool) {
+	parsed, err := syntax.ParseATURI(uri)
+	if err != nil || parsed.RecordKey() == "" {
+		return "", "", false
+	}
+	return url.PathEscape(parsed.Authority().String()), url.PathEscape(parsed.RecordKey().String()), true
 }
 
 // MessageSender delivers one plain-text message to operators.
@@ -152,6 +218,9 @@ type ScoreAlertDeliveryConfig struct {
 	// RetryBaseDelay is the wait after the first failed send; each further
 	// failure doubles it, up to scoreAlertMaxRetryDelay.
 	RetryBaseDelay time.Duration
+	// WebBaseURL is the web app's base URL (APPVIEW_PUBLIC_URL) that alert
+	// links are built from. Empty means alerts carry no link.
+	WebBaseURL string
 }
 
 // scoreAlertClaimLease is how long a claimed alert stays out of other claims
@@ -267,7 +336,7 @@ func (s *ScoreAlertService) deliverDue(ctx context.Context, jobID int64) string 
 // ctx ends during the send, so a delivered alert is not resent and a failed
 // send is counted.
 func (s *ScoreAlertService) deliver(ctx context.Context, alert ScoreAlert, lease time.Time) string {
-	sendErr := s.sender.SendMessage(ctx, RenderScoreAlert(alert))
+	sendErr := s.sender.SendMessage(ctx, RenderScoreAlert(alert, s.cfg.WebBaseURL))
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stateWriteTimeout)
 	defer cancel()
 	attempts := alert.Attempts + 1

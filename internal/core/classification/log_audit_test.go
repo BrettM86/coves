@@ -350,7 +350,7 @@ func TestScoreAlertServiceLogsCarryNoSubjectIdentity(t *testing.T) {
 			handler := &recordingHandler{}
 			newService := func() *classification.ScoreAlertService {
 				return classification.NewScoreAlertService(test.repo(), auditSender{err: test.senderErr},
-					classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute},
+					classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute, WebBaseURL: "https://coves.sentinel.test"},
 					func() time.Time { return time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC) }, slog.New(handler))
 			}
 
@@ -379,5 +379,6 @@ func TestScoreAlertServiceLogsCarryNoSubjectIdentity(t *testing.T) {
 func sentinelAlert() classification.ScoreAlert {
 	return classification.ScoreAlert{
 		ID: 5, ResultID: 4217, JobID: 41, QuestionKey: "sexual_minors", SubjectKind: classification.SubjectKindPost,
+		SubjectURI: sentinelSubjectURI, CommunityDID: sentinelCommunityDID, RootURI: sentinelSubjectURI,
 	}
 }

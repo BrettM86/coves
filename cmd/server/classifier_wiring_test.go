@@ -161,7 +161,8 @@ func TestBuildClassifierRefusesUnknownScoreAlertKey(t *testing.T) {
 
 // TestBuildClassifierWorkerInstallsScoreAlerts: the worker constructor that
 // buildClassifier sets builds workers with the parsed CLASSIFIER_SCORE_ALERTS
-// thresholds and the score alert service, which the worker needs to record
+// thresholds and the score alert service (whose alert links use
+// APPVIEW_PUBLIC_URL), which the worker needs to record
 // and deliver score alerts with a stored result. Worker keeps these fields
 // unexported and the constructor's repository and Cloudflare client are not
 // injectable, so the test reads the fields through reflection.
@@ -186,7 +187,7 @@ func TestBuildClassifierWorkerInstallsScoreAlerts(t *testing.T) {
 		ScoreAlertAttemptLimit:   8,
 		ScoreAlertRetryBaseDelay: time.Minute,
 		ScoreAlertSweepInterval:  5 * time.Minute,
-	}}}
+	}, OAuth: config.OAuthConfig{PublicURL: "https://appview.wiring.test"}}}
 
 	require.NoError(t, a.buildClassifier())
 	require.NotNil(t, a.newClassificationWorker)
@@ -205,6 +206,12 @@ func TestBuildClassifierWorkerInstallsScoreAlerts(t *testing.T) {
 	require.False(t, notifier.IsNil(), "the production worker must have a score alert notifier")
 	assert.Equal(t, reflect.ValueOf(a.classificationScoreAlertService).Pointer(), notifier.Elem().Pointer(),
 		"the production worker must notify the score alert service buildClassifier built")
+
+	// The score alert links point at the configured APPVIEW_PUBLIC_URL.
+	alertConfig := reflect.ValueOf(a.classificationScoreAlertService).Elem().FieldByName("cfg")
+	require.True(t, alertConfig.IsValid(), "ScoreAlertService has no cfg field")
+	assert.Equal(t, "https://appview.wiring.test", alertConfig.FieldByName("WebBaseURL").String(),
+		"the score alert service must build links from APPVIEW_PUBLIC_URL")
 
 	// The worker and the metrics share one provider auth pause, so
 	// getClassificationMetrics shows the pause the worker is under.

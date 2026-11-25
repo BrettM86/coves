@@ -86,6 +86,7 @@ func (a *application) buildClassifier() error {
 		classification.ScoreAlertDeliveryConfig{
 			AttemptLimit:   cfg.ScoreAlertAttemptLimit,
 			RetryBaseDelay: cfg.ScoreAlertRetryBaseDelay,
+			WebBaseURL:     a.cfg.OAuth.PublicURL,
 		}, time.Now, slog.Default())
 
 	a.classificationRepo = postgresRepo.NewClassificationRepository(a.db, a.cfg.Instance.DID)

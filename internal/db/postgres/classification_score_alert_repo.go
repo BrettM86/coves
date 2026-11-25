@@ -29,7 +29,9 @@ var _ classification.ScoreAlertRepository = (*ClassificationScoreAlertRepository
 // the claimed CTE moves its next_attempt_at to the lease expiry so no other
 // claim sees it as due. A NULL next_attempt_at is a new alert, due at once.
 // Parameters: $1 now, $2 lease expiry, $3 attempt limit, $4 job ID (NULL for
-// every job).
+// every job). The comment join supplies a comment alert's root post URI for
+// its web link; it is a LEFT JOIN so an alert whose comment row is gone still
+// claims, with an empty root URI.
 const claimDueScoreAlertQuery = `
 	WITH due AS (
 		SELECT a.id
@@ -48,9 +50,11 @@ const claimDueScoreAlertQuery = `
 		WHERE a.id = due.id
 		RETURNING a.id, a.result_id, a.question_key, a.subject_kind, a.attempts
 	)
-	SELECT c.id, c.result_id, r.job_id, c.question_key, c.subject_kind, c.attempts
+	SELECT c.id, c.result_id, r.job_id, c.question_key, c.subject_kind, c.attempts,
+	       r.subject_uri, r.community_did, COALESCE(cm.root_uri, '')
 	FROM claimed c
-	JOIN classification_results r ON r.id = c.result_id`
+	JOIN classification_results r ON r.id = c.result_id
+	LEFT JOIN comments cm ON c.subject_kind = 'comment' AND cm.uri = r.subject_uri`
 
 // ClaimDueAlert claims one due alert; jobID 0 means any job.
 func (r *ClassificationScoreAlertRepository) ClaimDueAlert(ctx context.Context, jobID int64, now, leaseUntil time.Time, attemptLimit int) (classification.ScoreAlert, bool, error) {
@@ -61,7 +65,8 @@ func (r *ClassificationScoreAlertRepository) ClaimDueAlert(ctx context.Context, 
 	var alert classification.ScoreAlert
 	var subjectKind string
 	err := r.db.QueryRowContext(ctx, claimDueScoreAlertQuery, now, leaseUntil, attemptLimit, job).Scan(
-		&alert.ID, &alert.ResultID, &alert.JobID, &alert.QuestionKey, &subjectKind, &alert.Attempts)
+		&alert.ID, &alert.ResultID, &alert.JobID, &alert.QuestionKey, &subjectKind, &alert.Attempts,
+		&alert.SubjectURI, &alert.CommunityDID, &alert.RootURI)
 	if errors.Is(err, sql.ErrNoRows) {
 		return classification.ScoreAlert{}, false, nil
 	}

@@ -133,7 +133,7 @@ func TestClassificationScoreAlertRetriesThenDeliversOnce(t *testing.T) {
 	sender := &signalSender{err: errors.New("telegram unavailable")}
 	pds := &classificationImagePDS{}
 	worker, service := f.scoreAlertWorker(t, pds, scoreAlertMinorsAndSpam, sender,
-		classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute})
+		classification.ScoreAlertDeliveryConfig{AttemptLimit: 8, RetryBaseDelay: time.Minute, WebBaseURL: "https://coves.test"})
 
 	postURI := f.imagePost(t, pds, f.author(t, "clsalertpost"), "3lclsalert0001", "Alert lighthouse gulls")
 	f.enqueue(t, postURI, classificationT0)
@@ -158,8 +158,10 @@ func TestClassificationScoreAlertRetriesThenDeliversOnce(t *testing.T) {
 
 	sender.SetErr(nil)
 	f.sweepAt(t, service, time.Date(2026, 11, 12, 12, 1, 0, 0, time.UTC))
-	assert.Equal(t, []string{fmt.Sprintf("Classifier score alert: result %d, question sexual_minors, subject post", resultID)},
-		sender.Delivered(), "the due alert is delivered once, naming its result")
+	assert.Equal(t, []string{fmt.Sprintf("Classifier score alert: result %d, question sexual_minors, subject post\n"+
+		"URI: at://did:plc:clsalertpost/social.coves.community.postv2/3lclsalert0001\n"+
+		"Open: https://coves.test/c/did:plc:visclscommunity/post/did:plc:clsalertpost/3lclsalert0001", resultID)},
+		sender.Delivered(), "the due alert is delivered once, naming its result and linking its subject")
 	alerts := f.scoreAlerts(t)
 	require.Len(t, alerts, 1)
 	assert.Equal(t, scoreAlertTime(time.Date(2026, 11, 12, 12, 1, 0, 0, time.UTC)), alerts[0].DeliveredAt)
@@ -308,7 +310,8 @@ func TestClassificationScoreAlertNotRaisedForADiscardedResult(t *testing.T) {
 func TestClassificationScoreAlertDeliveryIsExactlyOnce(t *testing.T) {
 	// seedTwoAlerts stores one post result meeting both thresholds with no
 	// notifier, so its two alerts (sexual_minors, spam_scam) are due and
-	// unsent. It returns the result's job ID and the two alert messages.
+	// unsent. It returns the result's job ID and the two alert messages,
+	// whose post is by did:plc:<label>.
 	seedTwoAlerts := func(t *testing.T, f *classificationFixture, label string) (jobID int64, minorsText, spamText string) {
 		t.Helper()
 		pds := &classificationImagePDS{}
@@ -320,9 +323,12 @@ func TestClassificationScoreAlertDeliveryIsExactlyOnce(t *testing.T) {
 		require.NoError(t, f.db.QueryRowContext(t.Context(),
 			`SELECT id FROM classification_jobs WHERE subject_uri = $1`, postURI).Scan(&jobID))
 		resultID := f.resultID(t, postURI)
+		// The services below have no WebBaseURL, so the messages carry no
+		// Open line.
+		subjectLine := "\nURI: at://did:plc:" + label + "/social.coves.community.postv2/3lclsalertxo01"
 		return jobID,
-			fmt.Sprintf("Classifier score alert: result %d, question sexual_minors, subject post", resultID),
-			fmt.Sprintf("Classifier score alert: result %d, question spam_scam, subject post", resultID)
+			fmt.Sprintf("Classifier score alert: result %d, question sexual_minors, subject post", resultID) + subjectLine,
+			fmt.Sprintf("Classifier score alert: result %d, question spam_scam, subject post", resultID) + subjectLine
 	}
 
 	t.Run("sweep during a blocked after-commit send", func(t *testing.T) {
@@ -445,6 +451,85 @@ func TestClassificationScoreAlertDeliveryIsExactlyOnce(t *testing.T) {
 			assert.Equal(t, scoreAlertTime(secondLease), alert.NextAttemptAt, "the newer claim's lease stands")
 		}
 	})
+}
+
+// TestClassificationScoreAlertClaimCarriesTheSubject: a claimed alert carries
+// its result's subject URI and community DID and, for a comment, the URI of
+// the comment's root post (not its parent); a comment whose row is gone
+// still claims, with no root post URI.
+func TestClassificationScoreAlertClaimCarriesTheSubject(t *testing.T) {
+	type subject struct{ SubjectURI, CommunityDID, RootURI string }
+	// thread seeds a root post and a nested reply (a reply to a reply to the
+	// root), enqueues the nested reply and returns its URI.
+	thread := func(t *testing.T, f *classificationFixture) string {
+		root := f.visiblePost(t, f.community, f.author(t, "clsalertlnkr"), "3lclsalertlr01", "Link root heron")
+		parent := seedClassificationComment(t, f.db, f.author(t, "clsalertlnkm"), "3lclsalertlm01", root, root, "Link parent heron")
+		reply := seedClassificationComment(t, f.db, f.author(t, "clsalertlnkc"), "3lclsalertlc01", root, parent, "Link nested heron")
+		f.enqueueComment(t, reply, classificationT0)
+		return reply
+	}
+	for _, row := range []struct {
+		name string
+		// seed seeds and enqueues the subject; the returned func, when not
+		// nil, runs after the worker stores the alert.
+		seed func(t *testing.T, f *classificationFixture) func()
+		want subject
+	}{
+		{
+			name: "post",
+			seed: func(t *testing.T, f *classificationFixture) func() {
+				post := f.visiblePost(t, f.community, f.author(t, "clsalertlnkp"), "3lclsalertlp01", "Link post heron")
+				f.enqueue(t, post, classificationT0)
+				return nil
+			},
+			want: subject{
+				SubjectURI:   "at://did:plc:clsalertlnkp/social.coves.community.postv2/3lclsalertlp01",
+				CommunityDID: "did:plc:visclscommunity",
+			},
+		},
+		{
+			name: "nested reply",
+			seed: func(t *testing.T, f *classificationFixture) func() { thread(t, f); return nil },
+			want: subject{
+				SubjectURI:   "at://did:plc:clsalertlnkc/social.coves.community.comment/3lclsalertlc01",
+				CommunityDID: "did:plc:visclscommunity",
+				RootURI:      "at://did:plc:clsalertlnkr/social.coves.community.postv2/3lclsalertlr01",
+			},
+		},
+		{
+			name: "comment whose row is gone",
+			seed: func(t *testing.T, f *classificationFixture) func() {
+				reply := thread(t, f)
+				return func() {
+					_, err := f.db.ExecContext(t.Context(), `DELETE FROM comments WHERE uri = $1`, reply)
+					require.NoError(t, err)
+				}
+			},
+			want: subject{
+				SubjectURI:   "at://did:plc:clsalertlnkc/social.coves.community.comment/3lclsalertlc01",
+				CommunityDID: "did:plc:visclscommunity",
+			},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			f := newClassificationFixture(t, cloudflaretest.Canned(scoreAlertProbabilities(0.1, 0.9), classificationCannedInputTokens))
+			worker := f.imageWorker(t, &classificationImagePDS{}, nil, classification.WithScoreAlerts(scoreAlertMinorsAndSpam, nil))
+			afterRun := row.seed(t, f)
+			f.run(t, worker, classificationT0)
+			require.Len(t, f.scoreAlerts(t), 1, "the text-only subject meets spam_scam only")
+			if afterRun != nil {
+				afterRun()
+			}
+
+			alert, ok, err := NewClassificationScoreAlertRepository(f.db).ClaimDueAlert(t.Context(), 0, classificationT0,
+				time.Date(2026, 11, 12, 12, 5, 0, 0, time.UTC), 8)
+
+			require.NoError(t, err)
+			require.True(t, ok, "the stored alert is due")
+			assert.Equal(t, "spam_scam", alert.QuestionKey)
+			assert.Equal(t, row.want, subject{SubjectURI: alert.SubjectURI, CommunityDID: alert.CommunityDID, RootURI: alert.RootURI})
+		})
+	}
 }
 
 // TestClassificationSexualMinorsIsAskedOnlyWithAnImage: with a provider

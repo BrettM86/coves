@@ -165,3 +165,34 @@ func TestScoreAlertService_LogsExhaustedAttempts(t *testing.T) {
 		})
 	}
 }
+
+// textSender records the text of every send and answers nil.
+type textSender struct{ texts []string }
+
+func (s *textSender) SendMessage(_ context.Context, text string) error {
+	s.texts = append(s.texts, text)
+	return nil
+}
+
+// The delivered message carries the subject's web link built from the
+// service's configured WebBaseURL.
+func TestScoreAlertService_DeliversTheLinkFromTheConfiguredBaseURL(t *testing.T) {
+	repo := &deliveryAlertRepository{alerts: []classification.ScoreAlert{{
+		ID: 4, ResultID: 9, JobID: 1, QuestionKey: "spam_scam", SubjectKind: classification.SubjectKindComment,
+		SubjectURI:   "at://did:plc:deliverycommenter/social.coves.community.comment/3kdelivercmt",
+		CommunityDID: "did:plc:deliverycommunity",
+		RootURI:      "at://did:plc:deliveryauthor/social.coves.community.postv2/3kdeliverpost",
+	}}}
+	sender := &textSender{}
+	service := classification.NewScoreAlertService(repo, sender,
+		classification.ScoreAlertDeliveryConfig{AttemptLimit: 3, RetryBaseDelay: time.Minute, WebBaseURL: "https://coves.example"},
+		func() time.Time { return time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC) }, slog.New(&recordingHandler{}))
+
+	service.DeliverPending(context.Background(), 1)
+
+	assert.Equal(t, []string{
+		"Classifier score alert: result 9, question spam_scam, subject comment\n" +
+			"URI: at://did:plc:deliverycommenter/social.coves.community.comment/3kdelivercmt\n" +
+			"Open: https://coves.example/c/did:plc:deliverycommunity/post/did:plc:deliveryauthor/3kdeliverpost/comment/did:plc:deliverycommenter/3kdelivercmt",
+	}, sender.texts)
+}
