@@ -132,7 +132,8 @@ Accepted 2026-11-15, output-loosening (owner-approved):
 ## Published and held back
 
 Published: `richtext.*`, `embed.*`, `actor.*` except
-`actor/getViewerAuthority.json`, `feed.*`, `aggregator.*`, and
+`actor/getViewerAuthority.json` (and `actor/getLikes.json`, pending its first
+publish), `feed.*`, `aggregator.*`, and
 `community.*` (including `post.*` and `comment.*`) except the held-back files
 below, and `notification/defs.json` with its five endpoint files (notifications
 release, 2026-11-05). Once the moderation release runs, also the reviewed moderation package:
@@ -268,6 +269,7 @@ goat lex publish --update \
   internal/atproto/lexicon/social/coves/actor/dismissBlueskyProfileImport.json \
   internal/atproto/lexicon/social/coves/actor/getBlueskyProfileImport.json \
   internal/atproto/lexicon/social/coves/actor/getComments.json \
+  internal/atproto/lexicon/social/coves/actor/getLikes.json \
   internal/atproto/lexicon/social/coves/actor/getPosts.json \
   internal/atproto/lexicon/social/coves/actor/getProfile.json \
   internal/atproto/lexicon/social/coves/actor/importBlueskyProfile.json \

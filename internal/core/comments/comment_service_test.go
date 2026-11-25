@@ -30,6 +30,10 @@ type mockCommentRepo struct {
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	listByCommenterWithCursorFunc func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 	getByRootAndRkeyFunc          func(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error)
+	getLikedSubjectRefsFunc       func(ctx context.Context, req GetActorLikesRequest) ([]LikedSubjectRef, *string, error)
+	getByURIsBatchErr             error
+	blockedCommentURIs            map[string]bool // URIs BlockedCommentURIs reports as blocked
+	blockedCommentURIsErr         error
 	// listed holds the comments the mock-backed comment generators returned
 	// from the canned listings above, so HydrateComments serves exactly the
 	// objects a test's listing handed out even when they are not in comments.
@@ -240,7 +244,17 @@ func (m *mockCommentRepo) lookupByRootAndRkey(rootURI, rkey string) (*Comment, e
 	return match, nil
 }
 
+func (m *mockCommentRepo) GetLikedSubjectRefs(ctx context.Context, req GetActorLikesRequest) ([]LikedSubjectRef, *string, error) {
+	if m.getLikedSubjectRefsFunc != nil {
+		return m.getLikedSubjectRefsFunc(ctx, req)
+	}
+	return nil, nil, nil
+}
+
 func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (map[string]*Comment, error) {
+	if m.getByURIsBatchErr != nil {
+		return nil, m.getByURIsBatchErr
+	}
 	result := make(map[string]*Comment)
 	for _, uri := range uris {
 		if c, ok := m.comments[uri]; ok {
@@ -251,7 +265,16 @@ func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (ma
 }
 
 func (m *mockCommentRepo) BlockedCommentURIs(ctx context.Context, viewerDID string, uris []string) (map[string]bool, error) {
-	return map[string]bool{}, nil
+	if m.blockedCommentURIsErr != nil {
+		return nil, m.blockedCommentURIsErr
+	}
+	result := map[string]bool{}
+	for _, uri := range uris {
+		if m.blockedCommentURIs[uri] {
+			result[uri] = true
+		}
+	}
+	return result, nil
 }
 
 func (m *mockCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error) {
@@ -386,6 +409,11 @@ type mockPostRepo struct {
 	// is the SERVICE's reaction to a hidden answer, not the SQL that produces one
 	// (that is pinned at T1 in internal/db/postgres/post_visibility_test.go).
 	hidden map[string]bool
+	// views answers GetViewsByURIs; viewsErr fails it, and viewsViewerDID
+	// records the viewer it was last asked for.
+	views          map[string]*posts.PostView
+	viewsErr       error
+	viewsViewerDID string
 }
 
 func newMockPostRepo() *mockPostRepo {
@@ -464,8 +492,17 @@ func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPosts
 }
 
 func (m *mockPostRepo) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*posts.PostView, error) {
-	// Mock implementation - returns empty for tests
-	return map[string]*posts.PostView{}, nil
+	m.viewsViewerDID = viewerDID
+	if m.viewsErr != nil {
+		return nil, m.viewsErr
+	}
+	result := map[string]*posts.PostView{}
+	for _, uri := range uris {
+		if view, ok := m.views[uri]; ok {
+			result[uri] = view
+		}
+	}
+	return result, nil
 }
 
 func (m *mockPostRepo) SoftDelete(ctx context.Context, uri string) error {

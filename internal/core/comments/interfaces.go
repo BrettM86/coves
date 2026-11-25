@@ -84,6 +84,12 @@ type Repository interface {
 	// HydrateComments returns the comments at uris in input order, dropping
 	// URIs that are not indexed or whose author viewerDID has blocked.
 	HydrateComments(ctx context.Context, uris []string, viewerDID string) ([]*Comment, error)
+
+	// GetLikedSubjectRefs returns one page of the posts and comments
+	// req.ActorDID upvoted, narrowed to one kind by req.Filter, newest vote
+	// first, visible to req.ViewerDID, each comment with its root post URI,
+	// and the cursor for the next page.
+	GetLikedSubjectRefs(ctx context.Context, req GetActorLikesRequest) ([]LikedSubjectRef, *string, error)
 }
 
 // RepositoryTx provides transaction-aware operations for consumers that need atomicity

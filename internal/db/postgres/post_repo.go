@@ -638,36 +638,9 @@ func (r *PostRepository) parseAuthorPostsCursor(cursor *string, paramOffset int)
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
 	}
-
-	// Validate cursor size to prevent DoS via massive base64 strings
-	const maxCursorSize = 512
-	if len(*cursor) > maxCursorSize {
-		return "", nil, fmt.Errorf("%w: cursor exceeds maximum length", posts.ErrInvalidCursor)
-	}
-
-	// Decode base64 cursor
-	decoded, err := base64.URLEncoding.DecodeString(*cursor)
+	createdAt, uri, err := decodeTimeURICursor(*cursor)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: invalid base64 encoding", posts.ErrInvalidCursor)
-	}
-
-	// Parse cursor: created_at|uri
-	parts := strings.Split(string(decoded), "|")
-	if len(parts) != 2 {
-		return "", nil, fmt.Errorf("%w: malformed cursor format", posts.ErrInvalidCursor)
-	}
-
-	createdAt := parts[0]
-	uri := parts[1]
-
-	// Validate timestamp format
-	if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
-		return "", nil, fmt.Errorf("%w: invalid timestamp in cursor", posts.ErrInvalidCursor)
-	}
-
-	// Validate URI format (must be AT-URI)
-	if !strings.HasPrefix(uri, "at://") {
-		return "", nil, fmt.Errorf("%w: invalid URI format in cursor", posts.ErrInvalidCursor)
+		return "", nil, err
 	}
 
 	// Use composite key comparison for stable cursor pagination
@@ -675,6 +648,40 @@ func (r *PostRepository) parseAuthorPostsCursor(cursor *string, paramOffset int)
 	filter := fmt.Sprintf("(p.created_at < $%d OR (p.created_at = $%d AND p.uri < $%d))",
 		paramOffset, paramOffset, paramOffset+1)
 	return filter, []interface{}{createdAt, uri}, nil
+}
+
+// decodeTimeURICursor decodes a base64url(created_at|uri) pagination cursor,
+// returning posts.ErrInvalidCursor for a cursor that is not well formed.
+func decodeTimeURICursor(cursor string) (createdAt, uri string, err error) {
+	// Validate cursor size to prevent DoS via massive base64 strings
+	const maxCursorSize = 512
+	if len(cursor) > maxCursorSize {
+		return "", "", fmt.Errorf("%w: cursor exceeds maximum length", posts.ErrInvalidCursor)
+	}
+
+	// Decode base64 cursor
+	decoded, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: invalid base64 encoding", posts.ErrInvalidCursor)
+	}
+
+	// Parse cursor: created_at|uri
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("%w: malformed cursor format", posts.ErrInvalidCursor)
+	}
+	createdAt, uri = parts[0], parts[1]
+
+	// Validate timestamp format
+	if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return "", "", fmt.Errorf("%w: invalid timestamp in cursor", posts.ErrInvalidCursor)
+	}
+
+	// Validate URI format (must be AT-URI)
+	if !strings.HasPrefix(uri, "at://") {
+		return "", "", fmt.Errorf("%w: invalid URI format in cursor", posts.ErrInvalidCursor)
+	}
+	return createdAt, uri, nil
 }
 
 // buildAuthorPostsCursor creates pagination cursor from last post

@@ -1359,3 +1359,176 @@ func (r *postgresCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []s
 	}
 	return removals, nil
 }
+
+// GetLikedSubjectRefs returns one page of the subjects req.ActorDID upvoted:
+// the actor's active up votes on posts and comments visible to req.ViewerDID,
+// narrowed to one kind by req.Filter, ordered by vote created_at then vote URI,
+// newest first. A liked post is visible under authorVisiblePostsJoin and not
+// deleted. A liked comment is not deleted, under no active removal, hidden
+// (hide_reason) or account-restricted only for viewers other than its author,
+// served under its declared root (commentServedUnderDeclaredRootPredicate), and
+// its root post is visible as a liked post is; one whose parent chain reaches a
+// community under an active instance removal is listed only to its commenter,
+// as actor.getComments lists it. A liked comment's ref carries the community
+// its parent chain reaches (commentChainCommunitySQL), resolved here so other
+// comment reads do not pay for the chain walk. Visibility is applied in the
+// page query, so hidden subjects never shorten a page here. The query walks
+// the actor's votes once, newest first, and probes each vote's subject per
+// wanted kind, so a kind the actor rarely liked does not make the page scan
+// the actor's whole vote history. The cursor is
+// base64url(vote created_at|vote uri) and is returned only when another row
+// follows; a malformed one is comments.ErrInvalidCursor. req.Limit is used as
+// given (the service clamps it); an unknown req.Filter is an error.
+func (r *postgresCommentRepo) GetLikedSubjectRefs(ctx context.Context, req comments.GetActorLikesRequest) ([]comments.LikedSubjectRef, *string, error) {
+	var wantPosts, wantComments bool
+	switch req.Filter {
+	case comments.LikesFilterAll:
+		wantPosts, wantComments = true, true
+	case comments.LikesFilterPosts:
+		wantPosts = true
+	case comments.LikesFilterComments:
+		wantComments = true
+	default:
+		return nil, nil, fmt.Errorf("unknown likes filter %q", req.Filter)
+	}
+
+	// $1 actor, $2 viewer, $3 authority, then the cursor and the limit.
+	args := []any{req.ActorDID, req.ViewerDID, r.authorityDID}
+	voteConditions := []string{
+		"v.voter_did = $1",
+		"v.direction = 'up'",
+		"v.deleted_at IS NULL",
+	}
+	if req.Cursor != nil && *req.Cursor != "" {
+		createdAt, uri, err := decodeTimeURICursor(*req.Cursor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", comments.ErrInvalidCursor, err)
+		}
+		// The leading v.created_at <= bound is implied by the keyset
+		// comparison; it is spelled out so idx_votes_voter (voter_did,
+		// created_at DESC) seeks to the cursor instead of walking every newer
+		// vote of the actor.
+		voteConditions = append(voteConditions,
+			"v.created_at <= $4 AND (v.created_at < $4 OR (v.created_at = $4 AND v.uri < $5))")
+		args = append(args, createdAt, uri)
+	}
+
+	limit := req.Limit
+	args = append(args, limit+1) // +1 to check for next page
+	limitParam := len(args)
+	voteWhere := strings.Join(voteConditions, " AND ")
+
+	// Each wanted kind is a LEFT JOIN LATERAL probe of the vote's subject, so
+	// the page is one walk of the actor's votes in idx_votes_voter order that
+	// stops at the limit, whichever kind fills it. Each lateral is its own
+	// scope, so both may use the aliases authorVisiblePostsJoin refers to.
+	visibleJoin, visibleWhere := authorVisiblePostsJoin(2, 3)
+	var laterals, matched []string
+	kindSQL, subjectSQL, rootSQL, communitySQL := fmt.Sprintf("'%s'", comments.LikedSubjectComment),
+		"liked_comment.uri", "liked_comment.root_uri", "liked_comment.community_did"
+	if wantPosts {
+		laterals = append(laterals, fmt.Sprintf(`
+		LEFT JOIN LATERAL (
+			SELECT p.uri
+			FROM posts p
+			INNER JOIN communities post_community ON p.community_did = post_community.did%[1]s
+			WHERE p.uri = v.subject_uri
+				AND p.deleted_at IS NULL
+				AND %[2]s
+		) liked_post ON true`, visibleJoin, visibleWhere))
+		matched = append(matched, "liked_post.uri IS NOT NULL")
+		kindSQL, subjectSQL, rootSQL, communitySQL = fmt.Sprintf("'%s'", comments.LikedSubjectPost), "liked_post.uri", "''", "''"
+	}
+	if wantComments {
+		// chain_community walks the comment's parent chain once, for both the
+		// instance-removed-community term and the ref's CommunityDID.
+		laterals = append(laterals, fmt.Sprintf(`
+		LEFT JOIN LATERAL (
+			SELECT c.uri, c.root_uri, COALESCE(chain_community.did, '') AS community_did
+			FROM comments c
+			INNER JOIN posts p ON p.uri = c.root_uri
+			INNER JOIN communities post_community ON p.community_did = post_community.did%[1]s
+			CROSS JOIN LATERAL (SELECT %[5]s AS did) chain_community
+			WHERE c.uri = v.subject_uri
+				AND c.deleted_at IS NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM moderation_decisions d
+					WHERE d.subject_uri = c.uri AND d.kind = 'removal' AND d.active
+				)
+				AND (c.hide_reason IS NULL OR c.commenter_did = $2)
+				AND %[3]s
+				AND %[4]s
+				AND (c.commenter_did = $2 OR NOT %[6]s)
+				AND p.deleted_at IS NULL
+				AND %[2]s
+		) liked_comment ON true`, visibleJoin, visibleWhere,
+			visibleToViewerUnlessRestrictedSQL("c.commenter_did", "$2", "$3"),
+			commentServedUnderDeclaredRootPredicate(2),
+			commentChainCommunitySQL("c"),
+			communityRemovedSQL("chain_community.did", "$3")))
+		matched = append(matched, "liked_comment.uri IS NOT NULL")
+	}
+	if len(laterals) == 2 {
+		// A subject URI names a post or a comment, never both, so at most one
+		// lateral matches a vote.
+		kindSQL = fmt.Sprintf("CASE WHEN liked_post.uri IS NOT NULL THEN '%s' ELSE '%s' END",
+			comments.LikedSubjectPost, comments.LikedSubjectComment)
+		subjectSQL = "COALESCE(liked_post.uri, liked_comment.uri)"
+		rootSQL = "COALESCE(liked_comment.root_uri, '')"
+		communitySQL = "COALESCE(liked_comment.community_did, '')"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT v.created_at, v.uri, %s, %s, %s, %s
+		FROM votes v%s
+		WHERE %s
+			AND (%s)
+		ORDER BY v.created_at DESC, v.uri DESC
+		LIMIT $%d
+	`, kindSQL, subjectSQL, rootSQL, communitySQL, strings.Join(laterals, ""), voteWhere,
+		strings.Join(matched, " OR "), limitParam)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query liked subjects: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
+
+	type likedRow struct {
+		ref           comments.LikedSubjectRef
+		voteURI       string
+		voteCreatedAt time.Time
+	}
+	var page []likedRow
+	for rows.Next() {
+		var row likedRow
+		var kind string
+		if err := rows.Scan(&row.voteCreatedAt, &row.voteURI, &kind, &row.ref.URI, &row.ref.RootURI, &row.ref.CommunityDID); err != nil {
+			return nil, nil, fmt.Errorf("failed to scan liked subject: %w", err)
+		}
+		row.ref.Kind = comments.LikedSubjectKind(kind)
+		page = append(page, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("error iterating liked subjects: %w", err)
+	}
+
+	var cursor *string
+	if len(page) > limit {
+		page = page[:limit]
+		last := page[len(page)-1]
+		cursorString := base64.URLEncoding.EncodeToString(
+			[]byte(last.voteCreatedAt.Format(time.RFC3339Nano) + "|" + last.voteURI))
+		cursor = &cursorString
+	}
+
+	refs := make([]comments.LikedSubjectRef, len(page))
+	for i, row := range page {
+		refs[i] = row.ref
+	}
+	return refs, cursor, nil
+}

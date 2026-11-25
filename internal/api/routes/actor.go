@@ -34,9 +34,12 @@ func RegisterActorRoutes(
 		WithViewerModeration(authority, instanceDID)
 	getCommentsHandler := actor.NewGetCommentsHandler(commentService, userService, voteService).
 		WithViewerModeration(authority, instanceDID)
+	getLikesHandler := actor.NewGetLikesHandler(commentService, userService, voteService, blueskyService).
+		WithViewerModeration(authority, instanceDID)
 	if cfg.communityViewer != nil {
 		getPostsHandler.WithCommunityViewerModeration(cfg.communityViewer)
 		getCommentsHandler.WithCommunityViewerModeration(cfg.communityViewer)
+		getLikesHandler.WithCommunityViewerModeration(cfg.communityViewer)
 	}
 
 	// GET /xrpc/social.coves.actor.getPosts
@@ -46,4 +49,8 @@ func RegisterActorRoutes(
 	// GET /xrpc/social.coves.actor.getComments
 	// Public endpoint with optional auth for viewer-specific state (vote state, moderation actions)
 	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.actor.getComments", getCommentsHandler.HandleGetComments)
+
+	// GET /xrpc/social.coves.actor.getLikes
+	// Requires auth: a user's likes are visible only to that user
+	r.With(authMiddleware.RequireAuth).Get("/xrpc/social.coves.actor.getLikes", getLikesHandler.HandleGetLikes)
 }

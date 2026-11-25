@@ -1,0 +1,123 @@
+{
+  "lexicon": 1,
+  "id": "social.coves.actor.getLikes",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get the posts and comments a user upvoted, most recent vote first. Requires auth; only the user themselves may list their likes. Pages can be short or empty while a cursor is still returned; keep following the cursor.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "actor"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "DID or handle of the user, or a bridged user's fediverse address as name@host or @name@host (e.g. alice@lemmy.world). Must resolve to the authenticated viewer."
+          },
+          "filter": {
+            "type": "string",
+            "knownValues": [
+              "all",
+              "posts",
+              "comments"
+            ],
+            "default": "all",
+            "description": "Which likes to list: all (posts and comments together), posts, or comments.",
+            "maxLength": 64
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "feed"
+          ],
+          "properties": {
+            "feed": {
+              "type": "array",
+              "items": {
+                "type": "union",
+                "refs": [
+                  "#likedPost",
+                  "#likedComment"
+                ]
+              }
+            },
+            "cursor": {
+              "type": "string",
+              "maxLength": 500
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "ActorNotFound",
+          "description": "Actor not found"
+        },
+        {
+          "name": "AmbiguousActor",
+          "description": "More than one bridged user matches the name@host actor"
+        },
+        {
+          "name": "InvalidRequest",
+          "description": "Unknown filter or malformed parameter"
+        },
+        {
+          "name": "InvalidCursor",
+          "description": "Invalid pagination cursor"
+        },
+        {
+          "name": "NotAllowed",
+          "description": "The actor is not the authenticated viewer"
+        }
+      ]
+    },
+    "likedPost": {
+      "type": "object",
+      "description": "A post the user upvoted.",
+      "required": [
+        "post"
+      ],
+      "properties": {
+        "post": {
+          "type": "ref",
+          "ref": "social.coves.community.post.defs#postView"
+        }
+      }
+    },
+    "likedComment": {
+      "type": "object",
+      "description": "A comment the user upvoted, with the root post of its thread.",
+      "required": [
+        "comment",
+        "post"
+      ],
+      "properties": {
+        "comment": {
+          "type": "ref",
+          "ref": "social.coves.community.comment.defs#commentView"
+        },
+        "post": {
+          "type": "ref",
+          "ref": "social.coves.community.post.defs#postView",
+          "description": "The root post of the comment's thread."
+        }
+      }
+    }
+  }
+}

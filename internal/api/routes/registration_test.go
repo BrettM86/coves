@@ -327,6 +327,7 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodGet, "/xrpc/social.coves.feed.describeFeedGenerator", authNone, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.feed.getFeedGenerators", authNone, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getPosts", authOptional, 0, false},
+	{http.MethodGet, "/xrpc/social.coves.actor.getLikes", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getComments", authOptional, 0, false},
 
 	// RegisterAggregatorRoutes — social.coves.aggregator.*

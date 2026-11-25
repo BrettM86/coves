@@ -22,6 +22,14 @@ import (
 // mockCommentService implements a comment service interface for testing
 type mockCommentService struct {
 	getActorCommentsFunc func(ctx context.Context, req *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error)
+	getActorLikesFunc    func(ctx context.Context, req *comments.GetActorLikesRequest) (*comments.ActorLikesResponse, error)
+}
+
+func (m *mockCommentService) GetActorLikes(ctx context.Context, req *comments.GetActorLikesRequest) (*comments.ActorLikesResponse, error) {
+	if m.getActorLikesFunc != nil {
+		return m.getActorLikesFunc(ctx, req)
+	}
+	return &comments.ActorLikesResponse{Feed: []*comments.LikedItem{}}, nil
 }
 
 func (m *mockCommentService) GetActorComments(ctx context.Context, req *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error) {

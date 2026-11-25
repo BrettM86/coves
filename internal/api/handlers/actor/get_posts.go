@@ -68,29 +68,7 @@ func (h *GetPostsHandler) HandleGetPosts(w http.ResponseWriter, r *http.Request)
 	// Parse query parameters
 	req, err := h.parseRequest(r)
 	if err != nil {
-		// More than one bridged user matches a name@host actor: 409 AmbiguousActor
-		if errors.Is(err, users.ErrAmbiguousUser) {
-			handleServiceError(w, err)
-			return
-		}
-
-		// Check if it's an actor not found error (from handle resolution)
-		var actorNotFound *actorNotFoundError
-		if errors.As(err, &actorNotFound) {
-			writeError(w, http.StatusNotFound, "ActorNotFound", "Actor not found")
-			return
-		}
-
-		// An infrastructure failure during resolution (database down, DNS
-		// failure) is a 500; its cause stays in the log, out of the response.
-		var resolutionFailed *resolutionFailedError
-		if errors.As(err, &resolutionFailed) {
-			slog.Error("actor resolution infrastructure failure", "error", err)
-			writeError(w, http.StatusInternalServerError, "InternalServerError", "Failed to resolve actor identity")
-			return
-		}
-
-		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+		writeActorRequestError(w, err)
 		return
 	}
 
@@ -133,6 +111,34 @@ func (h *GetPostsHandler) HandleGetPosts(w http.ResponseWriter, r *http.Request)
 	if _, err := w.Write(responseBytes); err != nil {
 		log.Printf("ERROR: Failed to write actor posts response: %v", err)
 	}
+}
+
+// writeActorRequestError answers a request whose actor, limit or other query
+// parameters could not be parsed or resolved.
+func writeActorRequestError(w http.ResponseWriter, err error) {
+	// More than one bridged user matches a name@host actor: 409 AmbiguousActor
+	if errors.Is(err, users.ErrAmbiguousUser) {
+		handleServiceError(w, err)
+		return
+	}
+
+	// Check if it's an actor not found error (from handle resolution)
+	var actorNotFound *actorNotFoundError
+	if errors.As(err, &actorNotFound) {
+		writeError(w, http.StatusNotFound, "ActorNotFound", "Actor not found")
+		return
+	}
+
+	// An infrastructure failure during resolution (database down, DNS
+	// failure) is a 500; its cause stays in the log, out of the response.
+	var resolutionFailed *resolutionFailedError
+	if errors.As(err, &resolutionFailed) {
+		slog.Error("actor resolution infrastructure failure", "error", err)
+		writeError(w, http.StatusInternalServerError, "InternalServerError", "Failed to resolve actor identity")
+		return
+	}
+
+	writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
 }
 
 // parseRequest parses query parameters into GetAuthorPostsRequest

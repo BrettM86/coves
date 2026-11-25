@@ -858,6 +858,7 @@ func (a *application) buildServices(ctx context.Context) error {
 		comments.WithInstanceDID(a.cfg.Instance.DID),
 		comments.WithLexiconValidator(lexiconValidator),
 		comments.WithFeedRegistry(feedRegistry),
+		comments.WithBlockChecker(a.userBlockRepo),
 	)
 
 	slog.Info("domain services initialized")

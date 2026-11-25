@@ -117,3 +117,60 @@ type ModerationScopeView struct {
 	Kind         string `json:"kind"`
 	CommunityDID string `json:"communityDid,omitempty"`
 }
+
+// LikesFilter selects what social.coves.actor.getLikes lists.
+type LikesFilter string
+
+const (
+	// LikesFilterAll lists liked posts and liked comments together.
+	LikesFilterAll LikesFilter = "all"
+	// LikesFilterPosts lists liked posts only.
+	LikesFilterPosts LikesFilter = "posts"
+	// LikesFilterComments lists liked comments only.
+	LikesFilterComments LikesFilter = "comments"
+)
+
+// GetActorLikesRequest asks for one page of what an actor upvoted
+// (social.coves.actor.getLikes).
+type GetActorLikesRequest struct {
+	ActorDID  string      // Resolved DID of the actor whose upvotes are listed
+	ViewerDID string      // Authenticated viewer's DID
+	Filter    LikesFilter // LikesFilterAll, LikesFilterPosts or LikesFilterComments
+	Limit     int         // Number of items to return (1-100, default 50)
+	Cursor    *string     // Pagination cursor
+}
+
+// ActorLikesResponse is one page of liked items. Feed is never nil.
+type ActorLikesResponse struct {
+	Feed   []*LikedItem
+	Cursor *string
+}
+
+// LikedItem is a liked post (Post only) or a liked comment (Comment, with
+// Post its thread's root post).
+type LikedItem struct {
+	Post    *posts.PostView
+	Comment *CommentView
+}
+
+// GetPost returns the item's post: the liked post, or a liked comment's root
+// post.
+func (i *LikedItem) GetPost() *posts.PostView { return i.Post }
+
+// LikedSubjectKind is what a liked subject is.
+type LikedSubjectKind string
+
+const (
+	LikedSubjectPost    LikedSubjectKind = "post"
+	LikedSubjectComment LikedSubjectKind = "comment"
+)
+
+// LikedSubjectRef is one row of a likes page: the liked subject, its kind,
+// and for a comment the root post of its thread and the community its parent
+// chain reaches ("" for a post, or while the chain does not resolve).
+type LikedSubjectRef struct {
+	URI          string
+	Kind         LikedSubjectKind
+	RootURI      string
+	CommunityDID string
+}

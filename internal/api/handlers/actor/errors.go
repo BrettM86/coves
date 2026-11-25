@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"Coves/internal/api/xrpc"
+	"Coves/internal/core/comments"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 )
@@ -30,6 +31,8 @@ var errorMapper = xrpc.NewMapper("actor",
 	xrpc.Sentinel(posts.ErrCommunityNotFound, http.StatusNotFound,
 		"CommunityNotFound", "Community not found"),
 	xrpc.Sentinel(posts.ErrInvalidCursor, http.StatusBadRequest,
+		"InvalidCursor", "Invalid pagination cursor"),
+	xrpc.Sentinel(comments.ErrInvalidCursor, http.StatusBadRequest,
 		"InvalidCursor", "Invalid pagination cursor"),
 	// Message comes off the typed error rather than the chain, so context added
 	// by a caller cannot leak into the response.

@@ -70,6 +70,11 @@ type Service interface {
 	// entry. A comment whose author viewerDID has blocked has no view and is
 	// in blocked instead.
 	GetCommentViewsByURIs(ctx context.Context, uris []string, viewerDID string) (views map[string]*CommentView, blocked map[string]bool, err error)
+
+	// GetActorLikes returns one page of what req.ActorDID upvoted, in vote
+	// order: liked posts and, by req.Filter, liked comments each with its
+	// thread's root post.
+	GetActorLikes(ctx context.Context, req *GetActorLikesRequest) (*ActorLikesResponse, error)
 }
 
 // GetCommentsRequest defines the parameters for fetching comments
@@ -83,6 +88,13 @@ type GetCommentsRequest struct {
 	Timeframe  string
 	Depth      int
 	Limit      int
+}
+
+// WithBlockChecker installs the viewer block check GetActorLikes applies to
+// the authors of liked posts and of liked comments' root posts. Without one,
+// GetActorLikes fails for a signed-in viewer.
+func WithBlockChecker(checker posts.BlockChecker) CommentServiceOption {
+	return func(s *commentService) { s.blockChecker = checker }
 }
 
 // WithFeedRegistry installs the feed generator registry GetComments resolves
@@ -212,6 +224,7 @@ type commentService struct {
 	accountBans       accountbans.Reader            // Optional; when set, banned accounts are refused.
 	instanceDID       string                        // This instance's moderation authority, named on restricted-account placeholders.
 	feedRegistry      *feedgen.Registry             // Comment generators getComments resolves feed/sort against.
+	blockChecker      posts.BlockChecker            // GetActorLikes drops posts by authors the viewer blocked; required for a signed-in viewer.
 }
 
 // NewCommentService creates a new comment service instance
@@ -1684,6 +1697,136 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 		Comments: commentViews,
 		Cursor:   nextCursor,
 	}, nil
+}
+
+// GetActorLikes page sizes: the default when a request names none, and the
+// largest a request may ask for.
+const (
+	defaultActorLikesLimit = 50
+	maxActorLikesLimit     = 100
+)
+
+// GetActorLikes returns one page of what req.ActorDID upvoted, in vote order.
+// The repository page already applies the viewer's visibility rules. An item
+// is dropped when it cannot be served whole: a liked post with no view or by
+// an author the viewer blocked; a liked comment with no view, a placeholder
+// view (deleted, removed or hidden), an author the viewer blocked, or a root
+// post that is dropped by the same post rules. The page cursor is returned
+// unchanged so pagination never skips the rows that follow. Any lookup
+// failure, a signed-in viewer with no block checker installed, and a page row
+// of an unknown kind or a comment row with no root post fail the request.
+func (s *commentService) GetActorLikes(ctx context.Context, req *GetActorLikesRequest) (*ActorLikesResponse, error) {
+	if req.ViewerDID != "" && s.blockChecker == nil {
+		return nil, errors.New("getLikes for a signed-in viewer requires a block checker")
+	}
+	pageRequest := *req
+	if pageRequest.Limit <= 0 {
+		pageRequest.Limit = defaultActorLikesLimit
+	} else if pageRequest.Limit > maxActorLikesLimit {
+		pageRequest.Limit = maxActorLikesLimit
+	}
+
+	refs, cursor, err := s.commentRepo.GetLikedSubjectRefs(ctx, pageRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get liked subject page: %w", err)
+	}
+	feed := make([]*LikedItem, 0, len(refs))
+	if len(refs) == 0 {
+		return &ActorLikesResponse{Feed: feed, Cursor: cursor}, nil
+	}
+
+	var commentURIs, postURIs []string
+	for _, ref := range refs {
+		switch ref.Kind {
+		case LikedSubjectComment:
+			if ref.RootURI == "" {
+				return nil, fmt.Errorf("liked comment %s has no root post", ref.URI)
+			}
+			commentURIs = append(commentURIs, ref.URI)
+			postURIs = append(postURIs, ref.RootURI)
+		case LikedSubjectPost:
+			postURIs = append(postURIs, ref.URI)
+		default:
+			return nil, fmt.Errorf("liked subject %s has unknown kind %q", ref.URI, ref.Kind)
+		}
+	}
+
+	commentViews, _, err := s.GetCommentViewsByURIs(ctx, commentURIs, pageRequest.ViewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hydrate liked comments: %w", err)
+	}
+	postViews, err := s.servablePostViews(ctx, postURIs, pageRequest.ViewerDID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ref := range refs {
+		switch ref.Kind {
+		case LikedSubjectPost:
+			if view := postViews[ref.URI]; view != nil {
+				feed = append(feed, &LikedItem{Post: view})
+			}
+		case LikedSubjectComment:
+			commentView := commentViews[ref.URI]
+			rootView := postViews[ref.RootURI]
+			// A comment whose author the viewer blocked has no view.
+			if commentView == nil || commentView.IsDeleted || rootView == nil {
+				continue
+			}
+			// Hydration does not resolve the comment's community; the page
+			// row did.
+			commentView.CommunityDID = ref.CommunityDID
+			feed = append(feed, &LikedItem{Comment: commentView, Post: rootView})
+		default:
+			return nil, fmt.Errorf("liked subject %s has unknown kind %q", ref.URI, ref.Kind)
+		}
+	}
+
+	return &ActorLikesResponse{Feed: feed, Cursor: cursor}, nil
+}
+
+// servablePostViews returns the views of the posts at uris for viewerDID,
+// keyed by URI, leaving out posts with no view and, for a signed-in viewer,
+// posts whose author viewerDID has blocked. GetActorLikes ensures a block
+// checker is installed before calling it with a viewer.
+func (s *commentService) servablePostViews(ctx context.Context, uris []string, viewerDID string) (map[string]*posts.PostView, error) {
+	if len(uris) == 0 {
+		return map[string]*posts.PostView{}, nil
+	}
+	views, err := s.postRepo.GetViewsByURIs(ctx, uris, viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hydrate liked posts: %w", err)
+	}
+	if viewerDID == "" {
+		return views, nil
+	}
+
+	seen := make(map[string]struct{}, len(views))
+	authorDIDs := make([]string, 0, len(views))
+	for _, view := range views {
+		if view == nil || view.Author == nil || view.Author.DID == "" {
+			continue
+		}
+		if _, ok := seen[view.Author.DID]; ok {
+			continue
+		}
+		seen[view.Author.DID] = struct{}{}
+		authorDIDs = append(authorDIDs, view.Author.DID)
+	}
+	if len(authorDIDs) == 0 {
+		return views, nil
+	}
+	blocked, err := s.blockChecker.AreBlocked(ctx, viewerDID, authorDIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check viewer blocks on liked post authors: %w", err)
+	}
+	servable := make(map[string]*posts.PostView, len(views))
+	for uri, view := range views {
+		if view != nil && (view.Author == nil || !blocked[view.Author.DID]) {
+			servable[uri] = view
+		}
+	}
+	return servable, nil
 }
 
 // validateGetActorCommentsRequest validates and normalizes request parameters

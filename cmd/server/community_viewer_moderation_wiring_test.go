@@ -14,6 +14,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
+	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/feedgen"
@@ -73,7 +74,8 @@ func communityPostView() *posts.PostView {
 	}
 }
 
-// communityPostService serves communityPostView on post.get and actor.getPosts.
+// communityPostService serves communityPostView on post.get and
+// actor.getPosts.
 type communityPostService struct{ posts.Service }
 
 func (communityPostService) GetPosts(context.Context, posts.GetPostsRequest) ([]*posts.PostResult, error) {
@@ -82,6 +84,11 @@ func (communityPostService) GetPosts(context.Context, posts.GetPostsRequest) ([]
 
 func (communityPostService) GetAuthorPosts(context.Context, posts.GetAuthorPostsRequest) (*posts.GetAuthorPostsResponse, error) {
 	return &posts.GetAuthorPostsResponse{Feed: []*posts.FeedViewPost{{Post: communityPostView()}}}, nil
+}
+
+// GetActorLikes serves communityPostView as a liked post on actor.getLikes.
+func (oneLiveCommentService) GetActorLikes(context.Context, *comments.GetActorLikesRequest) (*comments.ActorLikesResponse, error) {
+	return &comments.ActorLikesResponse{Feed: []*comments.LikedItem{{Post: communityPostView()}}}, nil
 }
 
 // communityPostFeeds serves communityPostView on post search and on every
@@ -213,6 +220,11 @@ func TestRegisterXRPCRoutesServesCommunityViewerModeration(t *testing.T) {
 		},
 		{
 			name: "actor.getPosts", path: "/xrpc/social.coves.actor.getPosts?actor=" + communityViewerPostAuthor,
+			item: []any{"feed", 0, "post", "viewer", "communityModeration"}, want: postActions,
+		},
+		{
+			// getLikes is owner-only, so the actor is the moderator viewer.
+			name: "actor.getLikes", path: "/xrpc/social.coves.actor.getLikes?actor=" + communityViewerModeratorDID,
 			item: []any{"feed", 0, "post", "viewer", "communityModeration"}, want: postActions,
 		},
 		{
